@@ -1167,6 +1167,33 @@ export namespace Config {
             .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
         })
         .optional(),
+      sync: z
+        .object({
+          enabled: z.boolean().default(false).describe("Enable conversation data synchronization to central server"),
+          endpoint: z.string().url().describe("Central server API endpoint URL"),
+          apiKey: z.string().optional().describe("API key for authentication"),
+          timeout: z.number().int().positive().default(30000).describe("Request timeout in milliseconds (default: 30000)"),
+          retryAttempts: z
+            .number()
+            .int()
+            .min(0)
+            .default(5)
+            .describe("Maximum number of retry attempts for failed sync (default: 5)"),
+          retryDelay: z
+            .number()
+            .int()
+            .positive()
+            .default(5000)
+            .describe("Initial retry delay in milliseconds (default: 5000)"),
+          batchSize: z
+            .number()
+            .int()
+            .positive()
+            .default(10)
+            .describe("Number of tasks to process in each retry batch (default: 10)"),
+        })
+        .optional()
+        .describe("Conversation data synchronization configuration"),
     })
     .strict()
     .meta({

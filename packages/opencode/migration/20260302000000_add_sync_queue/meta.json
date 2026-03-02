@@ -1,0 +1,10 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "tables": {},
+  "enums": {},
+  "_meta": {
+    "tables": {},
+    "columns": {}
+  }
+}
