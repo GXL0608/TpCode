@@ -1,0 +1,1276 @@
+import { and, Database, desc, eq, inArray, isNull, like, or, type SQL } from "@/storage/db"
+import { TpOrganizationTable } from "./organization.sql"
+import { TpDepartmentTable } from "./department.sql"
+import { TpUserTable } from "./user.sql"
+import { TpRoleTable, TpUserRoleTable } from "./role.sql"
+import { TpPermissionTable, TpRolePermissionTable } from "./permission.sql"
+import { TpSessionTokenTable } from "./token.sql"
+import { TpPasswordResetTable } from "./password-reset.sql"
+import { TpAuditLogTable } from "./audit-log.sql"
+import { UserPassword } from "./password"
+import { UserJwt } from "./jwt"
+import { createHash, randomInt } from "crypto"
+import { ulid } from "ulid"
+import { Flag } from "@/flag/flag"
+
+type UserRow = typeof TpUserTable.$inferSelect
+
+function hash(input: string) {
+  return createHash("sha256").update(input).digest("hex")
+}
+
+function id(input: string) {
+  return "id_" + hash(input).slice(0, 24)
+}
+
+function roles() {
+  return [
+    { code: "super_admin", name: "超级管理员", scope: "system" },
+    { code: "dev_lead", name: "研发负责人", scope: "system" },
+    { code: "developer", name: "研发工程师", scope: "system" },
+    { code: "ops", name: "运维工程师", scope: "system" },
+    { code: "pm", name: "项目经理", scope: "system" },
+    { code: "value_ops", name: "价值运营", scope: "system" },
+    { code: "hospital_admin", name: "医院管理员", scope: "org" },
+    { code: "dept_director", name: "科室主任", scope: "org" },
+    { code: "hospital_user", name: "医院用户", scope: "org" },
+    { code: "dean", name: "院长", scope: "org" },
+  ]
+}
+
+function permissions() {
+  return [
+    { code: "user:manage", name: "用户管理", group_name: "system" },
+    { code: "org:manage", name: "组织管理", group_name: "system" },
+    { code: "role:manage", name: "角色管理", group_name: "system" },
+    { code: "session:create", name: "创建会话", group_name: "session" },
+    { code: "session:view_own", name: "查看本人会话", group_name: "session" },
+    { code: "session:view_dept", name: "查看本科室会话", group_name: "session" },
+    { code: "session:view_org", name: "查看本机构会话", group_name: "session" },
+    { code: "session:view_all", name: "查看全部会话", group_name: "session" },
+    { code: "session:update_any", name: "管理全部会话", group_name: "session" },
+    { code: "code:generate", name: "生成代码", group_name: "code" },
+    { code: "code:review", name: "代码审查", group_name: "code" },
+    { code: "code:deploy", name: "部署代码", group_name: "code" },
+    { code: "prototype:view", name: "查看原型", group_name: "prototype" },
+    { code: "prototype:approve", name: "审批原型", group_name: "prototype" },
+    { code: "file:browse", name: "浏览文件", group_name: "file" },
+    { code: "provider:config_own", name: "配置个人模型密钥", group_name: "provider" },
+    { code: "provider:config_global", name: "配置全局模型密钥", group_name: "provider" },
+    { code: "audit:view", name: "查看审计日志", group_name: "audit" },
+  ]
+}
+
+const rolePerm = {
+  super_admin: [
+    "user:manage",
+    "org:manage",
+    "role:manage",
+    "session:create",
+    "session:view_own",
+    "session:view_dept",
+    "session:view_org",
+    "session:view_all",
+    "session:update_any",
+    "code:generate",
+    "code:review",
+    "code:deploy",
+    "prototype:view",
+    "prototype:approve",
+    "file:browse",
+    "provider:config_own",
+    "provider:config_global",
+    "audit:view",
+  ],
+  dev_lead: [
+    "session:create",
+    "session:view_own",
+    "session:view_dept",
+    "session:view_org",
+    "session:view_all",
+    "session:update_any",
+    "code:generate",
+    "code:review",
+    "code:deploy",
+    "prototype:view",
+    "prototype:approve",
+    "file:browse",
+    "provider:config_own",
+  ],
+  developer: [
+    "session:create",
+    "session:view_own",
+    "code:generate",
+    "prototype:view",
+    "file:browse",
+    "provider:config_own",
+  ],
+  ops: ["session:create", "session:view_own", "code:deploy", "prototype:view", "file:browse", "provider:config_own"],
+  pm: [
+    "session:create",
+    "session:view_own",
+    "session:view_dept",
+    "session:view_all",
+    "prototype:view",
+    "prototype:approve",
+    "provider:config_own",
+  ],
+  value_ops: ["session:create", "session:view_own", "session:view_all", "prototype:view", "provider:config_own"],
+  hospital_admin: [
+    "session:create",
+    "session:view_own",
+    "session:view_dept",
+    "session:view_org",
+    "prototype:view",
+    "provider:config_own",
+  ],
+  dept_director: [
+    "session:create",
+    "session:view_own",
+    "session:view_dept",
+    "prototype:view",
+    "prototype:approve",
+    "provider:config_own",
+  ],
+  hospital_user: ["session:create", "session:view_own", "prototype:view", "provider:config_own"],
+  dean: [
+    "session:view_own",
+    "session:view_org",
+    "session:view_all",
+    "prototype:view",
+    "prototype:approve",
+    "provider:config_own",
+  ],
+} as const
+
+const roleNameMap = {
+  super_admin: "超级管理员",
+  dev_lead: "研发负责人",
+  developer: "研发工程师",
+  ops: "运维工程师",
+  pm: "项目经理",
+  value_ops: "价值运营",
+  hospital_admin: "医院管理员",
+  dept_director: "科室主任",
+  hospital_user: "医院用户",
+  dean: "院长",
+} as const
+
+const permissionNameMap = {
+  "user:manage": "用户管理",
+  "org:manage": "组织管理",
+  "role:manage": "角色管理",
+  "session:create": "创建会话",
+  "session:view_own": "查看本人会话",
+  "session:view_dept": "查看本科室会话",
+  "session:view_org": "查看本机构会话",
+  "session:view_all": "查看全部会话",
+  "session:update_any": "管理全部会话",
+  "code:generate": "生成代码",
+  "code:review": "代码审查",
+  "code:deploy": "部署代码",
+  "prototype:view": "查看原型",
+  "prototype:approve": "审批原型",
+  "file:browse": "浏览文件",
+  "provider:config_own": "配置个人模型密钥",
+  "provider:config_global": "配置全局模型密钥",
+  "audit:view": "查看审计日志",
+} as const
+
+function roleName(code: string) {
+  return roleNameMap[code as keyof typeof roleNameMap] ?? code
+}
+
+function permissionName(code: string) {
+  return permissionNameMap[code as keyof typeof permissionNameMap] ?? code
+}
+
+function profile(input: { user: UserRow; roles: string[]; permissions: string[] }) {
+  return {
+    id: input.user.id,
+    username: input.user.username,
+    display_name: input.user.display_name,
+    account_type: input.user.account_type,
+    org_id: input.user.org_id,
+    department_id: input.user.department_id ?? undefined,
+    force_password_reset: input.user.force_password_reset,
+    roles: input.roles,
+    permissions: input.permissions,
+  }
+}
+
+function registerMode() {
+  const mode = (Flag.TPCODE_REGISTER_MODE ?? "invite").toLowerCase()
+  if (mode === "open" || mode === "invite" || mode === "closed") return mode
+  return "invite"
+}
+
+export namespace UserService {
+  export async function ensureSeed() {
+    const p = permissions()
+    const r = roles()
+    Database.use((db) => {
+      db.insert(TpOrganizationTable)
+        .values({
+          id: "org_tp_internal",
+          name: "Tp Internal",
+          code: "tp_internal",
+          org_type: "internal",
+        })
+        .onConflictDoNothing()
+        .run()
+      db.insert(TpDepartmentTable)
+        .values({
+          id: "dept_tp_rnd",
+          org_id: "org_tp_internal",
+          name: "R&D",
+          code: "rnd",
+        })
+        .onConflictDoNothing()
+        .run()
+      db.insert(TpPermissionTable)
+        .values(
+          p.map((item) => ({
+            id: id("perm_" + item.code),
+            code: item.code,
+            name: item.name,
+            group_name: item.group_name,
+          })),
+        )
+        .onConflictDoNothing()
+        .run()
+      db.insert(TpRoleTable)
+        .values(
+          r.map((item) => ({
+            id: id("role_" + item.code),
+            code: item.code,
+            name: item.name,
+            scope: item.scope,
+          })),
+        )
+        .onConflictDoNothing()
+        .run()
+      db.insert(TpRolePermissionTable)
+        .values(
+          r.flatMap((item) =>
+            (rolePerm[item.code as keyof typeof rolePerm] ?? []).map((perm) => ({
+              role_id: id("role_" + item.code),
+              permission_id: id("perm_" + perm),
+            })),
+          ),
+        )
+        .onConflictDoNothing()
+        .run()
+    })
+
+    const user = Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, "admin")).get())
+    if (user) return
+    const pass = Flag.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026"
+    const password_hash = await UserPassword.hash(pass)
+    Database.use((db) => {
+      db.insert(TpUserTable)
+        .values({
+          id: "user_tp_admin",
+          username: "admin",
+          password_hash,
+          display_name: "System Admin",
+          account_type: "internal",
+          org_id: "org_tp_internal",
+          department_id: "dept_tp_rnd",
+          force_password_reset: true,
+          external_source: "tpcode",
+        })
+        .onConflictDoNothing()
+        .run()
+      db.insert(TpUserRoleTable)
+        .values({
+          user_id: "user_tp_admin",
+          role_id: id("role_super_admin"),
+        })
+        .onConflictDoNothing()
+        .run()
+    })
+  }
+
+  export function parseBearer(input?: string) {
+    if (!input) return
+    if (!input.startsWith("Bearer ")) return
+    return input.slice("Bearer ".length).trim()
+  }
+
+  export function tokenHash(input: string) {
+    return hash(input)
+  }
+
+  export function userByID(user_id: string) {
+    return Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, user_id)).get())
+  }
+
+  export function userByUsername(username: string) {
+    return Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, username)).get())
+  }
+
+  export function orgByCode(code: string) {
+    return Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.code, code)).get())
+  }
+
+  export function rolesByUser(user_id: string) {
+    const links = Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
+    const ids = [...new Set(links.map((item) => item.role_id))]
+    if (ids.length === 0) return [] as string[]
+    const rows = Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, ids)).all())
+    return rows.map((item) => item.code)
+  }
+
+  export function permissionsByUser(user_id: string) {
+    const links = Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
+    const role_ids = [...new Set(links.map((item) => item.role_id))]
+    if (role_ids.length === 0) return [] as string[]
+    const permLinks = Database.use((db) =>
+      db.select().from(TpRolePermissionTable).where(inArray(TpRolePermissionTable.role_id, role_ids)).all(),
+    )
+    const perm_ids = [...new Set(permLinks.map((item) => item.permission_id))]
+    if (perm_ids.length === 0) return [] as string[]
+    const rows = Database.use((db) => db.select().from(TpPermissionTable).where(inArray(TpPermissionTable.id, perm_ids)).all())
+    return rows.map((item) => item.code)
+  }
+
+  export function audit(input: {
+    actor_user_id?: string
+    action: string
+    target_type: string
+    target_id?: string
+    result: "success" | "failed" | "blocked"
+    detail_json?: Record<string, unknown>
+    ip?: string
+    user_agent?: string
+  }) {
+    Database.use((db) => {
+      db.insert(TpAuditLogTable)
+        .values({
+          id: ulid(),
+          actor_user_id: input.actor_user_id,
+          action: input.action,
+          target_type: input.target_type,
+          target_id: input.target_id,
+          result: input.result,
+          detail_json: input.detail_json,
+          ip: input.ip,
+          user_agent: input.user_agent,
+        })
+        .run()
+    })
+  }
+
+  export async function register(input: {
+    username: string
+    password: string
+    display_name?: string
+    email?: string
+    phone?: string
+    invite_code?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const mode = registerMode()
+    if (mode === "closed") return { ok: false as const, code: "register_closed" }
+    if (mode === "invite") {
+      const invite = Flag.TPCODE_ACCOUNT_INVITE_CODE
+      if (!invite || input.invite_code !== invite) return { ok: false as const, code: "invite_invalid" }
+    }
+    if (!UserPassword.valid(input.password)) return { ok: false as const, code: "password_invalid" }
+    const exists = userByUsername(input.username)
+    if (exists) return { ok: false as const, code: "username_exists" }
+
+    const org = orgByCode("tp_internal")
+    if (!org) return { ok: false as const, code: "org_missing" }
+
+    const account_type = "internal" as const
+    const user_id = ulid()
+    const password_hash = await UserPassword.hash(input.password)
+    Database.use((db) => {
+      db.insert(TpUserTable)
+        .values({
+          id: user_id,
+          username: input.username,
+          password_hash,
+          display_name: input.display_name ?? input.username,
+          email: input.email,
+          phone: input.phone,
+          account_type,
+          org_id: org.id,
+          department_id: undefined,
+          force_password_reset: false,
+          external_source: "tpcode",
+        })
+        .run()
+      const role = "developer"
+      db.insert(TpUserRoleTable)
+        .values({
+          user_id,
+          role_id: id("role_" + role),
+        })
+        .run()
+    })
+    audit({
+      actor_user_id: user_id,
+      action: "account.register",
+      target_type: "tp_user",
+      target_id: user_id,
+      result: "success",
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  async function issueTokens(input: { user_id: string; ip?: string; user_agent?: string }) {
+    const access_id = ulid()
+    const refresh_id = ulid()
+    const access = await UserJwt.issueAccess({ user_id: input.user_id, session_id: access_id })
+    const refresh = await UserJwt.issueRefresh({ user_id: input.user_id, session_id: refresh_id })
+    Database.use((db) => {
+      db.insert(TpSessionTokenTable)
+        .values([
+          {
+            id: access_id,
+            user_id: input.user_id,
+            token_hash: tokenHash(access.token),
+            token_type: "access",
+            expires_at: access.exp,
+            ip: input.ip,
+            user_agent: input.user_agent,
+          },
+          {
+            id: refresh_id,
+            user_id: input.user_id,
+            token_hash: tokenHash(refresh.token),
+            token_type: "refresh",
+            expires_at: refresh.exp,
+            ip: input.ip,
+            user_agent: input.user_agent,
+          },
+        ])
+        .run()
+    })
+    return {
+      access_token: access.token,
+      refresh_token: refresh.token,
+      access_expires_at: access.exp,
+      refresh_expires_at: refresh.exp,
+    }
+  }
+
+  export async function login(input: { username: string; password: string; ip?: string; user_agent?: string }) {
+    const user = userByUsername(input.username)
+    if (!user) return { ok: false as const, code: "invalid_credentials" }
+    const now = Date.now()
+    const valid = await UserPassword.verify(input.password, user.password_hash)
+    if (!valid) {
+      if (user.locked_until && user.locked_until > now) return { ok: false as const, code: "user_locked" }
+      const failed = user.failed_login_count + 1
+      const locked = failed >= 5 ? now + 15 * 60 * 1000 : null
+      Database.use((db) => {
+        db.update(TpUserTable)
+          .set({
+            failed_login_count: failed,
+            locked_until: locked,
+          })
+          .where(eq(TpUserTable.id, user.id))
+          .run()
+      })
+      audit({
+        actor_user_id: user.id,
+        action: "account.login",
+        target_type: "tp_user",
+        target_id: user.id,
+        result: "failed",
+        ip: input.ip,
+        user_agent: input.user_agent,
+      })
+      return { ok: false as const, code: "invalid_credentials" }
+    }
+    const roles = rolesByUser(user.id)
+    const permissions = permissionsByUser(user.id)
+    const token = await issueTokens({ user_id: user.id, ip: input.ip, user_agent: input.user_agent })
+    Database.use((db) => {
+      db.update(TpUserTable)
+        .set({
+          failed_login_count: 0,
+          locked_until: null,
+          last_login_at: Date.now(),
+          last_login_ip: input.ip,
+        })
+        .where(eq(TpUserTable.id, user.id))
+        .run()
+    })
+    audit({
+      actor_user_id: user.id,
+      action: "account.login",
+      target_type: "tp_user",
+      target_id: user.id,
+      result: "success",
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return {
+      ok: true as const,
+      ...token,
+      user: profile({ user, roles, permissions }),
+    }
+  }
+
+  export async function refresh(input: { refresh_token: string; ip?: string; user_agent?: string }) {
+    const parsed = await UserJwt.verifyRefresh(input.refresh_token)
+    if (!parsed) return { ok: false as const, code: "token_invalid" }
+    const now = Date.now()
+    const row = Database.use((db) =>
+      db
+        .select()
+        .from(TpSessionTokenTable)
+        .where(
+          and(
+            eq(TpSessionTokenTable.id, parsed.sid),
+            eq(TpSessionTokenTable.user_id, parsed.sub),
+            eq(TpSessionTokenTable.token_hash, tokenHash(input.refresh_token)),
+            eq(TpSessionTokenTable.token_type, "refresh"),
+            isNull(TpSessionTokenTable.revoked_at),
+          ),
+        )
+        .get(),
+    )
+    if (!row) return { ok: false as const, code: "token_invalid" }
+    if (row.expires_at <= now) return { ok: false as const, code: "token_expired" }
+    const user = userByID(parsed.sub)
+    if (!user || user.status !== "active") return { ok: false as const, code: "user_invalid" }
+    const roles = rolesByUser(user.id)
+    const permissions = permissionsByUser(user.id)
+    Database.use((db) =>
+      db
+        .update(TpSessionTokenTable)
+        .set({ revoked_at: now })
+        .where(eq(TpSessionTokenTable.id, row.id))
+        .run(),
+    )
+    const token = await issueTokens({ user_id: user.id, ip: input.ip, user_agent: input.user_agent })
+    return {
+      ok: true as const,
+      ...token,
+      user: profile({ user, roles, permissions }),
+    }
+  }
+
+  export async function changePassword(input: {
+    user_id: string
+    current_password: string
+    new_password: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const user = userByID(input.user_id)
+    if (!user) return { ok: false as const, code: "user_missing" }
+    const valid = await UserPassword.verify(input.current_password, user.password_hash)
+    if (!valid) return { ok: false as const, code: "password_invalid" }
+    if (!UserPassword.valid(input.new_password)) return { ok: false as const, code: "new_password_invalid" }
+    const password_hash = await UserPassword.hash(input.new_password)
+    Database.use((db) =>
+      db
+        .update(TpUserTable)
+        .set({
+          password_hash,
+          force_password_reset: false,
+        })
+        .where(eq(TpUserTable.id, input.user_id))
+        .run(),
+    )
+    audit({
+      actor_user_id: input.user_id,
+      action: "account.password.change",
+      target_type: "tp_user",
+      target_id: input.user_id,
+      result: "success",
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  export function revokeToken(input: { token: string }) {
+    Database.use((db) =>
+      db
+        .update(TpSessionTokenTable)
+        .set({ revoked_at: Date.now() })
+        .where(eq(TpSessionTokenTable.token_hash, tokenHash(input.token)))
+        .run(),
+    )
+  }
+
+  export function revokeAll(input: { user_id: string }) {
+    Database.use((db) =>
+      db
+        .update(TpSessionTokenTable)
+        .set({ revoked_at: Date.now() })
+        .where(and(eq(TpSessionTokenTable.user_id, input.user_id), isNull(TpSessionTokenTable.revoked_at)))
+        .run(),
+    )
+  }
+
+  export async function authorize(token: string) {
+    const parsed = await UserJwt.verifyAccess(token)
+    if (!parsed) return
+    const row = Database.use((db) =>
+      db
+        .select()
+        .from(TpSessionTokenTable)
+        .where(
+          and(
+            eq(TpSessionTokenTable.id, parsed.sid),
+            eq(TpSessionTokenTable.user_id, parsed.sub),
+            eq(TpSessionTokenTable.token_hash, tokenHash(token)),
+            eq(TpSessionTokenTable.token_type, "access"),
+            isNull(TpSessionTokenTable.revoked_at),
+          ),
+        )
+        .get(),
+    )
+    if (!row) return
+    if (row.expires_at <= Date.now()) return
+    const user = userByID(parsed.sub)
+    if (!user || user.status !== "active") return
+    if (user.locked_until && user.locked_until > Date.now()) return
+    const roles = rolesByUser(user.id)
+    const permissions = permissionsByUser(user.id)
+    return profile({ user, roles, permissions })
+  }
+
+  export function me(user_id: string) {
+    const user = userByID(user_id)
+    if (!user) return
+    const roles = rolesByUser(user.id)
+    const permissions = permissionsByUser(user.id)
+    return profile({ user, roles, permissions })
+  }
+
+  export function resetRequest(input: { username: string; ip?: string; user_agent?: string }) {
+    const user = userByUsername(input.username)
+    if (!user) return { ok: true as const }
+    const code = String(randomInt(100000, 999999))
+    const code_hash = hash(code)
+    Database.use((db) =>
+      db.insert(TpPasswordResetTable)
+        .values({
+          id: ulid(),
+          user_id: user.id,
+          code_hash,
+          channel: "admin",
+          expires_at: Date.now() + 10 * 60 * 1000,
+        })
+        .run(),
+    )
+    audit({
+      actor_user_id: user.id,
+      action: "account.password.reset.request",
+      target_type: "tp_user",
+      target_id: user.id,
+      result: "success",
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return {
+      ok: true as const,
+      // Production can swap this for SMS or email delivery.
+      reset_code: code,
+    }
+  }
+
+  export async function resetPassword(input: {
+    username: string
+    code: string
+    new_password: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const user = userByUsername(input.username)
+    if (!user) return { ok: false as const, code: "user_missing" }
+    const row = Database.use((db) =>
+      db
+        .select()
+        .from(TpPasswordResetTable)
+        .where(
+          and(
+            eq(TpPasswordResetTable.user_id, user.id),
+            isNull(TpPasswordResetTable.consumed_at),
+          ),
+        )
+        .all(),
+    )
+      .filter((item) => item.expires_at > Date.now())
+      .sort((a, b) => b.time_created - a.time_created)[0]
+    if (!row) return { ok: false as const, code: "reset_missing" }
+    if (!UserPassword.valid(input.new_password)) return { ok: false as const, code: "new_password_invalid" }
+    const ok = hash(input.code) === row.code_hash
+    if (!ok) return { ok: false as const, code: "code_invalid" }
+    const password_hash = await UserPassword.hash(input.new_password)
+    Database.use((db) => {
+      db.update(TpUserTable)
+        .set({
+          password_hash,
+          force_password_reset: false,
+          failed_login_count: 0,
+          locked_until: null,
+        })
+        .where(eq(TpUserTable.id, user.id))
+        .run()
+      db.update(TpPasswordResetTable)
+        .set({ consumed_at: Date.now() })
+        .where(eq(TpPasswordResetTable.id, row.id))
+        .run()
+      db.update(TpSessionTokenTable)
+        .set({ revoked_at: Date.now() })
+        .where(and(eq(TpSessionTokenTable.user_id, user.id), isNull(TpSessionTokenTable.revoked_at)))
+        .run()
+    })
+    audit({
+      actor_user_id: user.id,
+      action: "account.password.reset",
+      target_type: "tp_user",
+      target_id: user.id,
+      result: "success",
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  function defaultRole(account_type: "internal" | "hospital" | "partner") {
+    if (account_type === "hospital") return "hospital_user"
+    if (account_type === "partner") return "pm"
+    return "developer"
+  }
+
+  function roleIDs(codes: string[]) {
+    if (codes.length === 0) return [] as string[]
+    const rows = Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, codes)).all())
+    return rows.map((item) => item.id)
+  }
+
+  function permissionIDs(codes: string[]) {
+    if (codes.length === 0) return [] as string[]
+    const rows = Database.use((db) => db.select().from(TpPermissionTable).where(inArray(TpPermissionTable.code, codes)).all())
+    return rows.map((item) => item.id)
+  }
+
+  export function listOrganizations() {
+    return Database.use((db) =>
+      db
+        .select()
+        .from(TpOrganizationTable)
+        .orderBy(desc(TpOrganizationTable.time_created), desc(TpOrganizationTable.id))
+        .all(),
+    )
+  }
+
+  export function listDepartments(input?: { org_id?: string }) {
+    return Database.use((db) => {
+      if (!input?.org_id) {
+        return db
+          .select()
+          .from(TpDepartmentTable)
+          .orderBy(desc(TpDepartmentTable.time_created), desc(TpDepartmentTable.id))
+          .all()
+      }
+      return db
+        .select()
+        .from(TpDepartmentTable)
+        .where(eq(TpDepartmentTable.org_id, input.org_id))
+        .orderBy(desc(TpDepartmentTable.time_created), desc(TpDepartmentTable.id))
+        .all()
+    })
+  }
+
+  export function listPermissions() {
+    return Database.use((db) =>
+      db
+        .select()
+        .from(TpPermissionTable)
+        .orderBy(TpPermissionTable.group_name, TpPermissionTable.code)
+        .all()
+        .map((item) => ({
+          ...item,
+          name: permissionName(item.code),
+        })),
+    )
+  }
+
+  export function listAudit(input?: { actor_user_id?: string; action?: string; limit?: number }) {
+    const conditions: SQL[] = []
+    if (input?.actor_user_id) conditions.push(eq(TpAuditLogTable.actor_user_id, input.actor_user_id))
+    if (input?.action) conditions.push(eq(TpAuditLogTable.action, input.action))
+    const limit = input?.limit ?? 100
+    return Database.use((db) => {
+      if (conditions.length === 0) {
+        return db
+          .select()
+          .from(TpAuditLogTable)
+          .orderBy(desc(TpAuditLogTable.time_created), desc(TpAuditLogTable.id))
+          .limit(limit)
+          .all()
+      }
+      return db
+        .select()
+        .from(TpAuditLogTable)
+        .where(and(...conditions))
+        .orderBy(desc(TpAuditLogTable.time_created), desc(TpAuditLogTable.id))
+        .limit(limit)
+        .all()
+    })
+  }
+
+  export function listRoles() {
+    const rows = Database.use((db) => db.select().from(TpRoleTable).orderBy(TpRoleTable.code).all())
+    const links = Database.use((db) => db.select().from(TpRolePermissionTable).all())
+    const perms = Database.use((db) => db.select().from(TpPermissionTable).all())
+    const permByID = new Map(perms.map((item) => [item.id, item.code]))
+    const codesByRole = links.reduce(
+      (acc, item) => {
+        const code = permByID.get(item.permission_id)
+        if (!code) return acc
+        const current = acc.get(item.role_id)
+        if (!current) {
+          acc.set(item.role_id, [code])
+          return acc
+        }
+        current.push(code)
+        return acc
+      },
+      new Map<string, string[]>(),
+    )
+    return rows.map((item) => ({
+      ...item,
+      name: roleName(item.code),
+      permissions: [...new Set(codesByRole.get(item.id) ?? [])].sort(),
+    }))
+  }
+
+  export function listUsers(input?: { org_id?: string; department_id?: string; keyword?: string }) {
+    const conditions: SQL[] = []
+    if (input?.org_id) conditions.push(eq(TpUserTable.org_id, input.org_id))
+    if (input?.department_id) conditions.push(eq(TpUserTable.department_id, input.department_id))
+    if (input?.keyword) {
+      const word = `%${input.keyword}%`
+      const match = or(like(TpUserTable.username, word), like(TpUserTable.display_name, word))
+      if (match) conditions.push(match)
+    }
+    const rows = Database.use((db) => {
+      if (conditions.length === 0) {
+        return db
+          .select()
+          .from(TpUserTable)
+          .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
+          .all()
+      }
+      return db
+        .select()
+        .from(TpUserTable)
+        .where(and(...conditions))
+        .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
+        .all()
+    })
+    return rows.map((item) => ({
+      id: item.id,
+      username: item.username,
+      display_name: item.display_name,
+      email: item.email,
+      phone: item.phone,
+      status: item.status,
+      account_type: item.account_type,
+      org_id: item.org_id,
+      department_id: item.department_id ?? undefined,
+      force_password_reset: item.force_password_reset,
+      last_login_at: item.last_login_at ?? undefined,
+      last_login_ip: item.last_login_ip ?? undefined,
+      roles: rolesByUser(item.id),
+      permissions: permissionsByUser(item.id),
+    }))
+  }
+
+  export function createOrganization(input: {
+    name: string
+    code: string
+    org_type: "internal" | "hospital" | "partner"
+    parent_id?: string
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const exists = orgByCode(input.code)
+    if (exists) return { ok: false as const, code: "org_exists" }
+    const org_id = ulid()
+    Database.use((db) => {
+      db.insert(TpOrganizationTable)
+        .values({
+          id: org_id,
+          name: input.name,
+          code: input.code,
+          org_type: input.org_type,
+          parent_id: input.parent_id,
+        })
+        .run()
+    })
+    audit({
+      actor_user_id: input.actor_user_id,
+      action: "account.org.create",
+      target_type: "tp_organization",
+      target_id: org_id,
+      result: "success",
+      detail_json: {
+        code: input.code,
+        org_type: input.org_type,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const, id: org_id }
+  }
+
+  export function createDepartment(input: {
+    org_id: string
+    name: string
+    code?: string
+    parent_id?: string
+    sort_order?: number
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const org = Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
+    if (!org) return { ok: false as const, code: "org_missing" }
+    const department_id = ulid()
+    Database.use((db) => {
+      db.insert(TpDepartmentTable)
+        .values({
+          id: department_id,
+          org_id: input.org_id,
+          parent_id: input.parent_id,
+          name: input.name,
+          code: input.code,
+          sort_order: input.sort_order ?? 0,
+        })
+        .run()
+    })
+    audit({
+      actor_user_id: input.actor_user_id,
+      action: "account.department.create",
+      target_type: "tp_department",
+      target_id: department_id,
+      result: "success",
+      detail_json: {
+        org_id: input.org_id,
+        code: input.code,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const, id: department_id }
+  }
+
+  export async function createUser(input: {
+    username: string
+    password: string
+    display_name?: string
+    email?: string
+    phone?: string
+    account_type: "internal" | "hospital" | "partner"
+    org_id: string
+    department_id?: string
+    role_codes?: string[]
+    force_password_reset?: boolean
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    if (!UserPassword.valid(input.password)) return { ok: false as const, code: "password_invalid" }
+    const exists = userByUsername(input.username)
+    if (exists) return { ok: false as const, code: "username_exists" }
+    const org = Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
+    if (!org) return { ok: false as const, code: "org_missing" }
+    if (input.department_id) {
+      const department_id = input.department_id
+      const department = Database.use((db) =>
+        db
+          .select()
+          .from(TpDepartmentTable)
+          .where(and(eq(TpDepartmentTable.id, department_id), eq(TpDepartmentTable.org_id, input.org_id)))
+          .get(),
+      )
+      if (!department) return { ok: false as const, code: "department_missing" }
+    }
+
+    const user_id = ulid()
+    const password_hash = await UserPassword.hash(input.password)
+    const codes = [...new Set(input.role_codes && input.role_codes.length > 0 ? input.role_codes : [defaultRole(input.account_type)])]
+    const role_ids = roleIDs(codes)
+    if (role_ids.length !== codes.length) return { ok: false as const, code: "role_missing" }
+    Database.use((db) => {
+      db.insert(TpUserTable)
+        .values({
+          id: user_id,
+          username: input.username,
+          password_hash,
+          display_name: input.display_name ?? input.username,
+          email: input.email,
+          phone: input.phone,
+          account_type: input.account_type,
+          org_id: input.org_id,
+          department_id: input.department_id,
+          force_password_reset: input.force_password_reset ?? true,
+          external_source: "tpcode",
+        })
+        .run()
+      if (role_ids.length > 0) {
+        db.insert(TpUserRoleTable)
+          .values(role_ids.map((role_id) => ({ user_id, role_id })))
+          .run()
+      }
+    })
+    audit({
+      actor_user_id: input.actor_user_id,
+      action: "account.user.create",
+      target_type: "tp_user",
+      target_id: user_id,
+      result: "success",
+      detail_json: {
+        username: input.username,
+        account_type: input.account_type,
+        org_id: input.org_id,
+        role_codes: codes,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const, id: user_id }
+  }
+
+  export function setUserRoles(input: {
+    user_id: string
+    role_codes: string[]
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const user = userByID(input.user_id)
+    if (!user) return { ok: false as const, code: "user_missing" }
+    const codes = [...new Set(input.role_codes)]
+    const role_ids = roleIDs(codes)
+    if (role_ids.length !== codes.length) return { ok: false as const, code: "role_missing" }
+    Database.use((db) => {
+      db.delete(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, input.user_id)).run()
+      if (role_ids.length > 0) {
+        db.insert(TpUserRoleTable)
+          .values(role_ids.map((role_id) => ({ user_id: input.user_id, role_id })))
+          .run()
+      }
+    })
+    audit({
+      actor_user_id: input.actor_user_id,
+      action: "account.user.roles.update",
+      target_type: "tp_user",
+      target_id: input.user_id,
+      result: "success",
+      detail_json: { role_codes: codes },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  export function updateOrganization(input: {
+    org_id: string
+    name?: string
+    status?: "active" | "inactive"
+    parent_id?: string
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const org = Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
+    if (!org) return { ok: false as const, code: "org_missing" }
+    Database.use((db) => {
+      db.update(TpOrganizationTable)
+        .set({
+          name: input.name,
+          status: input.status,
+          parent_id: input.parent_id,
+          time_updated: Date.now(),
+        })
+        .where(eq(TpOrganizationTable.id, input.org_id))
+        .run()
+    })
+    audit({
+      actor_user_id: input.actor_user_id,
+      action: "account.org.update",
+      target_type: "tp_organization",
+      target_id: input.org_id,
+      result: "success",
+      detail_json: {
+        name: input.name,
+        status: input.status,
+        parent_id: input.parent_id,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  export function updateDepartment(input: {
+    department_id: string
+    name?: string
+    code?: string
+    status?: "active" | "inactive"
+    sort_order?: number
+    parent_id?: string
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const department = Database.use((db) =>
+      db.select().from(TpDepartmentTable).where(eq(TpDepartmentTable.id, input.department_id)).get(),
+    )
+    if (!department) return { ok: false as const, code: "department_missing" }
+    if (input.parent_id) {
+      const parent_id = input.parent_id
+      if (input.parent_id === input.department_id) return { ok: false as const, code: "department_parent_invalid" }
+      const parent = Database.use((db) =>
+        db
+          .select()
+          .from(TpDepartmentTable)
+          .where(and(eq(TpDepartmentTable.id, parent_id), eq(TpDepartmentTable.org_id, department.org_id)))
+          .get(),
+      )
+      if (!parent) return { ok: false as const, code: "department_parent_missing" }
+    }
+    Database.use((db) => {
+      db.update(TpDepartmentTable)
+        .set({
+          name: input.name,
+          code: input.code,
+          status: input.status,
+          sort_order: input.sort_order,
+          parent_id: input.parent_id,
+          time_updated: Date.now(),
+        })
+        .where(eq(TpDepartmentTable.id, input.department_id))
+        .run()
+    })
+    audit({
+      actor_user_id: input.actor_user_id,
+      action: "account.department.update",
+      target_type: "tp_department",
+      target_id: input.department_id,
+      result: "success",
+      detail_json: {
+        name: input.name,
+        code: input.code,
+        status: input.status,
+        sort_order: input.sort_order,
+        parent_id: input.parent_id,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  export function updateUser(input: {
+    user_id: string
+    display_name?: string
+    email?: string
+    phone?: string
+    status?: "active" | "inactive"
+    department_id?: string | null
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const user = userByID(input.user_id)
+    if (!user) return { ok: false as const, code: "user_missing" }
+    if (input.department_id) {
+      const department_id = input.department_id
+      const department = Database.use((db) =>
+        db
+          .select()
+          .from(TpDepartmentTable)
+          .where(and(eq(TpDepartmentTable.id, department_id), eq(TpDepartmentTable.org_id, user.org_id)))
+          .get(),
+      )
+      if (!department) return { ok: false as const, code: "department_missing" }
+    }
+    Database.use((db) => {
+      db.update(TpUserTable)
+        .set({
+          display_name: input.display_name,
+          email: input.email,
+          phone: input.phone,
+          status: input.status,
+          department_id: input.department_id === null ? null : input.department_id,
+          time_updated: Date.now(),
+        })
+        .where(eq(TpUserTable.id, input.user_id))
+        .run()
+    })
+    audit({
+      actor_user_id: input.actor_user_id,
+      action: "account.user.update",
+      target_type: "tp_user",
+      target_id: input.user_id,
+      result: "success",
+      detail_json: {
+        display_name: input.display_name,
+        email: input.email,
+        phone: input.phone,
+        status: input.status,
+        department_id: input.department_id,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  export function setRolePermissions(input: {
+    role_code: string
+    permission_codes: string[]
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const role = Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    if (!role) return { ok: false as const, code: "role_missing" }
+    const codes = [...new Set(input.permission_codes)]
+    const permission_ids = permissionIDs(codes)
+    if (permission_ids.length !== codes.length) return { ok: false as const, code: "permission_missing" }
+    Database.use((db) => {
+      db.delete(TpRolePermissionTable).where(eq(TpRolePermissionTable.role_id, role.id)).run()
+      if (permission_ids.length > 0) {
+        db.insert(TpRolePermissionTable)
+          .values(permission_ids.map((permission_id) => ({ role_id: role.id, permission_id })))
+          .run()
+      }
+    })
+    audit({
+      actor_user_id: input.actor_user_id,
+      action: "account.role.permissions.update",
+      target_type: "tp_role",
+      target_id: role.id,
+      result: "success",
+      detail_json: {
+        role_code: input.role_code,
+        permission_codes: codes,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+}

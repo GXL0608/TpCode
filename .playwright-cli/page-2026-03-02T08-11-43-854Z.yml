@@ -1,0 +1,34 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - button "切换菜单" [ref=e7]:
+        - img [ref=e9]
+    - generic [ref=e11]:
+      - navigation "项目和会话" [ref=e12]:
+        - generic [ref=e14]:
+          - button "打开项目" [ref=e18]:
+            - img [ref=e20]
+          - generic [ref=e22]:
+            - button "设置" [ref=e24]:
+              - img [ref=e26]
+            - button "帮助" [ref=e30]:
+              - img [ref=e32]
+      - main [ref=e35]:
+        - generic [ref=e37]:
+          - generic [ref=e38]: tpCode 账号登录
+          - textbox "用户名" [ref=e39]
+          - textbox "密码" [ref=e40]
+          - button "登录" [disabled] [ref=e41]
+          - generic [ref=e42]:
+            - link "注册账号" [ref=e43]:
+              - /url: /register
+            - link "忘记密码" [ref=e44]:
+              - /url: /password/forgot
+  - region "Notifications (alt+T)" [ref=e45]:
+    - list [ref=e46]:
+      - status "请求失败" [ref=e47]:
+        - generic [ref=e48]:
+          - generic [ref=e49]: 请求失败
+          - generic [ref=e50]: 未知错误 (还有 4 个)
+        - button "忽略" [ref=e51]:
+          - img [ref=e53]

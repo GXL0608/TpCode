@@ -1,0 +1,36 @@
+- generic [ref=e1]:
+  - generic [ref=e84]:
+    - banner [ref=e85]:
+      - button "切换菜单" [expanded] [active] [ref=e88]:
+        - img [ref=e90]
+    - generic [ref=e92]:
+      - navigation "项目和会话" [ref=e93]:
+        - generic [ref=e94]:
+          - generic [ref=e95]:
+            - generic [ref=e97]:
+              - button "opencode" [ref=e99]:
+                - img [ref=e103]
+              - button "打开项目" [ref=e105]:
+                - img [ref=e107]
+            - generic [ref=e109]:
+              - button "设置" [ref=e111]:
+                - img [ref=e113]
+              - button "帮助" [ref=e117]:
+                - img [ref=e119]
+          - generic [ref=e121]:
+            - generic [ref=e123]:
+              - generic [ref=e124]:
+                - generic [ref=e125]: opencode
+                - generic [ref=e127]: ~/projects/opencode
+              - button "更多选项" [ref=e128]:
+                - img [ref=e130]
+            - generic [ref=e137]:
+              - button "新建会话" [ref=e140]:
+                - img [ref=e142]
+                - text: 新建会话
+              - navigation [ref=e146]:
+                - button "加载更多" [ref=e148]
+      - main [ref=e149]
+  - generic:
+    - region "Notifications (alt+T)":
+      - list

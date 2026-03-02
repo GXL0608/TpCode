@@ -1,0 +1,10 @@
+- generic [ref=e4]:
+  - generic [ref=e5]: tpCode 账号登录
+  - textbox "用户名" [active] [ref=e6]: TpCode@2027admin
+  - textbox "密码" [ref=e7]
+  - button "登录" [disabled] [ref=e8]
+  - generic [ref=e9]:
+    - link "注册账号" [ref=e10]:
+      - /url: /register
+    - link "忘记密码" [ref=e11]:
+      - /url: /password/forgot

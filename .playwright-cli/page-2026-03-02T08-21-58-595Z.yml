@@ -1,0 +1,50 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e12]:
+    - banner [ref=e13]:
+      - generic [ref=e85]:
+        - button "切换侧边栏" [ref=e87]:
+          - img [ref=e90]
+        - generic [ref=e95]:
+          - button "返回" [disabled] [ref=e97]:
+            - img [ref=e99]
+          - button "前进" [disabled] [ref=e102]:
+            - img [ref=e104]
+    - generic [ref=e20]:
+      - navigation "项目和会话" [ref=e106]:
+        - generic [ref=e109]:
+          - button "打开项目" [ref=e113]:
+            - img [ref=e115]
+          - generic [ref=e117]:
+            - button "设置" [ref=e119]:
+              - img [ref=e121]
+            - button "帮助" [ref=e125]:
+              - img [ref=e127]
+      - main [ref=e45]:
+        - generic [ref=e46]:
+          - img [ref=e47]
+          - button "localhost:4096" [ref=e65]: localhost:4096
+          - generic [ref=e67]:
+            - generic [ref=e68]:
+              - generic [ref=e69]: 最近项目
+              - button "打开项目" [ref=e70]:
+                - img [ref=e72]
+                - text: 打开项目
+            - list [ref=e74]:
+              - button "/ 23分钟前" [ref=e75]:
+                - text: /
+                - generic [ref=e76]: 23分钟前
+              - button "~/projects/opencode 29分钟前" [ref=e77]:
+                - text: ~/projects/opencode
+                - generic [ref=e78]: 29分钟前
+              - button "~/projects/tphy_hio/tphy_hio_ub 1小时前" [ref=e79]:
+                - text: ~/projects/tphy_hio/tphy_hio_ub
+                - generic [ref=e80]: 1小时前
+              - button "~/projects/AgentPlatformClaude 1天前" [ref=e81]:
+                - text: ~/projects/AgentPlatformClaude
+                - generic [ref=e82]: 1天前
+              - button "~/projects/smart-english 1天前" [ref=e83]:
+                - text: ~/projects/smart-english
+                - generic [ref=e84]: 1天前
+  - generic:
+    - region "Notifications (alt+T)":
+      - list

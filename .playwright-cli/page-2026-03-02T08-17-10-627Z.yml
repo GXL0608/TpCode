@@ -1,0 +1,112 @@
+- generic:
+  - generic:
+    - generic:
+      - banner:
+        - generic:
+          - generic:
+            - button [expanded]:
+              - generic:
+                - img
+      - generic:
+        - navigation:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - button:
+                      - generic:
+                        - img
+              - generic:
+                - generic:
+                  - button:
+                    - generic:
+                      - img
+                - generic:
+                  - button:
+                    - generic:
+                      - img
+        - main:
+          - generic:
+            - generic:
+              - generic: tpCode 账号登录
+              - textbox:
+                - /placeholder: 用户名
+              - textbox:
+                - /placeholder: 密码
+              - button [disabled]: 登录
+              - generic:
+                - link:
+                  - /url: /register
+                  - text: 注册账号
+                - link:
+                  - /url: /password/forgot
+                  - text: 忘记密码
+  - generic:
+    - region "Notifications (alt+T)":
+      - list
+  - dialog [active] [ref=e57]:
+    - generic [ref=e60]:
+      - tablist [ref=e61]:
+        - generic [ref=e62]:
+          - generic [ref=e64]:
+            - generic [ref=e65]:
+              - generic [ref=e66]: 桌面
+              - generic [ref=e67]:
+                - tab "通用" [ref=e69]:
+                  - img [ref=e71]
+                  - text: 通用
+                - tab "快捷键" [ref=e74]:
+                  - img [ref=e76]
+                  - text: 快捷键
+            - generic [ref=e78]:
+              - generic [ref=e79]: 服务器
+              - generic [ref=e80]:
+                - tab "提供商" [ref=e82]:
+                  - img [ref=e84]
+                  - text: 提供商
+                - tab "模型" [ref=e87]:
+                  - img [ref=e89]
+                  - text: 模型
+                - tab "账号中心" [selected] [ref=e92]:
+                  - img [ref=e94]
+                  - text: 账号中心
+          - generic [ref=e96]:
+            - generic [ref=e97]: OpenCode Desktop
+            - generic [ref=e98]: v1.2.15
+      - tabpanel "账号中心" [ref=e99]:
+        - generic [ref=e101]:
+          - generic [ref=e102]:
+            - generic [ref=e104]:
+              - generic [ref=e105]: U
+              - generic [ref=e106]:
+                - generic [ref=e107]: 我的账号
+                - generic [ref=e108]: 当前登录账号信息、安全设置与接口密钥配置
+            - generic [ref=e109]:
+              - generic [ref=e110]:
+                - generic [ref=e111]: 用户名
+                - generic [ref=e112]: "-"
+              - generic [ref=e113]:
+                - generic [ref=e114]: 显示名
+                - generic [ref=e115]: "-"
+              - generic [ref=e116]:
+                - generic [ref=e117]: 账号类型
+                - generic [ref=e118]: "-"
+              - generic [ref=e119]:
+                - generic [ref=e120]: 角色
+                - generic [ref=e121]: "-"
+          - generic [ref=e122]:
+            - generic [ref=e123]:
+              - generic [ref=e124]: 修改密码
+              - generic [ref=e125]: 密码规则：至少 8 位，需包含大写字母、小写字母、数字
+              - textbox "当前密码" [ref=e126]
+              - textbox "新密码" [ref=e127]
+              - button "确认修改" [disabled] [ref=e129]
+            - generic [ref=e130]:
+              - generic [ref=e131]: 接口密钥
+              - generic [ref=e132]: 密钥仅保存到当前账号作用域，不会与其他用户混用
+              - textbox "供应商标识（如 openai / anthropic）" [ref=e133]: openai
+              - textbox "接口密钥" [ref=e134]
+              - generic [ref=e135]:
+                - button "保存" [disabled] [ref=e136]
+                - button "删除" [ref=e137]

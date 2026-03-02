@@ -1,0 +1,44 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e12]:
+    - banner [ref=e13]:
+      - button "切换菜单" [ref=e16]:
+        - img [ref=e18]
+    - generic [ref=e20]:
+      - navigation "项目和会话" [ref=e21]:
+        - generic [ref=e23]:
+          - button "打开项目" [ref=e27]:
+            - img [ref=e29]
+          - generic [ref=e31]:
+            - button "设置" [ref=e33]:
+              - img [ref=e35]
+            - button "帮助" [ref=e39]:
+              - img [ref=e41]
+      - main [ref=e44]:
+        - generic [ref=e45]:
+          - img [ref=e46]
+          - button "localhost:4096" [ref=e64]: localhost:4096
+          - generic [ref=e66]:
+            - generic [ref=e67]:
+              - generic [ref=e68]: 最近项目
+              - button "打开项目" [ref=e69]:
+                - img [ref=e71]
+                - text: 打开项目
+            - list [ref=e73]:
+              - button "~/projects/opencode 2分钟前" [ref=e74]:
+                - text: ~/projects/opencode
+                - generic [ref=e75]: 2分钟前
+              - button "/ 2分钟前" [ref=e76]:
+                - text: /
+                - generic [ref=e77]: 2分钟前
+              - button "~/projects/tphy_hio/tphy_hio_ub 59分钟前" [ref=e78]:
+                - text: ~/projects/tphy_hio/tphy_hio_ub
+                - generic [ref=e79]: 59分钟前
+              - button "~/projects/AgentPlatformClaude 1天前" [ref=e80]:
+                - text: ~/projects/AgentPlatformClaude
+                - generic [ref=e81]: 1天前
+              - button "~/projects/smart-english 1天前" [ref=e82]:
+                - text: ~/projects/smart-english
+                - generic [ref=e83]: 1天前
+  - generic:
+    - region "Notifications (alt+T)":
+      - list
