@@ -464,6 +464,7 @@ export namespace UserService {
   export async function login(input: { username: string; password: string; ip?: string; user_agent?: string }) {
     const user = userByUsername(input.username)
     if (!user) return { ok: false as const, code: "invalid_credentials" }
+    if (user.status !== "active") return { ok: false as const, code: "invalid_credentials" }
     const now = Date.now()
     const valid = await UserPassword.verify(input.password, user.password_hash)
     if (!valid) {
@@ -615,9 +616,25 @@ export namespace UserService {
     )
   }
 
-  export async function authorize(token: string) {
+  type AuthorizeDetail =
+    | {
+        ok: true
+        user: ReturnType<typeof profile>
+        sid: string
+        sub: string
+      }
+    | {
+        ok: false
+        reason: "jwt_invalid" | "session_missing" | "session_expired" | "user_inactive" | "user_locked"
+        sid?: string
+        sub?: string
+        locked_until?: number
+      }
+
+  export async function authorizeDetail(token: string): Promise<AuthorizeDetail> {
     const parsed = await UserJwt.verifyAccess(token)
-    if (!parsed) return
+    if (!parsed) return { ok: false, reason: "jwt_invalid" }
+    const now = Date.now()
     const row = Database.use((db) =>
       db
         .select()
@@ -633,14 +650,33 @@ export namespace UserService {
         )
         .get(),
     )
-    if (!row) return
-    if (row.expires_at <= Date.now()) return
+    if (!row) return { ok: false, reason: "session_missing", sid: parsed.sid, sub: parsed.sub }
+    if (row.expires_at <= now) return { ok: false, reason: "session_expired", sid: parsed.sid, sub: parsed.sub }
     const user = userByID(parsed.sub)
-    if (!user || user.status !== "active") return
-    if (user.locked_until && user.locked_until > Date.now()) return
+    if (!user || user.status !== "active") return { ok: false, reason: "user_inactive", sid: parsed.sid, sub: parsed.sub }
+    if (user.locked_until && user.locked_until > now) {
+      return {
+        ok: false,
+        reason: "user_locked",
+        sid: parsed.sid,
+        sub: parsed.sub,
+        locked_until: user.locked_until,
+      }
+    }
     const roles = rolesByUser(user.id)
     const permissions = permissionsByUser(user.id)
-    return profile({ user, roles, permissions })
+    return {
+      ok: true,
+      user: profile({ user, roles, permissions }),
+      sid: parsed.sid,
+      sub: parsed.sub,
+    }
+  }
+
+  export async function authorize(token: string) {
+    const result = await authorizeDetail(token)
+    if (!result.ok) return
+    return result.user
   }
 
   export function me(user_id: string) {

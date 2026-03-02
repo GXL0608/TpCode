@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 import { $ } from "bun"
+import fs from "fs"
+import path from "path"
 import pkg from "../package.json"
 import { Script } from "@opencode-ai/script"
 import { fileURLToPath } from "url"
@@ -19,6 +21,11 @@ await $`mkdir -p ./dist/${pkg.name}`
 await $`cp -r ./bin ./dist/${pkg.name}/bin`
 await $`cp ./script/postinstall.mjs ./dist/${pkg.name}/postinstall.mjs`
 await Bun.file(`./dist/${pkg.name}/LICENSE`).write(await Bun.file("../../LICENSE").text())
+const web = path.resolve(dir, "../app/dist")
+if (fs.existsSync(path.join(web, "index.html"))) {
+  await $`mkdir -p ./dist/${pkg.name}/web`
+  await $`cp -R ${web}/. ./dist/${pkg.name}/web`
+}
 
 await Bun.file(`./dist/${pkg.name}/package.json`).write(
   JSON.stringify(

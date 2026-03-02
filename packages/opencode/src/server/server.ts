@@ -1,6 +1,8 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Log } from "../util/log"
+import fs from "fs"
+import path from "path"
 import { describeRoute, generateSpecs, validator, resolver, openAPIRouteHandler } from "hono-openapi"
 import { Hono } from "hono"
 import { cors } from "hono/cors"
@@ -50,9 +52,13 @@ globalThis.AI_SDK_LOG_WARNINGS = false
 
 export namespace Server {
   const log = Log.create({ service: "server" })
+  const webCsp =
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; media-src 'self' data:; connect-src 'self' data:"
 
   let _url: URL | undefined
   let _corsWhitelist: string[] = []
+  let _webRoot: string | undefined
+  let _webResolved = false
 
   export function url(): URL {
     return _url ?? new URL("http://localhost:4096")
@@ -106,6 +112,55 @@ export namespace Server {
     )
     if (!row?.user_id) return false
     return row.user_id === input.userID
+  }
+
+  function webRoots() {
+    const roots = [
+      process.env["OPENCODE_WEB_DIST"],
+      path.resolve(process.cwd(), "packages/app/dist"),
+      path.resolve(import.meta.dirname, "../../../app/dist"),
+      path.resolve(path.dirname(process.execPath), "../web"),
+      path.resolve(path.dirname(process.execPath), "../app-dist"),
+    ]
+    return roots.filter((item): item is string => !!item)
+  }
+
+  function webRoot() {
+    if (_webResolved) return _webRoot
+    _webResolved = true
+    _webRoot = webRoots().find((item) => fs.existsSync(path.join(item, "index.html")))
+    if (_webRoot) {
+      log.info("web ui using local assets", { root: _webRoot })
+      return _webRoot
+    }
+    log.info("web ui using remote proxy", { target: "https://app.opencode.ai" })
+    return
+  }
+
+  function webFile(root: string, input: string) {
+    const normalized = path.posix.normalize(input.replace(/^\/+/, ""))
+    if (normalized.startsWith("..")) return
+    return path.join(root, normalized)
+  }
+
+  async function webLocal(pathname: string) {
+    const root = webRoot()
+    if (!root) return
+    const request = pathname === "/" ? "index.html" : pathname
+    const asset = webFile(root, request)
+    if (asset) {
+      const file = Bun.file(asset)
+      if (await file.exists()) return new Response(file)
+    }
+
+    const input = request.replace(/^\/+/, "")
+    if (input && path.extname(input)) return
+
+    const index = webFile(root, "index.html")
+    if (!index) return
+    const file = Bun.file(index)
+    if (!(await file.exists())) return
+    return new Response(file)
   }
 
   export const App: () => Hono = lazy(
@@ -169,16 +224,91 @@ export namespace Server {
               "/global/health",
               "/doc",
             ]
-            if (publicPaths.some((item) => path.startsWith(item))) return next()
+            const protectedPaths = [
+              "/account",
+              "/approval",
+              "/auth",
+              "/command",
+              "/config",
+              "/event",
+              "/experimental",
+              "/file",
+              "/find",
+              "/format",
+              "/global",
+              "/instance",
+              "/log",
+              "/mcp",
+              "/openapi.json",
+              "/path",
+              "/permission",
+              "/project",
+              "/provider",
+              "/pty",
+              "/question",
+              "/session",
+              "/tui",
+              "/vcs",
+            ]
+            const protected_ = protectedPaths.some((item) => path === item || path.startsWith(item + "/"))
+            if (!protected_) return next()
+            if (publicPaths.some((item) => path === item || path.startsWith(item + "/"))) return next()
             return (async () => {
+              const debug = Flag.TPCODE_ACCOUNT_AUTH_DEBUG
               if (!accountSeeded) {
                 await UserService.ensureSeed()
                 accountSeeded = true
               }
-              const token = UserService.parseBearer(c.req.header("authorization"))
-              if (!token) return c.json({ error: "unauthorized" }, 401)
-              const user = await UserService.authorize(token)
-              if (!user) return c.json({ error: "unauthorized" }, 401)
+              const auth = c.req.header("authorization")
+              const token = UserService.parseBearer(auth)
+              if (!token) {
+                if (debug) {
+                  log.warn("account auth missing bearer", {
+                    path,
+                    method: c.req.method,
+                    auth_present: !!auth,
+                    auth_prefix: auth?.split(/\s+/)[0],
+                    origin: c.req.header("origin"),
+                    referer: c.req.header("referer"),
+                    user_agent: c.req.header("user-agent"),
+                  })
+                }
+                return c.json(
+                  debug
+                    ? {
+                        error: "unauthorized",
+                        reason: "missing_bearer",
+                      }
+                    : { error: "unauthorized" },
+                  401,
+                )
+              }
+              const detail = await UserService.authorizeDetail(token)
+              if (!detail.ok) {
+                if (debug) {
+                  log.warn("account auth rejected", {
+                    path,
+                    method: c.req.method,
+                    reason: detail.reason,
+                    sid: detail.sid,
+                    sub: detail.sub,
+                    token_len: token.length,
+                    origin: c.req.header("origin"),
+                    referer: c.req.header("referer"),
+                    user_agent: c.req.header("user-agent"),
+                  })
+                }
+                return c.json(
+                  debug
+                    ? {
+                        error: "unauthorized",
+                        reason: detail.reason,
+                      }
+                    : { error: "unauthorized" },
+                  401,
+                )
+              }
+              const user = detail.user
               c.set("account_user_id" as never, user.id)
               c.set("account_org_id" as never, user.org_id)
               c.set("account_department_id" as never, user.department_id)
@@ -667,19 +797,20 @@ export namespace Server {
           },
         )
         .all("/*", async (c) => {
-          const path = c.req.path
-
-          const response = await proxy(`https://app.opencode.ai${path}`, {
+          const requestPath = c.req.path
+          const local = await webLocal(requestPath)
+          if (local) {
+            local.headers.set("Content-Security-Policy", webCsp)
+            return local
+          }
+          const response = await proxy(`https://app.opencode.ai${requestPath}`, {
             ...c.req,
             headers: {
               ...c.req.raw.headers,
               host: "app.opencode.ai",
             },
           })
-          response.headers.set(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; media-src 'self' data:; connect-src 'self' data:",
-          )
+          response.headers.set("Content-Security-Policy", webCsp)
           return response
         }) as unknown as Hono,
   )

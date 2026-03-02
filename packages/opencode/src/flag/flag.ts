@@ -38,6 +38,7 @@ export namespace Flag {
   export declare const TPCODE_REGISTER_MODE: string | undefined
   export declare const TPCODE_FORBIDDEN_WORDS: string | undefined
   export declare const TPCODE_PROVIDER_STRICT_ACCOUNT: boolean
+  export declare const TPCODE_ACCOUNT_AUTH_DEBUG: boolean
   export const OPENCODE_ENABLE_QUESTION_TOOL = truthy("OPENCODE_ENABLE_QUESTION_TOOL")
 
   // Experimental
@@ -168,6 +169,14 @@ Object.defineProperty(Flag, "TPCODE_PROVIDER_STRICT_ACCOUNT", {
     const value = process.env["TPCODE_PROVIDER_STRICT_ACCOUNT"]?.toLowerCase()
     if (value === undefined) return true
     return value === "true" || value === "1"
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_ACCOUNT_AUTH_DEBUG", {
+  get() {
+    return truthy("TPCODE_ACCOUNT_AUTH_DEBUG")
   },
   enumerable: true,
   configurable: false,

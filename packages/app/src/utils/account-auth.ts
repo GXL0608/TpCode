@@ -4,8 +4,11 @@ const ACCESS_EXPIRES = "tpcode.account.access_expires_at"
 const REFRESH_EXPIRES = "tpcode.account.refresh_expires_at"
 
 let refreshing: Promise<string | undefined> | undefined
+const memory = new Map<string, string>()
 
 function get(key: string) {
+  const cached = memory.get(key)
+  if (cached) return cached
   if (typeof localStorage === "undefined") return
   try {
     return localStorage.getItem(key) ?? undefined
@@ -15,6 +18,7 @@ function get(key: string) {
 }
 
 function set(key: string, value: string) {
+  memory.set(key, value)
   if (typeof localStorage === "undefined") return
   try {
     localStorage.setItem(key, value)
@@ -24,6 +28,7 @@ function set(key: string, value: string) {
 }
 
 function remove(key: string) {
+  memory.delete(key)
   if (typeof localStorage === "undefined") return
   try {
     localStorage.removeItem(key)

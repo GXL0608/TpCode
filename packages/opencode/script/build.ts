@@ -59,6 +59,7 @@ console.log(`Loaded ${migrations.length} migrations`)
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
+const skipWebBuild = process.argv.includes("--skip-web-build") || process.env.OPENCODE_SKIP_WEB_BUILD === "1"
 
 const allTargets: {
   os: string
@@ -142,6 +143,16 @@ const targets = singleFlag
 
 await $`rm -rf dist`
 
+const web = path.resolve(dir, "../app/dist")
+if (!skipWebBuild) {
+  console.log("building local web assets from packages/app")
+  await $`bun --cwd ../app build`
+}
+const webReady = fs.existsSync(path.join(web, "index.html"))
+if (!webReady) {
+  console.log("local web assets not found, web command will proxy app.opencode.ai")
+}
+
 const binaries: Record<string, string> = {}
 if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
@@ -160,6 +171,10 @@ for (const item of targets) {
     .join("-")
   console.log(`building ${name}`)
   await $`mkdir -p dist/${name}/bin`
+  if (webReady) {
+    await $`mkdir -p dist/${name}/web`
+    await $`cp -R ${web}/. dist/${name}/web`
+  }
 
   const parserWorker = fs.realpathSync(path.resolve(dir, "./node_modules/@opentui/core/parser.worker.js"))
   const workerPath = "./src/cli/cmd/tui/worker.ts"
@@ -202,6 +217,9 @@ for (const item of targets) {
         version: Script.version,
         os: [item.os],
         cpu: [item.arch],
+        bin: {
+          opencode: "bin/opencode",
+        },
       },
       null,
       2,
