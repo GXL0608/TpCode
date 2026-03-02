@@ -1191,6 +1191,22 @@ export namespace Config {
             .positive()
             .default(10)
             .describe("Number of tasks to process in each retry batch (default: 10)"),
+          backfillMode: z
+            .enum(["startup", "periodic"])
+            .default("startup")
+            .describe("History backfill mode: startup runs once after startup, periodic replays at intervals"),
+          backfillInterval: z
+            .number()
+            .int()
+            .positive()
+            .default(21600000)
+            .describe("History backfill replay interval in milliseconds when backfillMode=periodic (default: 21600000)"),
+          backfillBatchSize: z
+            .number()
+            .int()
+            .positive()
+            .default(25)
+            .describe("Number of sessions per history backfill batch (default: 25)"),
         })
         .optional()
         .describe("Conversation data synchronization configuration"),

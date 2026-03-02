@@ -15,6 +15,8 @@ export namespace SessionSync {
   const state = Instance.state(() => ({
     initialized: false,
     retryWorkerRunning: false,
+    replayingSessions: new Set<string>(),
+    replayRequestedSessions: new Set<string>(),
     lastPayloadHashByEntity: new Map<string, string>(),
   }))
 
@@ -25,7 +27,9 @@ export namespace SessionSync {
   }
 
   const FULL_SYNC_SCOPE = "default"
-  const FULL_SYNC_BATCH_SIZE = 25
+  const DEFAULT_INITIAL_FULL_SYNC_BATCH_SIZE = 25
+  const MAX_RETRY_DELAY_MS = 5 * 60 * 1000
+  const MAX_BACKOFF_EXPONENT = 8
 
   /**
    * 初始化同步模块
@@ -46,12 +50,15 @@ export namespace SessionSync {
       return
     }
 
+    const initialFullSyncBatchSize = config.sync.backfillBatchSize ?? DEFAULT_INITIAL_FULL_SYNC_BATCH_SIZE
+
     log.info("initializing session sync", {
       endpoint: config.sync.endpoint,
+      initialFullSyncBatchSize,
       retryAttempts: config.sync.retryAttempts,
     })
 
-    await runFullSyncIfNeeded()
+    await runInitialFullSyncIfNeeded(initialFullSyncBatchSize)
 
     // 订阅会话事件
     log.info("subscribing to session events")
@@ -145,15 +152,54 @@ export namespace SessionSync {
    */
   async function handleMessageEvent(sessionID: string, messageID: string): Promise<void> {
     try {
-      // 获取完整的消息数据
-      const message = await MessageV2.get({ sessionID, messageID })
-
-      await sendToServer(toMessagePayload(sessionID, message))
-      log.debug("message synced successfully", { sessionID, messageID })
+      await replaySessionHistory(sessionID, `message-event:${messageID}`)
+      log.debug("session history replayed after message event", { sessionID, messageID })
     } catch (error) {
-      log.warn("failed to sync message", { sessionID, messageID, error })
-      await enqueueRetry("message.updated", sessionID, { type: "message", sessionID, messageID }, error)
+      log.warn("failed to replay session history after message event", { sessionID, messageID, error })
+      await enqueueRetry("session.replay", sessionID, { type: "session-replay", sessionID }, error)
     }
+  }
+
+  async function replaySessionHistory(sessionID: string, reason: string): Promise<void> {
+    const instanceState = state()
+    if (instanceState.replayingSessions.has(sessionID)) {
+      instanceState.replayRequestedSessions.add(sessionID)
+      log.debug("session replay already running, queued one more pass", { sessionID, reason })
+      return
+    }
+
+    instanceState.replayingSessions.add(sessionID)
+    try {
+      do {
+        instanceState.replayRequestedSessions.delete(sessionID)
+        await runSessionHistoryReplay(sessionID, reason)
+      } while (instanceState.replayRequestedSessions.has(sessionID))
+    } finally {
+      instanceState.replayingSessions.delete(sessionID)
+      instanceState.replayRequestedSessions.delete(sessionID)
+    }
+  }
+
+  async function runSessionHistoryReplay(sessionID: string, reason: string): Promise<void> {
+    let messageCount = 0
+    const sessionInfo = await Session.get(sessionID)
+
+    try {
+      await sendToServer(toSessionPayload(sessionInfo))
+    } catch (error) {
+      await enqueueRetry("session.replay", sessionID, { type: "session", data: sessionInfo }, error)
+    }
+
+    for await (const message of MessageV2.stream(sessionID)) {
+      try {
+        await sendToServer(toMessagePayload(sessionID, message))
+        messageCount += 1
+      } catch (error) {
+        await enqueueRetry("message.replay", sessionID, { type: "message", sessionID, messageID: message.info.id }, error)
+      }
+    }
+
+    log.info("session history replay finished", { sessionID, reason, messageCount })
   }
 
   function toSessionPayload(sessionInfo: Session.Info): SyncPayload {
@@ -199,24 +245,30 @@ export namespace SessionSync {
     return createHash("sha256").update(payload.type).update("\n").update(JSON.stringify(payload.data)).digest("hex")
   }
 
-  async function runFullSyncIfNeeded(): Promise<void> {
-    if (hasCompletedFullSync()) {
-      log.info("full sync already completed, using incremental sync")
-      return
+  async function runInitialFullSyncIfNeeded(batchSize: number): Promise<void> {
+    try {
+      if (hasCompletedInitialFullSync()) {
+        log.info("initial full sync already completed, skipping startup backfill")
+        return
+      }
+    } catch (error) {
+      log.warn("failed to read initial full sync marker, fallback to startup backfill", { error })
     }
 
-    log.info("full sync marker missing, starting initial full sync")
-    await runFullSync()
-    markFullSyncCompleted()
-    log.info("initial full sync completed, switching to incremental sync")
+    log.info("initial full sync marker missing, running one-time backfill", { batchSize })
+    await runInitialFullSync(batchSize)
+    try {
+      markInitialFullSyncCompleted()
+      log.info("initial full sync completed and marked")
+    } catch (error) {
+      log.error("initial full sync finished but failed to write marker", { error })
+    }
   }
 
-  function hasCompletedFullSync(): boolean {
+  function hasCompletedInitialFullSync(): boolean {
     const row = Database.use((db) =>
       db
-        .select({
-          fullSyncCompletedAt: SyncStateTable.full_sync_completed_at,
-        })
+        .select({ fullSyncCompletedAt: SyncStateTable.full_sync_completed_at })
         .from(SyncStateTable)
         .where(eq(SyncStateTable.scope, FULL_SYNC_SCOPE))
         .get(),
@@ -225,7 +277,7 @@ export namespace SessionSync {
     return typeof row?.fullSyncCompletedAt === "number" && row.fullSyncCompletedAt > 0
   }
 
-  function markFullSyncCompleted(): void {
+  function markInitialFullSyncCompleted(): void {
     const now = Date.now()
     Database.use((db) => {
       db.insert(SyncStateTable)
@@ -246,10 +298,12 @@ export namespace SessionSync {
     })
   }
 
-  async function runFullSync(): Promise<void> {
+  async function runInitialFullSync(batchSize: number): Promise<void> {
     let offset = 0
     let sessionsSynced = 0
     let messagesSynced = 0
+
+    log.info("initial full sync started", { batchSize })
 
     while (true) {
       const sessionIDs = Database.use((db) =>
@@ -258,7 +312,7 @@ export namespace SessionSync {
           .from(SessionTable)
           .where(eq(SessionTable.project_id, Instance.project.id))
           .orderBy(desc(SessionTable.time_updated), desc(SessionTable.id))
-          .limit(FULL_SYNC_BATCH_SIZE)
+          .limit(batchSize)
           .offset(offset)
           .all(),
       )
@@ -297,10 +351,10 @@ export namespace SessionSync {
       }
 
       offset += sessionIDs.length
-      if (sessionIDs.length < FULL_SYNC_BATCH_SIZE) break
+      if (sessionIDs.length < batchSize) break
     }
 
-    log.info("full sync finished", { sessionsSynced, messagesSynced })
+    log.info("initial full sync finished", { batchSize, sessionsSynced, messagesSynced })
   }
 
   /**
@@ -423,8 +477,8 @@ export namespace SessionSync {
     }
 
     const now = Date.now()
-    const maxAttempts = config.sync.retryAttempts ?? 3
     const batchSize = config.sync.batchSize ?? 10
+    const maxAttempts = config.sync.retryAttempts ?? 5
 
     const tasks = Database.use((db) =>
       db
@@ -453,6 +507,13 @@ export namespace SessionSync {
             timestamp: Date.now(),
             data: payload.data,
           }
+        } else if (payload.type === "session-replay") {
+          await replaySessionHistory(payload.sessionID ?? task.session_id, "retry")
+          Database.use((db) => {
+            db.delete(SyncQueueTable).where(eq(SyncQueueTable.id, task.id)).run()
+          })
+          log.debug("session replay retry task succeeded", { taskID: task.id, sessionID: task.session_id })
+          continue
         } else {
           // 对于消息，需要重新获取最新数据
           const message = await MessageV2.get({
@@ -474,8 +535,10 @@ export namespace SessionSync {
         // 更新重试次数和错误信息
         const errorMessage = error instanceof Error ? error.message : String(error)
         const newAttempts = task.attempts + 1
-        const retryDelay = (config.sync.retryDelay ?? 5000) * Math.pow(2, newAttempts - 1)
-        const nextRetry = Date.now() + retryDelay
+        const baseRetryDelay = config.sync.retryDelay ?? 5000
+        const exponent = Math.min(newAttempts - 1, MAX_BACKOFF_EXPONENT)
+        const retryDelay = Math.min(baseRetryDelay * Math.pow(2, exponent), MAX_RETRY_DELAY_MS)
+        const nextRetry = newAttempts >= maxAttempts ? null : Date.now() + retryDelay
 
         Database.use((db) => {
           db.update(SyncQueueTable)
@@ -496,9 +559,8 @@ export namespace SessionSync {
           error: errorMessage,
         })
 
-        // 如果达到最大重试次数，记录错误
         if (newAttempts >= maxAttempts) {
-          log.error("task exceeded max retry attempts", {
+          log.error("retry task stopped after reaching max attempts", {
             taskID: task.id,
             sessionID: task.session_id,
             eventType: task.event_type,
@@ -515,6 +577,8 @@ export namespace SessionSync {
   export function shutdown(): void {
     const instanceState = state()
     instanceState.retryWorkerRunning = false
+    instanceState.replayingSessions.clear()
+    instanceState.replayRequestedSessions.clear()
     instanceState.initialized = false
     log.info("session sync shutdown")
   }
