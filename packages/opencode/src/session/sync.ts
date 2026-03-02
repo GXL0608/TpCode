@@ -1,12 +1,13 @@
 import { Bus } from "@/bus"
 import { Config } from "@/config/config"
-import { Database, eq, and, lte, lt } from "@/storage/db"
-import { SyncQueueTable } from "./session.sql"
+import { Database, eq, and, lte, lt, desc } from "@/storage/db"
+import { SyncQueueTable, SyncStateTable, SessionTable } from "./session.sql"
 import { Session } from "./index"
 import { MessageV2 } from "./message-v2"
 import { Log } from "@/util/log"
 import { Identifier } from "@/id/id"
 import { Instance } from "@/project/instance"
+import { createHash } from "crypto"
 
 const log = Log.create({ service: "sync" })
 
@@ -14,6 +15,7 @@ export namespace SessionSync {
   const state = Instance.state(() => ({
     initialized: false,
     retryWorkerRunning: false,
+    lastPayloadHashByEntity: new Map<string, string>(),
   }))
 
   interface SyncPayload {
@@ -21,6 +23,9 @@ export namespace SessionSync {
     timestamp: number
     data: any
   }
+
+  const FULL_SYNC_SCOPE = "default"
+  const FULL_SYNC_BATCH_SIZE = 25
 
   /**
    * 初始化同步模块
@@ -45,6 +50,8 @@ export namespace SessionSync {
       endpoint: config.sync.endpoint,
       retryAttempts: config.sync.retryAttempts,
     })
+
+    await runFullSyncIfNeeded()
 
     // 订阅会话事件
     log.info("subscribing to session events")
@@ -80,6 +87,32 @@ export namespace SessionSync {
     })
     log.info("message.updated subscription created", { hasSubscription: !!sub3 })
 
+    // 订阅消息 part 事件，确保 reasoning/tool 等内容变化能被完整同步
+    const sub4 = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
+      const { sessionID, messageID, id, type } = event.properties.part
+      log.info("message.part.updated event received", { sessionID, messageID, partID: id, partType: type })
+      try {
+        await handleMessageEvent(sessionID, messageID)
+      } catch (err) {
+        log.error("error handling message.part.updated", { error: err })
+      }
+    })
+    log.info("message.part.updated subscription created", { hasSubscription: !!sub4 })
+
+    const sub5 = Bus.subscribe(MessageV2.Event.PartRemoved, async (event) => {
+      log.info("message.part.removed event received", {
+        sessionID: event.properties.sessionID,
+        messageID: event.properties.messageID,
+        partID: event.properties.partID,
+      })
+      try {
+        await handleMessageEvent(event.properties.sessionID, event.properties.messageID)
+      } catch (err) {
+        log.error("error handling message.part.removed", { error: err })
+      }
+    })
+    log.info("message.part.removed subscription created", { hasSubscription: !!sub5 })
+
     // 启动后台重试任务
     if (!instanceState.retryWorkerRunning) {
       instanceState.retryWorkerRunning = true
@@ -99,24 +132,7 @@ export namespace SessionSync {
    */
   async function handleSessionEvent(eventType: string, sessionInfo: Session.Info): Promise<void> {
     try {
-      const payload: SyncPayload = {
-        type: "session",
-        timestamp: Date.now(),
-        data: {
-          id: sessionInfo.id,
-          projectID: sessionInfo.projectID,
-          workspaceID: sessionInfo.workspaceID,
-          parentID: sessionInfo.parentID,
-          slug: sessionInfo.slug,
-          directory: sessionInfo.directory,
-          title: sessionInfo.title,
-          version: sessionInfo.version,
-          summary: sessionInfo.summary,
-          time: sessionInfo.time,
-        },
-      }
-
-      await sendToServer(payload)
+      await sendToServer(toSessionPayload(sessionInfo))
       log.debug("session synced successfully", { sessionID: sessionInfo.id, eventType })
     } catch (error) {
       log.warn("failed to sync session", { sessionID: sessionInfo.id, error })
@@ -132,26 +148,7 @@ export namespace SessionSync {
       // 获取完整的消息数据
       const message = await MessageV2.get({ sessionID, messageID })
 
-      const payload: SyncPayload = {
-        type: "message",
-        timestamp: Date.now(),
-        data: {
-          sessionID,
-          message: {
-            id: message.info.id,
-            role: message.info.role,
-            parentID: message.info.parentID,
-            parts: message.parts,
-            time: message.info.time,
-            usage: message.info.usage,
-            finish: message.info.finish,
-            summary: message.info.summary,
-            error: message.info.error,
-          },
-        },
-      }
-
-      await sendToServer(payload)
+      await sendToServer(toMessagePayload(sessionID, message))
       log.debug("message synced successfully", { sessionID, messageID })
     } catch (error) {
       log.warn("failed to sync message", { sessionID, messageID, error })
@@ -159,14 +156,169 @@ export namespace SessionSync {
     }
   }
 
+  function toSessionPayload(sessionInfo: Session.Info): SyncPayload {
+    return {
+      type: "session",
+      timestamp: Date.now(),
+      // Keep full session info to avoid dropping fields (share/revert/permission/archived...)
+      data: sessionInfo,
+    }
+  }
+
+  function toMessagePayload(sessionID: string, message: any): SyncPayload {
+    const info = message.info ?? {}
+    const { sessionID: _ignoredSessionID, ...messageInfo } = info
+    return {
+      type: "message",
+      timestamp: Date.now(),
+      data: {
+        sessionID,
+        // Keep full message info + parts to preserve thinking/tool/model metadata.
+        message: { ...messageInfo, parts: message.parts },
+      },
+    }
+  }
+
+  function payloadEntityKey(payload: SyncPayload): string | undefined {
+    if (payload.type === "session") {
+      const sessionID = payload.data?.id
+      if (typeof sessionID === "string" && sessionID.length > 0) {
+        return `session:${sessionID}`
+      }
+      return
+    }
+
+    const sessionID = payload.data?.sessionID
+    const messageID = payload.data?.message?.id
+    if (typeof sessionID === "string" && typeof messageID === "string" && sessionID.length > 0 && messageID.length > 0) {
+      return `message:${sessionID}:${messageID}`
+    }
+  }
+
+  function payloadHash(payload: SyncPayload): string {
+    return createHash("sha256").update(payload.type).update("\n").update(JSON.stringify(payload.data)).digest("hex")
+  }
+
+  async function runFullSyncIfNeeded(): Promise<void> {
+    if (hasCompletedFullSync()) {
+      log.info("full sync already completed, using incremental sync")
+      return
+    }
+
+    log.info("full sync marker missing, starting initial full sync")
+    await runFullSync()
+    markFullSyncCompleted()
+    log.info("initial full sync completed, switching to incremental sync")
+  }
+
+  function hasCompletedFullSync(): boolean {
+    const row = Database.use((db) =>
+      db
+        .select({
+          fullSyncCompletedAt: SyncStateTable.full_sync_completed_at,
+        })
+        .from(SyncStateTable)
+        .where(eq(SyncStateTable.scope, FULL_SYNC_SCOPE))
+        .get(),
+    )
+
+    return typeof row?.fullSyncCompletedAt === "number" && row.fullSyncCompletedAt > 0
+  }
+
+  function markFullSyncCompleted(): void {
+    const now = Date.now()
+    Database.use((db) => {
+      db.insert(SyncStateTable)
+        .values({
+          scope: FULL_SYNC_SCOPE,
+          full_sync_completed_at: now,
+          time_created: now,
+          time_updated: now,
+        })
+        .onConflictDoUpdate({
+          target: SyncStateTable.scope,
+          set: {
+            full_sync_completed_at: now,
+            time_updated: now,
+          },
+        })
+        .run()
+    })
+  }
+
+  async function runFullSync(): Promise<void> {
+    let offset = 0
+    let sessionsSynced = 0
+    let messagesSynced = 0
+
+    while (true) {
+      const sessionIDs = Database.use((db) =>
+        db
+          .select({ id: SessionTable.id })
+          .from(SessionTable)
+          .where(eq(SessionTable.project_id, Instance.project.id))
+          .orderBy(desc(SessionTable.time_updated), desc(SessionTable.id))
+          .limit(FULL_SYNC_BATCH_SIZE)
+          .offset(offset)
+          .all(),
+      )
+
+      if (sessionIDs.length === 0) break
+
+      for (const row of sessionIDs) {
+        let sessionInfo: Session.Info
+        try {
+          sessionInfo = await Session.get(row.id)
+        } catch (error) {
+          log.warn("skipping full sync for missing session", { sessionID: row.id, error })
+          continue
+        }
+
+        try {
+          await sendToServer(toSessionPayload(sessionInfo))
+          sessionsSynced += 1
+        } catch (error) {
+          await enqueueRetry("session.full-sync", row.id, { type: "session", data: sessionInfo }, error)
+        }
+
+        for await (const message of MessageV2.stream(row.id)) {
+          try {
+            await sendToServer(toMessagePayload(row.id, message))
+            messagesSynced += 1
+          } catch (error) {
+            await enqueueRetry(
+              "message.full-sync",
+              row.id,
+              { type: "message", sessionID: row.id, messageID: message.info.id },
+              error,
+            )
+          }
+        }
+      }
+
+      offset += sessionIDs.length
+      if (sessionIDs.length < FULL_SYNC_BATCH_SIZE) break
+    }
+
+    log.info("full sync finished", { sessionsSynced, messagesSynced })
+  }
+
   /**
    * 发送数据到中心服务器
    */
   async function sendToServer(payload: SyncPayload): Promise<void> {
     const config = await Config.state().then((s) => s.config)
+    const instanceState = state()
 
     if (!config.sync?.enabled) {
       throw new Error("Sync is not enabled")
+    }
+
+    const entityKey = payloadEntityKey(payload)
+    const nextHash = entityKey ? payloadHash(payload) : undefined
+    if (entityKey && nextHash && instanceState.lastPayloadHashByEntity.get(entityKey) === nextHash) {
+      log.debug("skip duplicate sync payload", { type: payload.type, entityKey })
+      return
     }
 
     const headers: Record<string, string> = {
@@ -193,6 +345,9 @@ export namespace SessionSync {
         throw new Error(`HTTP ${response.status}: ${errorText}`)
       }
 
+      if (entityKey && nextHash) {
+        instanceState.lastPayloadHashByEntity.set(entityKey, nextHash)
+      }
       log.debug("data sent to server successfully", { type: payload.type })
     } finally {
       clearTimeout(timeoutId)
@@ -216,7 +371,7 @@ export namespace SessionSync {
       Database.use((db) => {
         db.insert(SyncQueueTable)
           .values({
-            id: Identifier.ascending("sync"),
+            id: Identifier.ascending("session"),
             session_id: sessionID,
             event_type: eventType,
             payload: JSON.stringify(payload),
@@ -268,7 +423,7 @@ export namespace SessionSync {
     }
 
     const now = Date.now()
-    const maxAttempts = config.sync.retryAttempts ?? 5
+    const maxAttempts = config.sync.retryAttempts ?? 3
     const batchSize = config.sync.batchSize ?? 10
 
     const tasks = Database.use((db) =>
@@ -304,24 +459,7 @@ export namespace SessionSync {
             sessionID: payload.sessionID,
             messageID: payload.messageID,
           })
-          syncPayload = {
-            type: "message",
-            timestamp: Date.now(),
-            data: {
-              sessionID: payload.sessionID,
-              message: {
-                id: message.info.id,
-                role: message.info.role,
-                parentID: message.info.parentID,
-                parts: message.parts,
-                time: message.info.time,
-                usage: message.info.usage,
-                finish: message.info.finish,
-                summary: message.info.summary,
-                error: message.info.error,
-              },
-            },
-          }
+          syncPayload = toMessagePayload(payload.sessionID, message)
         }
 
         await sendToServer(syncPayload)

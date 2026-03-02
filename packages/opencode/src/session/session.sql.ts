@@ -111,3 +111,13 @@ export const SyncQueueTable = sqliteTable(
     index("sync_queue_retry_idx").on(table.next_retry),
   ],
 )
+
+export const SyncStateTable = sqliteTable(
+  "sync_state",
+  {
+    scope: text().primaryKey(),
+    full_sync_completed_at: integer(),
+    ...Timestamps,
+  },
+  (table) => [index("sync_state_full_sync_idx").on(table.full_sync_completed_at)],
+)
