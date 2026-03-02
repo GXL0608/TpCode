@@ -102,3 +102,33 @@ export const PermissionTable = sqliteTable("permission", {
   ...Timestamps,
   data: text({ mode: "json" }).notNull().$type<PermissionNext.Ruleset>(),
 })
+
+export const SyncQueueTable = sqliteTable(
+  "sync_queue",
+  {
+    id: text().primaryKey(),
+    session_id: text()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    event_type: text().notNull(),
+    payload: text({ mode: "json" }).notNull().$type<any>(),
+    attempts: integer().default(0).notNull(),
+    last_error: text(),
+    next_retry: integer(),
+    ...Timestamps,
+  },
+  (table) => [
+    index("sync_queue_session_idx").on(table.session_id),
+    index("sync_queue_retry_idx").on(table.next_retry),
+  ],
+)
+
+export const SyncStateTable = sqliteTable(
+  "sync_state",
+  {
+    scope: text().primaryKey(),
+    full_sync_completed_at: integer(),
+    ...Timestamps,
+  },
+  (table) => [index("sync_state_full_sync_idx").on(table.full_sync_completed_at)],
+)

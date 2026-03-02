@@ -649,6 +649,11 @@ export namespace SessionPrompt {
 
       // Build system prompt, adding structured output instruction if needed
       const system = [...(await SystemPrompt.environment(model)), ...(await InstructionPrompt.system())]
+      const systemText = system.join("\n\n")
+      if (lastUser.system !== systemText) {
+        lastUser.system = systemText
+        await Session.updateMessage(lastUser)
+      }
       const format = lastUser.format ?? { type: "text" }
       if (format.type === "json_schema") {
         system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
