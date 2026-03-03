@@ -2,16 +2,17 @@
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "opencode": {
-      "options": {},
-    },
+      "options": {}
+    }
   },
   "mcp": {},
   "tools": {
     "github-triage": false,
-    "github-pr-search": false,
+    "github-pr-search": false
+  },
   "sync": {
     "enabled": true,
-    "endpoint": "http://localhost:8888/api/sync",
+    "endpoint": "http://192,168.1.253:8888/api/sync",
     "apiKey": "test-api-key",
     "timeout": 30000,
     "retryAttempts": 5,

@@ -33,7 +33,7 @@ import { ExperimentalRoutes } from "./routes/experimental"
 import { ProviderRoutes } from "./routes/provider"
 import { lazy } from "../util/lazy"
 import { InstanceBootstrap } from "../project/bootstrap"
-import { Database, NotFoundError, eq } from "../storage/db"
+import { NotFoundError } from "../storage/db"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 import { websocket } from "hono/bun"
 import { HTTPException } from "hono/http-exception"
@@ -45,7 +45,7 @@ import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
 import { AccountCurrent } from "@/user/current"
-import { SessionTable } from "@/session/session.sql"
+import { eventVisibleToUser } from "./event-visibility"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -66,53 +66,6 @@ export namespace Server {
 
   const app = new Hono()
   let accountSeeded = false
-
-  function eventSessionID(event: { type: string; properties: Record<string, unknown> }) {
-    const props = event.properties
-    if (typeof props.sessionID === "string") return props.sessionID
-    if (event.type === "session.created" || event.type === "session.updated" || event.type === "session.deleted") {
-      const info = props.info
-      if (info && typeof info === "object") {
-        const id = (info as Record<string, unknown>).id
-        if (typeof id === "string") return id
-      }
-      return
-    }
-    if (event.type === "message.updated") {
-      const info = props.info
-      if (info && typeof info === "object") {
-        const sessionID = (info as Record<string, unknown>).sessionID
-        if (typeof sessionID === "string") return sessionID
-      }
-      return
-    }
-    if (event.type === "message.part.updated") {
-      const part = props.part
-      if (part && typeof part === "object") {
-        const sessionID = (part as Record<string, unknown>).sessionID
-        if (typeof sessionID === "string") return sessionID
-      }
-      return
-    }
-    return
-  }
-
-  function eventVisibleToUser(input: { event: { type: string; properties: Record<string, unknown> }; userID?: string }) {
-    if (!input.userID) return true
-    const sessionID = eventSessionID(input.event)
-    if (!sessionID) return true
-    const row = Database.use((db) =>
-      db
-        .select({
-          user_id: SessionTable.user_id,
-        })
-        .from(SessionTable)
-        .where(eq(SessionTable.id, sessionID))
-        .get(),
-    )
-    if (!row?.user_id) return false
-    return row.user_id === input.userID
-  }
 
   function webRoots() {
     const roots = [

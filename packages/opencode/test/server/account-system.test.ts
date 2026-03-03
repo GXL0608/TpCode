@@ -3,6 +3,7 @@ import path from "path"
 import { Log } from "../../src/util/log"
 import { and, Database, eq } from "../../src/storage/db"
 import { TpAuditLogTable } from "../../src/user/audit-log.sql"
+import { parseSSE } from "../../src/control-plane/sse"
 
 const projectRoot = path.join(__dirname, "../..")
 Log.init({ print: false })
@@ -34,6 +35,7 @@ async function call(input: {
   method?: string
   token?: string
   body?: Record<string, unknown>
+  signal?: AbortSignal
 }) {
   const app = state.app
   if (!app) throw new Error("app_missing")
@@ -44,6 +46,7 @@ async function call(input: {
     method: input.method ?? "GET",
     headers,
     body: input.body ? JSON.stringify(input.body) : undefined,
+    signal: input.signal,
   })
 }
 
@@ -138,6 +141,116 @@ describe("account system", () => {
     })
     expect(allowed.status).toBe(200)
   }, 15000)
+
+  test.skipIf(!accountEnabled)("global event stream is isolated by account", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const userA = uid("event_a")
+    const userB = uid("event_b")
+    const password = "TpCode@123A"
+    const createdA = await service.createUser({
+      username: userA,
+      password,
+      display_name: "Event A",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(createdA.ok).toBe(true)
+    const createdB = await service.createUser({
+      username: userB,
+      password,
+      display_name: "Event B",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(createdB.ok).toBe(true)
+
+    const tokenA = await login(userA, password)
+    const tokenB = await login(userB, password)
+
+    const stop = new AbortController()
+    const streamRes = await call({
+      path: "/global/event",
+      token: tokenB,
+      signal: stop.signal,
+    })
+    expect(streamRes.status).toBe(200)
+    if (!streamRes.body) throw new Error("event_stream_missing")
+
+    const seen = new Set<string>()
+    let expectedB = ""
+    let connectedResolve: (() => void) | undefined
+    const connected = new Promise<void>((resolve) => {
+      connectedResolve = resolve
+    })
+    let seenResolve: (() => void) | undefined
+    const seenB = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("timed out waiting for user event"))
+      }, 8000)
+      seenResolve = () => {
+        clearTimeout(timeout)
+        resolve()
+      }
+    })
+
+    const stream = parseSSE(streamRes.body, stop.signal, (event) => {
+      const payload = (event as { payload?: { type?: string; properties?: unknown } }).payload
+      if (!payload || typeof payload !== "object") return
+      if (payload.type === "server.connected") {
+        connectedResolve?.()
+        connectedResolve = undefined
+        return
+      }
+      if (payload.type !== "session.created") return
+      const props = payload.properties
+      if (!props || typeof props !== "object") return
+      const info = (props as { info?: unknown }).info
+      if (!info || typeof info !== "object") return
+      const id = (info as { id?: unknown }).id
+      if (typeof id !== "string") return
+      seen.add(id)
+      if (!expectedB || id !== expectedB) return
+      seenResolve?.()
+    }).catch(() => undefined)
+
+    await connected
+
+    const createdSessionA = await call({
+      path: "/session?directory=" + encodeURIComponent(projectRoot),
+      method: "POST",
+      token: tokenA,
+      body: { title: uid("sse_a") },
+    })
+    expect(createdSessionA.status).toBe(200)
+    const sessionA = (await createdSessionA.json()) as Record<string, unknown>
+    const sessionAID = typeof sessionA.id === "string" ? sessionA.id : ""
+    expect(sessionAID.length > 0).toBe(true)
+
+    const createdSessionB = await call({
+      path: "/session?directory=" + encodeURIComponent(projectRoot),
+      method: "POST",
+      token: tokenB,
+      body: { title: uid("sse_b") },
+    })
+    expect(createdSessionB.status).toBe(200)
+    const sessionB = (await createdSessionB.json()) as Record<string, unknown>
+    const sessionBID = typeof sessionB.id === "string" ? sessionB.id : ""
+    expect(sessionBID.length > 0).toBe(true)
+    expectedB = sessionBID
+    if (seen.has(sessionBID)) seenResolve?.()
+
+    await seenB
+    stop.abort()
+    await stream
+
+    expect(seen.has(sessionBID)).toBe(true)
+    expect(seen.has(sessionAID)).toBe(false)
+  }, 20000)
 
   test.skipIf(!accountEnabled)("hospital user without file:browse cannot browse files", async () => {
     const service = state.user

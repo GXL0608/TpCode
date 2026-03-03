@@ -11,8 +11,9 @@ import { Binary } from "@opencode-ai/util/binary"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { decode64 } from "@/utils/base64"
 import { EventSessionError } from "@opencode-ai/sdk/v2"
-import { Persist, persisted } from "@/utils/persist"
+import { Persist, persisted, removePersisted } from "@/utils/persist"
 import { playSound, soundSrc } from "@/utils/sound"
+import { useAccountAuth } from "./account-auth"
 
 type NotificationBase = {
   directory?: string
@@ -114,6 +115,8 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
     const platform = usePlatform()
     const settings = useSettings()
     const language = useLanguage()
+    const auth = useAccountAuth()
+    const accountID = auth.user()?.id ?? "anonymous"
 
     const empty: Notification[] = []
 
@@ -124,14 +127,14 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
     const currentSession = createMemo(() => params.id)
 
     const [store, setStore, _, ready] = persisted(
-      Persist.global("notification", ["notification.v1"]),
+      Persist.global(`acct:${accountID}:notification`),
       createStore({
         list: [] as Notification[],
       }),
     )
     const [index, setIndex] = createStore<NotificationIndex>(buildNotificationIndex(store.list))
 
-    const meta = { pruned: false, disposed: false }
+    const meta = { pruned: false, disposed: false, cleanedLegacy: false }
 
     const updateUnseen = (scope: "session" | "project", key: string, unseen: Notification[]) => {
       setIndex(scope, "unseen", key, unseen)
@@ -181,6 +184,14 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
         }
       }
     }
+
+    createEffect(() => {
+      if (!ready()) return
+      if (meta.cleanedLegacy) return
+      meta.cleanedLegacy = true
+      void removePersisted(Persist.global("notification"), platform)
+      void removePersisted({ key: "notification.v1" }, platform)
+    })
 
     createEffect(() => {
       if (!ready()) return
