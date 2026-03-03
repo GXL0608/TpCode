@@ -1,7 +1,7 @@
-import { index, sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
+import { index, table, text, integer } from "../storage/orm-core"
 import { TpUserTable } from "./user.sql"
 
-export const TpAuditLogTable = sqliteTable(
+export const TpAuditLogTable = table(
   "tp_audit_log",
   {
     id: text().primaryKey(),

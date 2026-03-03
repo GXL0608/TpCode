@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core"
+import { table, text, integer, index, primaryKey } from "../storage/orm-core"
 import { ProjectTable } from "../project/project.sql"
 import type { MessageV2 } from "./message-v2"
 import type { Snapshot } from "@/snapshot"
@@ -11,7 +11,7 @@ import { TpUserTable } from "@/user/user.sql"
 type PartData = Omit<MessageV2.Part, "id" | "sessionID" | "messageID">
 type InfoData = Omit<MessageV2.Info, "id" | "sessionID">
 
-export const SessionTable = sqliteTable(
+export const SessionTable = table(
   "session",
   {
     id: text().primaryKey(),
@@ -50,7 +50,7 @@ export const SessionTable = sqliteTable(
   ],
 )
 
-export const MessageTable = sqliteTable(
+export const MessageTable = table(
   "message",
   {
     id: text().primaryKey(),
@@ -63,7 +63,7 @@ export const MessageTable = sqliteTable(
   (table) => [index("message_session_idx").on(table.session_id)],
 )
 
-export const PartTable = sqliteTable(
+export const PartTable = table(
   "part",
   {
     id: text().primaryKey(),
@@ -77,7 +77,7 @@ export const PartTable = sqliteTable(
   (table) => [index("part_message_idx").on(table.message_id), index("part_session_idx").on(table.session_id)],
 )
 
-export const TodoTable = sqliteTable(
+export const TodoTable = table(
   "todo",
   {
     session_id: text()
@@ -95,7 +95,7 @@ export const TodoTable = sqliteTable(
   ],
 )
 
-export const PermissionTable = sqliteTable("permission", {
+export const PermissionTable = table("permission", {
   project_id: text()
     .primaryKey()
     .references(() => ProjectTable.id, { onDelete: "cascade" }),
@@ -103,7 +103,7 @@ export const PermissionTable = sqliteTable("permission", {
   data: text({ mode: "json" }).notNull().$type<PermissionNext.Ruleset>(),
 })
 
-export const SyncQueueTable = sqliteTable(
+export const SyncQueueTable = table(
   "sync_queue",
   {
     id: text().primaryKey(),
@@ -123,7 +123,7 @@ export const SyncQueueTable = sqliteTable(
   ],
 )
 
-export const SyncStateTable = sqliteTable(
+export const SyncStateTable = table(
   "sync_state",
   {
     scope: text().primaryKey(),

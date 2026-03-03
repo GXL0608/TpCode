@@ -74,7 +74,7 @@ export namespace Auth {
   }
 
   async function fromDb(uid: string): Promise<Record<string, Info>> {
-    const rows = Database.use((db) =>
+    const rows = await Database.use((db) =>
       db
         .select()
         .from(TpUserProviderTable)
@@ -143,8 +143,8 @@ export namespace Auth {
   export async function set(key: string, info: Info) {
     const uid = userID()
     if (uid) {
-      Database.use((db) => {
-        db.insert(TpUserProviderTable)
+      await Database.use(async (db) => {
+        await db.insert(TpUserProviderTable)
           .values({
             id: crypto.randomUUID(),
             user_id: uid,
@@ -174,8 +174,8 @@ export namespace Auth {
   export async function remove(key: string) {
     const uid = userID()
     if (uid) {
-      Database.use((db) => {
-        db.delete(TpUserProviderTable)
+      await Database.use(async (db) => {
+        await db.delete(TpUserProviderTable)
           .where(and(eq(TpUserProviderTable.user_id, uid), eq(TpUserProviderTable.provider_id, key)))
           .run()
       })

@@ -36,11 +36,11 @@ export function eventSessionID(event: Event) {
   return
 }
 
-export function eventVisibleToUser(input: { event: Event; userID?: string }) {
+export async function eventVisibleToUser(input: { event: Event; userID?: string }) {
   if (!input.userID) return true
   const sessionID = eventSessionID(input.event)
   if (!sessionID) return true
-  const row = Database.use((db) =>
+  const row = await Database.use((db) =>
     db
       .select({
         user_id: SessionTable.user_id,

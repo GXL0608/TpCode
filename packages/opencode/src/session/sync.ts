@@ -62,61 +62,51 @@ export namespace SessionSync {
 
     // 订阅会话事件
     log.info("subscribing to session events")
-    const sub1 = Bus.subscribe(Session.Event.Created, async (event) => {
+    const sub1 = Bus.subscribe(Session.Event.Created, (event) => {
       log.info("session.created event received", { sessionID: event.properties.info.id })
-      try {
-        await handleSessionEvent("session.created", event.properties.info)
-      } catch (err) {
+      void handleSessionEvent("session.created", event.properties.info).catch((err) => {
         log.error("error handling session.created", { error: err })
-      }
+      })
     })
     log.info("session.created subscription created", { hasSubscription: !!sub1 })
 
-    const sub2 = Bus.subscribe(Session.Event.Updated, async (event) => {
+    const sub2 = Bus.subscribe(Session.Event.Updated, (event) => {
       log.info("session.updated event received", { sessionID: event.properties.info.id })
-      try {
-        await handleSessionEvent("session.updated", event.properties.info)
-      } catch (err) {
+      void handleSessionEvent("session.updated", event.properties.info).catch((err) => {
         log.error("error handling session.updated", { error: err })
-      }
+      })
     })
     log.info("session.updated subscription created", { hasSubscription: !!sub2 })
 
     // 订阅消息事件
     log.info("subscribing to message events")
-    const sub3 = Bus.subscribe(MessageV2.Event.Updated, async (event) => {
+    const sub3 = Bus.subscribe(MessageV2.Event.Updated, (event) => {
       log.info("message.updated event received", { sessionID: event.properties.info.sessionID, messageID: event.properties.info.id })
-      try {
-        await handleMessageEvent(event.properties.info.sessionID, event.properties.info.id)
-      } catch (err) {
+      void handleMessageEvent(event.properties.info.sessionID, event.properties.info.id).catch((err) => {
         log.error("error handling message.updated", { error: err })
-      }
+      })
     })
     log.info("message.updated subscription created", { hasSubscription: !!sub3 })
 
     // 订阅消息 part 事件，确保 reasoning/tool 等内容变化能被完整同步
-    const sub4 = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
+    const sub4 = Bus.subscribe(MessageV2.Event.PartUpdated, (event) => {
       const { sessionID, messageID, id, type } = event.properties.part
       log.info("message.part.updated event received", { sessionID, messageID, partID: id, partType: type })
-      try {
-        await handleMessageEvent(sessionID, messageID)
-      } catch (err) {
+      void handleMessageEvent(sessionID, messageID).catch((err) => {
         log.error("error handling message.part.updated", { error: err })
-      }
+      })
     })
     log.info("message.part.updated subscription created", { hasSubscription: !!sub4 })
 
-    const sub5 = Bus.subscribe(MessageV2.Event.PartRemoved, async (event) => {
+    const sub5 = Bus.subscribe(MessageV2.Event.PartRemoved, (event) => {
       log.info("message.part.removed event received", {
         sessionID: event.properties.sessionID,
         messageID: event.properties.messageID,
         partID: event.properties.partID,
       })
-      try {
-        await handleMessageEvent(event.properties.sessionID, event.properties.messageID)
-      } catch (err) {
+      void handleMessageEvent(event.properties.sessionID, event.properties.messageID).catch((err) => {
         log.error("error handling message.part.removed", { error: err })
-      }
+      })
     })
     log.info("message.part.removed subscription created", { hasSubscription: !!sub5 })
 
@@ -247,7 +237,7 @@ export namespace SessionSync {
 
   async function runInitialFullSyncIfNeeded(batchSize: number): Promise<void> {
     try {
-      if (hasCompletedInitialFullSync()) {
+      if (await hasCompletedInitialFullSync()) {
         log.info("initial full sync already completed, skipping startup backfill")
         return
       }
@@ -258,15 +248,15 @@ export namespace SessionSync {
     log.info("initial full sync marker missing, running one-time backfill", { batchSize })
     await runInitialFullSync(batchSize)
     try {
-      markInitialFullSyncCompleted()
+      await markInitialFullSyncCompleted()
       log.info("initial full sync completed and marked")
     } catch (error) {
       log.error("initial full sync finished but failed to write marker", { error })
     }
   }
 
-  function hasCompletedInitialFullSync(): boolean {
-    const row = Database.use((db) =>
+  async function hasCompletedInitialFullSync(): Promise<boolean> {
+    const row = await Database.use((db) =>
       db
         .select({ fullSyncCompletedAt: SyncStateTable.full_sync_completed_at })
         .from(SyncStateTable)
@@ -277,10 +267,10 @@ export namespace SessionSync {
     return typeof row?.fullSyncCompletedAt === "number" && row.fullSyncCompletedAt > 0
   }
 
-  function markInitialFullSyncCompleted(): void {
+  async function markInitialFullSyncCompleted(): Promise<void> {
     const now = Date.now()
-    Database.use((db) => {
-      db.insert(SyncStateTable)
+    await Database.use(async (db) => {
+      await db.insert(SyncStateTable)
         .values({
           scope: FULL_SYNC_SCOPE,
           full_sync_completed_at: now,
@@ -306,7 +296,7 @@ export namespace SessionSync {
     log.info("initial full sync started", { batchSize })
 
     while (true) {
-      const sessionIDs = Database.use((db) =>
+      const sessionIDs = await Database.use((db) =>
         db
           .select({ id: SessionTable.id })
           .from(SessionTable)
@@ -422,8 +412,8 @@ export namespace SessionSync {
     const nextRetry = Date.now() + (config.sync?.retryDelay ?? 5000)
 
     try {
-      Database.use((db) => {
-        db.insert(SyncQueueTable)
+      await Database.use(async (db) => {
+        await db.insert(SyncQueueTable)
           .values({
             id: Identifier.ascending("session"),
             session_id: sessionID,
@@ -480,7 +470,7 @@ export namespace SessionSync {
     const batchSize = config.sync.batchSize ?? 10
     const maxAttempts = config.sync.retryAttempts ?? 5
 
-    const tasks = Database.use((db) =>
+    const tasks = await Database.use((db) =>
       db
         .select()
         .from(SyncQueueTable)
@@ -509,8 +499,8 @@ export namespace SessionSync {
           }
         } else if (payload.type === "session-replay") {
           await replaySessionHistory(payload.sessionID ?? task.session_id, "retry")
-          Database.use((db) => {
-            db.delete(SyncQueueTable).where(eq(SyncQueueTable.id, task.id)).run()
+          await Database.use(async (db) => {
+            await db.delete(SyncQueueTable).where(eq(SyncQueueTable.id, task.id)).run()
           })
           log.debug("session replay retry task succeeded", { taskID: task.id, sessionID: task.session_id })
           continue
@@ -526,8 +516,8 @@ export namespace SessionSync {
         await sendToServer(syncPayload)
 
         // 成功后从队列中删除
-        Database.use((db) => {
-          db.delete(SyncQueueTable).where(eq(SyncQueueTable.id, task.id)).run()
+        await Database.use(async (db) => {
+          await db.delete(SyncQueueTable).where(eq(SyncQueueTable.id, task.id)).run()
         })
 
         log.debug("retry task succeeded", { taskID: task.id, attempts: task.attempts + 1 })
@@ -540,8 +530,8 @@ export namespace SessionSync {
         const retryDelay = Math.min(baseRetryDelay * Math.pow(2, exponent), MAX_RETRY_DELAY_MS)
         const nextRetry = newAttempts >= maxAttempts ? null : Date.now() + retryDelay
 
-        Database.use((db) => {
-          db.update(SyncQueueTable)
+        await Database.use(async (db) => {
+          await db.update(SyncQueueTable)
             .set({
               attempts: newAttempts,
               last_error: errorMessage,

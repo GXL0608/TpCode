@@ -70,8 +70,8 @@ export namespace Workspace {
       setTimeout(async () => {
         await init()
 
-        Database.use((db) => {
-          db.insert(WorkspaceTable)
+        await Database.use(async (db) => {
+          await db.insert(WorkspaceTable)
             .values({
               id: info.id,
               branch: info.branch,
@@ -94,25 +94,25 @@ export namespace Workspace {
     },
   )
 
-  export function list(project: Project.Info) {
-    const rows = Database.use((db) =>
+  export async function list(project: Project.Info) {
+    const rows = await Database.use((db) =>
       db.select().from(WorkspaceTable).where(eq(WorkspaceTable.project_id, project.id)).all(),
     )
     return rows.map(fromRow).sort((a, b) => a.id.localeCompare(b.id))
   }
 
   export const get = fn(Identifier.schema("workspace"), async (id) => {
-    const row = Database.use((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get())
+    const row = await Database.use((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get())
     if (!row) return
     return fromRow(row)
   })
 
   export const remove = fn(Identifier.schema("workspace"), async (id) => {
-    const row = Database.use((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get())
+    const row = await Database.use((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get())
     if (row) {
       const info = fromRow(row)
       await getAdaptor(info.config).remove(info.config)
-      Database.use((db) => db.delete(WorkspaceTable).where(eq(WorkspaceTable.id, id)).run())
+      await Database.use((db) => db.delete(WorkspaceTable).where(eq(WorkspaceTable.id, id)).run())
       return info
     }
   })
@@ -138,9 +138,9 @@ export namespace Workspace {
     }
   }
 
-  export function startSyncing(project: Project.Info) {
+  export async function startSyncing(project: Project.Info) {
     const stop = new AbortController()
-    const spaces = list(project).filter((space) => space.config.type !== "worktree")
+    const spaces = (await list(project)).filter((space) => space.config.type !== "worktree")
 
     spaces.forEach((space) => {
       void workspaceEventLoop(space, stop.signal).catch((error) => {

@@ -85,7 +85,7 @@ function rejectForbiddenPrompt(
   if (blocked.length === 0) return
   const actor_user_id = c.get("account_user_id" as never) as string | undefined
   if (actor_user_id) {
-    UserService.audit({
+    UserService.auditLater({
       actor_user_id,
       action: `${input.action}.blocked`,
       target_type: "session",
@@ -118,7 +118,7 @@ function auditExecution(
 ) {
   const actor_user_id = c.get("account_user_id" as never) as string | undefined
   if (!actor_user_id) return
-  UserService.audit({
+  UserService.auditLater({
     actor_user_id,
     action: `${input.action}.execute`,
     target_type: "session",
@@ -428,7 +428,7 @@ export const SessionRoutes = lazy(() =>
           session = await Session.setVisibility({ sessionID, visibility: updates.visibility })
           const actor_user_id = c.get("account_user_id" as never) as string | undefined
           if (actor_user_id) {
-            UserService.audit({
+            UserService.auditLater({
               actor_user_id,
               action: "session.visibility.update",
               target_type: "session",

@@ -1,9 +1,9 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { index, integer, table, text, uniqueIndex } from "../storage/orm-core"
 import { TpChangeRequestTable } from "./change-request.sql"
 import { TpUserTable } from "@/user/user.sql"
 import { Timestamps } from "@/storage/schema.sql"
 
-export const TpApprovalTable = sqliteTable(
+export const TpApprovalTable = table(
   "tp_approval",
   {
     id: text().primaryKey(),

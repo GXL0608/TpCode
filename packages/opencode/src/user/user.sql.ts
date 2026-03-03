@@ -1,9 +1,9 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { index, integer, boolean_int, table, text } from "../storage/orm-core"
 import { TpDepartmentTable } from "./department.sql"
 import { TpOrganizationTable } from "./organization.sql"
 import { Timestamps } from "@/storage/schema.sql"
 
-export const TpUserTable = sqliteTable(
+export const TpUserTable = table(
   "tp_user",
   {
     id: text().primaryKey(),
@@ -20,7 +20,7 @@ export const TpUserTable = sqliteTable(
     status: text()
       .notNull()
       .$default(() => "active"),
-    force_password_reset: integer({ mode: "boolean" })
+    force_password_reset: boolean_int()
       .notNull()
       .$default(() => true),
     failed_login_count: integer()

@@ -203,7 +203,7 @@ export namespace Project {
       }
     })
 
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, data.id)).get())
+    const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, data.id)).get())
     const existing = await iife(async () => {
       if (row) return fromRow(row)
       const fresh: Info = {
@@ -260,7 +260,7 @@ export namespace Project {
       sandboxes: result.sandboxes,
       commands: result.commands,
     }
-    Database.use((db) =>
+    await Database.use((db) =>
       db.insert(ProjectTable).values(insert).onConflictDoUpdate({ target: ProjectTable.id, set: updateSet }).run(),
     )
     GlobalBus.emit("event", {
@@ -297,10 +297,10 @@ export namespace Project {
   }
 
   async function migrateFromGlobal(id: string, worktree: string) {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, "global")).get())
+    const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, "global")).get())
     if (!row) return
 
-    const sessions = Database.use((db) =>
+    const sessions = await Database.use((db) =>
       db.select().from(SessionTable).where(eq(SessionTable.project_id, "global")).all(),
     )
     if (sessions.length === 0) return
@@ -312,14 +312,14 @@ export namespace Project {
       if (row.directory && row.directory !== worktree) return
 
       log.info("migrating session", { sessionID: row.id, from: "global", to: id })
-      Database.use((db) => db.update(SessionTable).set({ project_id: id }).where(eq(SessionTable.id, row.id)).run())
+      await Database.use((db) => db.update(SessionTable).set({ project_id: id }).where(eq(SessionTable.id, row.id)).run())
     }).catch((error) => {
       log.error("failed to migrate sessions from global to project", { error, projectId: id })
     })
   }
 
-  export function setInitialized(id: string) {
-    Database.use((db) =>
+  export async function setInitialized(id: string) {
+    await Database.use((db) =>
       db
         .update(ProjectTable)
         .set({
@@ -330,18 +330,13 @@ export namespace Project {
     )
   }
 
-  export function list() {
-    return Database.use((db) =>
-      db
-        .select()
-        .from(ProjectTable)
-        .all()
-        .map((row) => fromRow(row)),
-    )
+  export async function list() {
+    const rows = await Database.use((db) => db.select().from(ProjectTable).all())
+    return rows.map((row) => fromRow(row))
   }
 
-  export function get(id: string): Info | undefined {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+  export async function get(id: string): Promise<Info | undefined> {
+    const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
     if (!row) return undefined
     return fromRow(row)
   }
@@ -354,7 +349,7 @@ export namespace Project {
       commands: Info.shape.commands.optional(),
     }),
     async (input) => {
-      const result = Database.use((db) =>
+      const result = await Database.use((db) =>
         db
           .update(ProjectTable)
           .set({
@@ -366,10 +361,11 @@ export namespace Project {
           })
           .where(eq(ProjectTable.id, input.projectID))
           .returning()
-          .get(),
+          .all(),
       )
-      if (!result) throw new Error(`Project not found: ${input.projectID}`)
-      const data = fromRow(result)
+      const row = result[0]
+      if (!row) throw new Error(`Project not found: ${input.projectID}`)
+      const data = fromRow(row)
       GlobalBus.emit("event", {
         payload: {
           type: Event.Updated.type,
@@ -381,7 +377,7 @@ export namespace Project {
   )
 
   export async function sandboxes(id: string) {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+    const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
     if (!row) return []
     const data = fromRow(row)
     const valid: string[] = []
@@ -393,20 +389,21 @@ export namespace Project {
   }
 
   export async function addSandbox(id: string, directory: string) {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+    const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
     if (!row) throw new Error(`Project not found: ${id}`)
     const sandboxes = [...row.sandboxes]
     if (!sandboxes.includes(directory)) sandboxes.push(directory)
-    const result = Database.use((db) =>
+    const result = await Database.use((db) =>
       db
         .update(ProjectTable)
         .set({ sandboxes, time_updated: Date.now() })
         .where(eq(ProjectTable.id, id))
         .returning()
-        .get(),
+        .all(),
     )
-    if (!result) throw new Error(`Project not found: ${id}`)
-    const data = fromRow(result)
+    const next = result[0]
+    if (!next) throw new Error(`Project not found: ${id}`)
+    const data = fromRow(next)
     GlobalBus.emit("event", {
       payload: {
         type: Event.Updated.type,
@@ -417,19 +414,20 @@ export namespace Project {
   }
 
   export async function removeSandbox(id: string, directory: string) {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+    const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
     if (!row) throw new Error(`Project not found: ${id}`)
     const sandboxes = row.sandboxes.filter((s) => s !== directory)
-    const result = Database.use((db) =>
+    const result = await Database.use((db) =>
       db
         .update(ProjectTable)
         .set({ sandboxes, time_updated: Date.now() })
         .where(eq(ProjectTable.id, id))
         .returning()
-        .get(),
+        .all(),
     )
-    if (!result) throw new Error(`Project not found: ${id}`)
-    const data = fromRow(result)
+    const next = result[0]
+    if (!next) throw new Error(`Project not found: ${id}`)
+    const data = fromRow(next)
     GlobalBus.emit("event", {
       payload: {
         type: Event.Updated.type,

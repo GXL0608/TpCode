@@ -1,7 +1,7 @@
-import { index, sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
+import { index, table, text, integer } from "../storage/orm-core"
 import { TpUserTable } from "./user.sql"
 
-export const TpSessionTokenTable = sqliteTable(
+export const TpSessionTokenTable = table(
   "tp_session_token",
   {
     id: text().primaryKey(),

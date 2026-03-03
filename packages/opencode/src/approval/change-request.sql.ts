@@ -1,11 +1,11 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { index, integer, table, text } from "../storage/orm-core"
 import { SessionTable } from "@/session/session.sql"
 import { Timestamps } from "@/storage/schema.sql"
 import { TpDepartmentTable } from "@/user/department.sql"
 import { TpOrganizationTable } from "@/user/organization.sql"
 import { TpUserTable } from "@/user/user.sql"
 
-export const TpChangeRequestTable = sqliteTable(
+export const TpChangeRequestTable = table(
   "tp_change_request",
   {
     id: text().primaryKey(),

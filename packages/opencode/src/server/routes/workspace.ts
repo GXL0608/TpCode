@@ -69,7 +69,7 @@ export const WorkspaceRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        return c.json(Workspace.list(Instance.project))
+        return c.json(await Workspace.list(Instance.project))
       },
     )
     .delete(

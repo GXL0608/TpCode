@@ -1,7 +1,7 @@
-import { primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { primaryKey, table, text } from "../storage/orm-core"
 import { TpRoleTable } from "./role.sql"
 
-export const TpPermissionTable = sqliteTable("tp_permission", {
+export const TpPermissionTable = table("tp_permission", {
   id: text().primaryKey(),
   code: text().notNull().unique(),
   name: text().notNull(),
@@ -9,7 +9,7 @@ export const TpPermissionTable = sqliteTable("tp_permission", {
   description: text(),
 })
 
-export const TpRolePermissionTable = sqliteTable(
+export const TpRolePermissionTable = table(
   "tp_role_permission",
   {
     role_id: text()

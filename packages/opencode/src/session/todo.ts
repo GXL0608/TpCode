@@ -24,11 +24,11 @@ export namespace Todo {
     ),
   }
 
-  export function update(input: { sessionID: string; todos: Info[] }) {
-    Database.transaction((db) => {
-      db.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID)).run()
+  export async function update(input: { sessionID: string; todos: Info[] }) {
+    await Database.transaction(async (db) => {
+      await db.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID)).run()
       if (input.todos.length === 0) return
-      db.insert(TodoTable)
+      await db.insert(TodoTable)
         .values(
           input.todos.map((todo, position) => ({
             session_id: input.sessionID,
@@ -43,8 +43,8 @@ export namespace Todo {
     Bus.publish(Event.Updated, input)
   }
 
-  export function get(sessionID: string) {
-    const rows = Database.use((db) =>
+  export async function get(sessionID: string) {
+    const rows = await Database.use((db) =>
       db.select().from(TodoTable).where(eq(TodoTable.session_id, sessionID)).orderBy(asc(TodoTable.position)).all(),
     )
     return rows.map((row) => ({

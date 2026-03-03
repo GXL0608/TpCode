@@ -113,7 +113,7 @@ export namespace SessionRevert {
       remove.push(msg)
     }
     for (const msg of remove) {
-      Database.use((db) => db.delete(MessageTable).where(eq(MessageTable.id, msg.info.id)).run())
+      await Database.use((db) => db.delete(MessageTable).where(eq(MessageTable.id, msg.info.id)).run())
       await Bus.publish(MessageV2.Event.Removed, { sessionID: sessionID, messageID: msg.info.id })
     }
     if (session.revert.partID && target) {
@@ -124,7 +124,7 @@ export namespace SessionRevert {
         const removeParts = target.parts.slice(removeStart)
         target.parts = preserveParts
         for (const part of removeParts) {
-          Database.use((db) => db.delete(PartTable).where(eq(PartTable.id, part.id)).run())
+          await Database.use((db) => db.delete(PartTable).where(eq(PartTable.id, part.id)).run())
           await Bus.publish(MessageV2.Event.PartRemoved, {
             sessionID: sessionID,
             messageID: target.info.id,

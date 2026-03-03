@@ -11,7 +11,6 @@ const defaults = {
   TPCODE_REGISTER_MODE: "open",
   TPCODE_ACCOUNT_JWT_SECRET: "tpcode-local-dev-secret",
   TPCODE_ADMIN_PASSWORD: "TpCode@2026",
-  OPENCODE_PG_SYNC_BOOTSTRAP: "remote",
 } as const
 
 export function applyServeDefaults() {
@@ -34,10 +33,11 @@ export const ServeCommand = cmd({
     const server = Server.listen(opts)
     console.log(`opencode server listening on http://${server.hostname}:${server.port}`)
 
-    let workspaceSync: Array<ReturnType<typeof Workspace.startSyncing>> = []
+    let workspaceSync: Array<Awaited<ReturnType<typeof Workspace.startSyncing>>> = []
     // Only available in development right now
     if (Installation.isLocal()) {
-      workspaceSync = Project.list().map((project) => Workspace.startSyncing(project))
+      const projects = await Project.list()
+      workspaceSync = await Promise.all(projects.map((project: Project.Info) => Workspace.startSyncing(project)))
     }
 
     await new Promise(() => {})

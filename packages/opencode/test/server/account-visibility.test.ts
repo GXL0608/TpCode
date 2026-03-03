@@ -73,7 +73,7 @@ describe("account visibility", () => {
   test.skipIf(!on)("department visibility request still remains owner-only", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
-    const org = svc.createOrganization({
+    const org = await svc.createOrganization({
       name: uid("hospital"),
       code: uid("org"),
       org_type: "hospital",
@@ -82,12 +82,12 @@ describe("account visibility", () => {
     expect(org.ok).toBe(true)
     if (!("id" in org) || !org.id) throw new Error("org_id_missing")
     const orgID = org.id
-    const d1 = svc.createDepartment({
+    const d1 = await svc.createDepartment({
       org_id: orgID,
       name: uid("dept_a"),
       actor_user_id: "user_tp_admin",
     })
-    const d2 = svc.createDepartment({
+    const d2 = await svc.createDepartment({
       org_id: orgID,
       name: uid("dept_b"),
       actor_user_id: "user_tp_admin",
@@ -172,13 +172,13 @@ describe("account visibility", () => {
   test.skipIf(!on)("org visibility request still remains owner-only", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
-    const orgA = svc.createOrganization({
+    const orgA = await svc.createOrganization({
       name: uid("hospital_a"),
       code: uid("orga"),
       org_type: "hospital",
       actor_user_id: "user_tp_admin",
     })
-    const orgB = svc.createOrganization({
+    const orgB = await svc.createOrganization({
       name: uid("hospital_b"),
       code: uid("orgb"),
       org_type: "hospital",
@@ -190,12 +190,12 @@ describe("account visibility", () => {
     if (!("id" in orgB) || !orgB.id) throw new Error("orgb_id_missing")
     const orgAID = orgA.id
     const orgBID = orgB.id
-    const da = svc.createDepartment({
+    const da = await svc.createDepartment({
       org_id: orgAID,
       name: uid("dept_1"),
       actor_user_id: "user_tp_admin",
     })
-    const db = svc.createDepartment({
+    const db = await svc.createDepartment({
       org_id: orgBID,
       name: uid("dept_2"),
       actor_user_id: "user_tp_admin",
@@ -431,14 +431,14 @@ describe("account visibility", () => {
     }
     expect(keepBBody.auth?.key).toBe("sk-user-b")
 
-    const rowA = Database.use((db) =>
+    const rowA = await Database.use((db) =>
       db
         .select()
         .from(TpUserProviderTable)
         .where(and(eq(TpUserProviderTable.user_id, uaID), eq(TpUserProviderTable.provider_id, "openai")))
         .get(),
     )
-    const rowB = Database.use((db) =>
+    const rowB = await Database.use((db) =>
       db
         .select()
         .from(TpUserProviderTable)

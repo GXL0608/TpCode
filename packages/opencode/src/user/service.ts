@@ -12,8 +12,10 @@ import { UserJwt } from "./jwt"
 import { createHash, randomInt } from "crypto"
 import { ulid } from "ulid"
 import { Flag } from "@/flag/flag"
+import { Log } from "@/util/log"
 
 type UserRow = typeof TpUserTable.$inferSelect
+const log = Log.create({ service: "user" })
 
 function hash(input: string) {
   return createHash("sha256").update(input).digest("hex")
@@ -209,8 +211,8 @@ export namespace UserService {
   export async function ensureSeed() {
     const p = permissions()
     const r = roles()
-    Database.use((db) => {
-      db.insert(TpOrganizationTable)
+    await Database.use(async (db) => {
+      await db.insert(TpOrganizationTable)
         .values({
           id: "org_tp_internal",
           name: "Tp Internal",
@@ -219,7 +221,7 @@ export namespace UserService {
         })
         .onConflictDoNothing()
         .run()
-      db.insert(TpDepartmentTable)
+      await db.insert(TpDepartmentTable)
         .values({
           id: "dept_tp_rnd",
           org_id: "org_tp_internal",
@@ -228,7 +230,7 @@ export namespace UserService {
         })
         .onConflictDoNothing()
         .run()
-      db.insert(TpPermissionTable)
+      await db.insert(TpPermissionTable)
         .values(
           p.map((item) => ({
             id: id("perm_" + item.code),
@@ -239,7 +241,7 @@ export namespace UserService {
         )
         .onConflictDoNothing()
         .run()
-      db.insert(TpRoleTable)
+      await db.insert(TpRoleTable)
         .values(
           r.map((item) => ({
             id: id("role_" + item.code),
@@ -250,7 +252,7 @@ export namespace UserService {
         )
         .onConflictDoNothing()
         .run()
-      db.insert(TpRolePermissionTable)
+      await db.insert(TpRolePermissionTable)
         .values(
           r.flatMap((item) =>
             (rolePerm[item.code as keyof typeof rolePerm] ?? []).map((perm) => ({
@@ -263,26 +265,29 @@ export namespace UserService {
         .run()
     })
 
-    const user = Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, "admin")).get())
-    if (user) return
-    const pass = Flag.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026"
-    const password_hash = await UserPassword.hash(pass)
-    Database.use((db) => {
-      db.insert(TpUserTable)
-        .values({
-          id: "user_tp_admin",
-          username: "admin",
-          password_hash,
-          display_name: "System Admin",
-          account_type: "internal",
-          org_id: "org_tp_internal",
-          department_id: "dept_tp_rnd",
-          force_password_reset: true,
-          external_source: "tpcode",
-        })
-        .onConflictDoNothing()
-        .run()
-      db.insert(TpUserRoleTable)
+    const user = await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, "admin")).get())
+    if (!user) {
+      const pass = Flag.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026"
+      const password_hash = await UserPassword.hash(pass)
+      await Database.use(async (db) => {
+        await db.insert(TpUserTable)
+          .values({
+            id: "user_tp_admin",
+            username: "admin",
+            password_hash,
+            display_name: "System Admin",
+            account_type: "internal",
+            org_id: "org_tp_internal",
+            department_id: "dept_tp_rnd",
+            force_password_reset: true,
+            external_source: "tpcode",
+          })
+          .onConflictDoNothing()
+          .run()
+      })
+    }
+    await Database.use(async (db) => {
+      await db.insert(TpUserRoleTable)
         .values({
           user_id: "user_tp_admin",
           role_id: id("role_super_admin"),
@@ -302,40 +307,40 @@ export namespace UserService {
     return hash(input)
   }
 
-  export function userByID(user_id: string) {
-    return Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, user_id)).get())
+  export async function userByID(user_id: string) {
+    return await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, user_id)).get())
   }
 
-  export function userByUsername(username: string) {
-    return Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, username)).get())
+  export async function userByUsername(username: string) {
+    return await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, username)).get())
   }
 
-  export function orgByCode(code: string) {
-    return Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.code, code)).get())
+  export async function orgByCode(code: string) {
+    return await Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.code, code)).get())
   }
 
-  export function rolesByUser(user_id: string) {
-    const links = Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
+  export async function rolesByUser(user_id: string) {
+    const links = await Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
     const ids = [...new Set(links.map((item) => item.role_id))]
     if (ids.length === 0) return [] as string[]
-    const rows = Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, ids)).all())
+    const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, ids)).all())
     return rows.map((item) => item.code)
   }
 
-  export function permissionsByUser(user_id: string) {
-    const links = Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
+  export async function permissionsByUser(user_id: string) {
+    const links = await Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
     const role_ids = [...new Set(links.map((item) => item.role_id))]
     if (role_ids.length === 0) return [] as string[]
-    const permLinks = Database.use((db) =>
+    const permLinks = await Database.use((db) =>
       db.select().from(TpRolePermissionTable).where(inArray(TpRolePermissionTable.role_id, role_ids)).all(),
     )
     const perm_ids = [...new Set(permLinks.map((item) => item.permission_id))]
     if (perm_ids.length === 0) return [] as string[]
-    const rows = Database.use((db) => db.select().from(TpPermissionTable).where(inArray(TpPermissionTable.id, perm_ids)).all())
+    const rows = await Database.use((db) => db.select().from(TpPermissionTable).where(inArray(TpPermissionTable.id, perm_ids)).all())
     return rows.map((item) => item.code)
   }
 
-  export function audit(input: {
+  export async function audit(input: {
     actor_user_id?: string
     action: string
     target_type: string
@@ -345,8 +350,8 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    Database.use((db) => {
-      db.insert(TpAuditLogTable)
+    await Database.use(async (db) => {
+      await db.insert(TpAuditLogTable)
         .values({
           id: ulid(),
           actor_user_id: input.actor_user_id,
@@ -359,6 +364,19 @@ export namespace UserService {
           user_agent: input.user_agent,
         })
         .run()
+    })
+  }
+
+  type AuditInput = Parameters<typeof audit>[0]
+  export function auditLater(input: AuditInput) {
+    void audit(input).catch((error) => {
+      log.error("failed to write audit log", {
+        error,
+        action: input.action,
+        target_type: input.target_type,
+        target_id: input.target_id,
+        actor_user_id: input.actor_user_id,
+      })
     })
   }
 
@@ -379,17 +397,17 @@ export namespace UserService {
       if (!invite || input.invite_code !== invite) return { ok: false as const, code: "invite_invalid" }
     }
     if (!UserPassword.valid(input.password)) return { ok: false as const, code: "password_invalid" }
-    const exists = userByUsername(input.username)
+    const exists = await userByUsername(input.username)
     if (exists) return { ok: false as const, code: "username_exists" }
 
-    const org = orgByCode("tp_internal")
+    const org = await orgByCode("tp_internal")
     if (!org) return { ok: false as const, code: "org_missing" }
 
     const account_type = "internal" as const
     const user_id = ulid()
     const password_hash = await UserPassword.hash(input.password)
-    Database.use((db) => {
-      db.insert(TpUserTable)
+    await Database.use(async (db) => {
+      await db.insert(TpUserTable)
         .values({
           id: user_id,
           username: input.username,
@@ -405,14 +423,14 @@ export namespace UserService {
         })
         .run()
       const role = "developer"
-      db.insert(TpUserRoleTable)
+      await db.insert(TpUserRoleTable)
         .values({
           user_id,
           role_id: id("role_" + role),
         })
         .run()
     })
-    audit({
+    auditLater({
       actor_user_id: user_id,
       action: "account.register",
       target_type: "tp_user",
@@ -429,8 +447,8 @@ export namespace UserService {
     const refresh_id = ulid()
     const access = await UserJwt.issueAccess({ user_id: input.user_id, session_id: access_id })
     const refresh = await UserJwt.issueRefresh({ user_id: input.user_id, session_id: refresh_id })
-    Database.use((db) => {
-      db.insert(TpSessionTokenTable)
+    await Database.use(async (db) => {
+      await db.insert(TpSessionTokenTable)
         .values([
           {
             id: access_id,
@@ -462,7 +480,7 @@ export namespace UserService {
   }
 
   export async function login(input: { username: string; password: string; ip?: string; user_agent?: string }) {
-    const user = userByUsername(input.username)
+    const user = await userByUsername(input.username)
     if (!user) return { ok: false as const, code: "invalid_credentials" }
     if (user.status !== "active") return { ok: false as const, code: "invalid_credentials" }
     const now = Date.now()
@@ -471,8 +489,8 @@ export namespace UserService {
       if (user.locked_until && user.locked_until > now) return { ok: false as const, code: "user_locked" }
       const failed = user.failed_login_count + 1
       const locked = failed >= 5 ? now + 15 * 60 * 1000 : null
-      Database.use((db) => {
-        db.update(TpUserTable)
+      await Database.use(async (db) => {
+        await db.update(TpUserTable)
           .set({
             failed_login_count: failed,
             locked_until: locked,
@@ -480,7 +498,7 @@ export namespace UserService {
           .where(eq(TpUserTable.id, user.id))
           .run()
       })
-      audit({
+      auditLater({
         actor_user_id: user.id,
         action: "account.login",
         target_type: "tp_user",
@@ -491,11 +509,11 @@ export namespace UserService {
       })
       return { ok: false as const, code: "invalid_credentials" }
     }
-    const roles = rolesByUser(user.id)
-    const permissions = permissionsByUser(user.id)
+    const roles = await rolesByUser(user.id)
+    const permissions = await permissionsByUser(user.id)
     const token = await issueTokens({ user_id: user.id, ip: input.ip, user_agent: input.user_agent })
-    Database.use((db) => {
-      db.update(TpUserTable)
+    await Database.use(async (db) => {
+      await db.update(TpUserTable)
         .set({
           failed_login_count: 0,
           locked_until: null,
@@ -505,7 +523,7 @@ export namespace UserService {
         .where(eq(TpUserTable.id, user.id))
         .run()
     })
-    audit({
+    auditLater({
       actor_user_id: user.id,
       action: "account.login",
       target_type: "tp_user",
@@ -525,7 +543,7 @@ export namespace UserService {
     const parsed = await UserJwt.verifyRefresh(input.refresh_token)
     if (!parsed) return { ok: false as const, code: "token_invalid" }
     const now = Date.now()
-    const row = Database.use((db) =>
+    const row = await Database.use((db) =>
       db
         .select()
         .from(TpSessionTokenTable)
@@ -542,11 +560,11 @@ export namespace UserService {
     )
     if (!row) return { ok: false as const, code: "token_invalid" }
     if (row.expires_at <= now) return { ok: false as const, code: "token_expired" }
-    const user = userByID(parsed.sub)
+    const user = await userByID(parsed.sub)
     if (!user || user.status !== "active") return { ok: false as const, code: "user_invalid" }
-    const roles = rolesByUser(user.id)
-    const permissions = permissionsByUser(user.id)
-    Database.use((db) =>
+    const roles = await rolesByUser(user.id)
+    const permissions = await permissionsByUser(user.id)
+    await Database.use((db) =>
       db
         .update(TpSessionTokenTable)
         .set({ revoked_at: now })
@@ -568,13 +586,13 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const user = userByID(input.user_id)
+    const user = await userByID(input.user_id)
     if (!user) return { ok: false as const, code: "user_missing" }
     const valid = await UserPassword.verify(input.current_password, user.password_hash)
     if (!valid) return { ok: false as const, code: "password_invalid" }
     if (!UserPassword.valid(input.new_password)) return { ok: false as const, code: "new_password_invalid" }
     const password_hash = await UserPassword.hash(input.new_password)
-    Database.use((db) =>
+    await Database.use((db) =>
       db
         .update(TpUserTable)
         .set({
@@ -584,7 +602,7 @@ export namespace UserService {
         .where(eq(TpUserTable.id, input.user_id))
         .run(),
     )
-    audit({
+    auditLater({
       actor_user_id: input.user_id,
       action: "account.password.change",
       target_type: "tp_user",
@@ -596,8 +614,8 @@ export namespace UserService {
     return { ok: true as const }
   }
 
-  export function revokeToken(input: { token: string }) {
-    Database.use((db) =>
+  export async function revokeToken(input: { token: string }) {
+    await Database.use((db) =>
       db
         .update(TpSessionTokenTable)
         .set({ revoked_at: Date.now() })
@@ -606,8 +624,8 @@ export namespace UserService {
     )
   }
 
-  export function revokeAll(input: { user_id: string }) {
-    Database.use((db) =>
+  export async function revokeAll(input: { user_id: string }) {
+    await Database.use((db) =>
       db
         .update(TpSessionTokenTable)
         .set({ revoked_at: Date.now() })
@@ -635,7 +653,7 @@ export namespace UserService {
     const parsed = await UserJwt.verifyAccess(token)
     if (!parsed) return { ok: false, reason: "jwt_invalid" }
     const now = Date.now()
-    const row = Database.use((db) =>
+    const row = await Database.use((db) =>
       db
         .select()
         .from(TpSessionTokenTable)
@@ -652,7 +670,7 @@ export namespace UserService {
     )
     if (!row) return { ok: false, reason: "session_missing", sid: parsed.sid, sub: parsed.sub }
     if (row.expires_at <= now) return { ok: false, reason: "session_expired", sid: parsed.sid, sub: parsed.sub }
-    const user = userByID(parsed.sub)
+    const user = await userByID(parsed.sub)
     if (!user || user.status !== "active") return { ok: false, reason: "user_inactive", sid: parsed.sid, sub: parsed.sub }
     if (user.locked_until && user.locked_until > now) {
       return {
@@ -663,8 +681,8 @@ export namespace UserService {
         locked_until: user.locked_until,
       }
     }
-    const roles = rolesByUser(user.id)
-    const permissions = permissionsByUser(user.id)
+    const roles = await rolesByUser(user.id)
+    const permissions = await permissionsByUser(user.id)
     return {
       ok: true,
       user: profile({ user, roles, permissions }),
@@ -679,20 +697,20 @@ export namespace UserService {
     return result.user
   }
 
-  export function me(user_id: string) {
-    const user = userByID(user_id)
+  export async function me(user_id: string) {
+    const user = await userByID(user_id)
     if (!user) return
-    const roles = rolesByUser(user.id)
-    const permissions = permissionsByUser(user.id)
+    const roles = await rolesByUser(user.id)
+    const permissions = await permissionsByUser(user.id)
     return profile({ user, roles, permissions })
   }
 
-  export function resetRequest(input: { username: string; ip?: string; user_agent?: string }) {
-    const user = userByUsername(input.username)
+  export async function resetRequest(input: { username: string; ip?: string; user_agent?: string }) {
+    const user = await userByUsername(input.username)
     if (!user) return { ok: true as const }
     const code = String(randomInt(100000, 999999))
     const code_hash = hash(code)
-    Database.use((db) =>
+    await Database.use((db) =>
       db.insert(TpPasswordResetTable)
         .values({
           id: ulid(),
@@ -703,7 +721,7 @@ export namespace UserService {
         })
         .run(),
     )
-    audit({
+    auditLater({
       actor_user_id: user.id,
       action: "account.password.reset.request",
       target_type: "tp_user",
@@ -726,9 +744,9 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const user = userByUsername(input.username)
+    const user = await userByUsername(input.username)
     if (!user) return { ok: false as const, code: "user_missing" }
-    const row = Database.use((db) =>
+    const rows = await Database.use((db) =>
       db
         .select()
         .from(TpPasswordResetTable)
@@ -740,15 +758,14 @@ export namespace UserService {
         )
         .all(),
     )
-      .filter((item) => item.expires_at > Date.now())
-      .sort((a, b) => b.time_created - a.time_created)[0]
+    const row = rows.filter((item) => item.expires_at > Date.now()).sort((a, b) => b.time_created - a.time_created)[0]
     if (!row) return { ok: false as const, code: "reset_missing" }
     if (!UserPassword.valid(input.new_password)) return { ok: false as const, code: "new_password_invalid" }
     const ok = hash(input.code) === row.code_hash
     if (!ok) return { ok: false as const, code: "code_invalid" }
     const password_hash = await UserPassword.hash(input.new_password)
-    Database.use((db) => {
-      db.update(TpUserTable)
+    await Database.use(async (db) => {
+      await db.update(TpUserTable)
         .set({
           password_hash,
           force_password_reset: false,
@@ -757,16 +774,16 @@ export namespace UserService {
         })
         .where(eq(TpUserTable.id, user.id))
         .run()
-      db.update(TpPasswordResetTable)
+      await db.update(TpPasswordResetTable)
         .set({ consumed_at: Date.now() })
         .where(eq(TpPasswordResetTable.id, row.id))
         .run()
-      db.update(TpSessionTokenTable)
+      await db.update(TpSessionTokenTable)
         .set({ revoked_at: Date.now() })
         .where(and(eq(TpSessionTokenTable.user_id, user.id), isNull(TpSessionTokenTable.revoked_at)))
         .run()
     })
-    audit({
+    auditLater({
       actor_user_id: user.id,
       action: "account.password.reset",
       target_type: "tp_user",
@@ -784,20 +801,20 @@ export namespace UserService {
     return "developer"
   }
 
-  function roleIDs(codes: string[]) {
+  async function roleIDs(codes: string[]) {
     if (codes.length === 0) return [] as string[]
-    const rows = Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, codes)).all())
+    const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, codes)).all())
     return rows.map((item) => item.id)
   }
 
-  function permissionIDs(codes: string[]) {
+  async function permissionIDs(codes: string[]) {
     if (codes.length === 0) return [] as string[]
-    const rows = Database.use((db) => db.select().from(TpPermissionTable).where(inArray(TpPermissionTable.code, codes)).all())
+    const rows = await Database.use((db) => db.select().from(TpPermissionTable).where(inArray(TpPermissionTable.code, codes)).all())
     return rows.map((item) => item.id)
   }
 
-  export function listOrganizations() {
-    return Database.use((db) =>
+  export async function listOrganizations() {
+    return await Database.use((db) =>
       db
         .select()
         .from(TpOrganizationTable)
@@ -806,8 +823,8 @@ export namespace UserService {
     )
   }
 
-  export function listDepartments(input?: { org_id?: string }) {
-    return Database.use((db) => {
+  export async function listDepartments(input?: { org_id?: string }) {
+    return await Database.use((db) => {
       if (!input?.org_id) {
         return db
           .select()
@@ -824,26 +841,26 @@ export namespace UserService {
     })
   }
 
-  export function listPermissions() {
-    return Database.use((db) =>
+  export async function listPermissions() {
+    const rows = await Database.use((db) =>
       db
         .select()
         .from(TpPermissionTable)
         .orderBy(TpPermissionTable.group_name, TpPermissionTable.code)
-        .all()
-        .map((item) => ({
-          ...item,
-          name: permissionName(item.code),
-        })),
+        .all(),
     )
+    return rows.map((item) => ({
+      ...item,
+      name: permissionName(item.code),
+    }))
   }
 
-  export function listAudit(input?: { actor_user_id?: string; action?: string; limit?: number }) {
+  export async function listAudit(input?: { actor_user_id?: string; action?: string; limit?: number }) {
     const conditions: SQL[] = []
     if (input?.actor_user_id) conditions.push(eq(TpAuditLogTable.actor_user_id, input.actor_user_id))
     if (input?.action) conditions.push(eq(TpAuditLogTable.action, input.action))
     const limit = input?.limit ?? 100
-    return Database.use((db) => {
+    return await Database.use((db) => {
       if (conditions.length === 0) {
         return db
           .select()
@@ -862,10 +879,10 @@ export namespace UserService {
     })
   }
 
-  export function listRoles() {
-    const rows = Database.use((db) => db.select().from(TpRoleTable).orderBy(TpRoleTable.code).all())
-    const links = Database.use((db) => db.select().from(TpRolePermissionTable).all())
-    const perms = Database.use((db) => db.select().from(TpPermissionTable).all())
+  export async function listRoles() {
+    const rows = await Database.use((db) => db.select().from(TpRoleTable).orderBy(TpRoleTable.code).all())
+    const links = await Database.use((db) => db.select().from(TpRolePermissionTable).all())
+    const perms = await Database.use((db) => db.select().from(TpPermissionTable).all())
     const permByID = new Map(perms.map((item) => [item.id, item.code]))
     const codesByRole = links.reduce(
       (acc, item) => {
@@ -888,7 +905,7 @@ export namespace UserService {
     }))
   }
 
-  export function listUsers(input?: { org_id?: string; department_id?: string; keyword?: string }) {
+  export async function listUsers(input?: { org_id?: string; department_id?: string; keyword?: string }) {
     const conditions: SQL[] = []
     if (input?.org_id) conditions.push(eq(TpUserTable.org_id, input.org_id))
     if (input?.department_id) conditions.push(eq(TpUserTable.department_id, input.department_id))
@@ -897,7 +914,7 @@ export namespace UserService {
       const match = or(like(TpUserTable.username, word), like(TpUserTable.display_name, word))
       if (match) conditions.push(match)
     }
-    const rows = Database.use((db) => {
+    const rows = await Database.use((db) => {
       if (conditions.length === 0) {
         return db
           .select()
@@ -912,25 +929,27 @@ export namespace UserService {
         .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
         .all()
     })
-    return rows.map((item) => ({
-      id: item.id,
-      username: item.username,
-      display_name: item.display_name,
-      email: item.email,
-      phone: item.phone,
-      status: item.status,
-      account_type: item.account_type,
-      org_id: item.org_id,
-      department_id: item.department_id ?? undefined,
-      force_password_reset: item.force_password_reset,
-      last_login_at: item.last_login_at ?? undefined,
-      last_login_ip: item.last_login_ip ?? undefined,
-      roles: rolesByUser(item.id),
-      permissions: permissionsByUser(item.id),
-    }))
+    return await Promise.all(
+      rows.map(async (item) => ({
+        id: item.id,
+        username: item.username,
+        display_name: item.display_name,
+        email: item.email,
+        phone: item.phone,
+        status: item.status,
+        account_type: item.account_type,
+        org_id: item.org_id,
+        department_id: item.department_id ?? undefined,
+        force_password_reset: item.force_password_reset,
+        last_login_at: item.last_login_at ?? undefined,
+        last_login_ip: item.last_login_ip ?? undefined,
+        roles: await rolesByUser(item.id),
+        permissions: await permissionsByUser(item.id),
+      })),
+    )
   }
 
-  export function createOrganization(input: {
+  export async function createOrganization(input: {
     name: string
     code: string
     org_type: "internal" | "hospital" | "partner"
@@ -939,11 +958,11 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const exists = orgByCode(input.code)
+    const exists = await orgByCode(input.code)
     if (exists) return { ok: false as const, code: "org_exists" }
     const org_id = ulid()
-    Database.use((db) => {
-      db.insert(TpOrganizationTable)
+    await Database.use(async (db) => {
+      await db.insert(TpOrganizationTable)
         .values({
           id: org_id,
           name: input.name,
@@ -953,7 +972,7 @@ export namespace UserService {
         })
         .run()
     })
-    audit({
+    auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.org.create",
       target_type: "tp_organization",
@@ -969,7 +988,7 @@ export namespace UserService {
     return { ok: true as const, id: org_id }
   }
 
-  export function createDepartment(input: {
+  export async function createDepartment(input: {
     org_id: string
     name: string
     code?: string
@@ -979,11 +998,11 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const org = Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
+    const org = await Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
     if (!org) return { ok: false as const, code: "org_missing" }
     const department_id = ulid()
-    Database.use((db) => {
-      db.insert(TpDepartmentTable)
+    await Database.use(async (db) => {
+      await db.insert(TpDepartmentTable)
         .values({
           id: department_id,
           org_id: input.org_id,
@@ -994,7 +1013,7 @@ export namespace UserService {
         })
         .run()
     })
-    audit({
+    auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.department.create",
       target_type: "tp_department",
@@ -1026,13 +1045,13 @@ export namespace UserService {
     user_agent?: string
   }) {
     if (!UserPassword.valid(input.password)) return { ok: false as const, code: "password_invalid" }
-    const exists = userByUsername(input.username)
+    const exists = await userByUsername(input.username)
     if (exists) return { ok: false as const, code: "username_exists" }
-    const org = Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
+    const org = await Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
     if (!org) return { ok: false as const, code: "org_missing" }
     if (input.department_id) {
       const department_id = input.department_id
-      const department = Database.use((db) =>
+      const department = await Database.use((db) =>
         db
           .select()
           .from(TpDepartmentTable)
@@ -1045,10 +1064,10 @@ export namespace UserService {
     const user_id = ulid()
     const password_hash = await UserPassword.hash(input.password)
     const codes = [...new Set(input.role_codes && input.role_codes.length > 0 ? input.role_codes : [defaultRole(input.account_type)])]
-    const role_ids = roleIDs(codes)
+    const role_ids = await roleIDs(codes)
     if (role_ids.length !== codes.length) return { ok: false as const, code: "role_missing" }
-    Database.use((db) => {
-      db.insert(TpUserTable)
+    await Database.use(async (db) => {
+      await db.insert(TpUserTable)
         .values({
           id: user_id,
           username: input.username,
@@ -1064,12 +1083,12 @@ export namespace UserService {
         })
         .run()
       if (role_ids.length > 0) {
-        db.insert(TpUserRoleTable)
+        await db.insert(TpUserRoleTable)
           .values(role_ids.map((role_id) => ({ user_id, role_id })))
           .run()
       }
     })
-    audit({
+    auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.user.create",
       target_type: "tp_user",
@@ -1087,27 +1106,27 @@ export namespace UserService {
     return { ok: true as const, id: user_id }
   }
 
-  export function setUserRoles(input: {
+  export async function setUserRoles(input: {
     user_id: string
     role_codes: string[]
     actor_user_id?: string
     ip?: string
     user_agent?: string
   }) {
-    const user = userByID(input.user_id)
+    const user = await userByID(input.user_id)
     if (!user) return { ok: false as const, code: "user_missing" }
     const codes = [...new Set(input.role_codes)]
-    const role_ids = roleIDs(codes)
+    const role_ids = await roleIDs(codes)
     if (role_ids.length !== codes.length) return { ok: false as const, code: "role_missing" }
-    Database.use((db) => {
-      db.delete(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, input.user_id)).run()
+    await Database.use(async (db) => {
+      await db.delete(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, input.user_id)).run()
       if (role_ids.length > 0) {
-        db.insert(TpUserRoleTable)
+        await db.insert(TpUserRoleTable)
           .values(role_ids.map((role_id) => ({ user_id: input.user_id, role_id })))
           .run()
       }
     })
-    audit({
+    auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.user.roles.update",
       target_type: "tp_user",
@@ -1120,7 +1139,7 @@ export namespace UserService {
     return { ok: true as const }
   }
 
-  export function updateOrganization(input: {
+  export async function updateOrganization(input: {
     org_id: string
     name?: string
     status?: "active" | "inactive"
@@ -1129,10 +1148,10 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const org = Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
+    const org = await Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
     if (!org) return { ok: false as const, code: "org_missing" }
-    Database.use((db) => {
-      db.update(TpOrganizationTable)
+    await Database.use(async (db) => {
+      await db.update(TpOrganizationTable)
         .set({
           name: input.name,
           status: input.status,
@@ -1142,7 +1161,7 @@ export namespace UserService {
         .where(eq(TpOrganizationTable.id, input.org_id))
         .run()
     })
-    audit({
+    auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.org.update",
       target_type: "tp_organization",
@@ -1159,7 +1178,7 @@ export namespace UserService {
     return { ok: true as const }
   }
 
-  export function updateDepartment(input: {
+  export async function updateDepartment(input: {
     department_id: string
     name?: string
     code?: string
@@ -1170,14 +1189,14 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const department = Database.use((db) =>
+    const department = await Database.use((db) =>
       db.select().from(TpDepartmentTable).where(eq(TpDepartmentTable.id, input.department_id)).get(),
     )
     if (!department) return { ok: false as const, code: "department_missing" }
     if (input.parent_id) {
       const parent_id = input.parent_id
       if (input.parent_id === input.department_id) return { ok: false as const, code: "department_parent_invalid" }
-      const parent = Database.use((db) =>
+      const parent = await Database.use((db) =>
         db
           .select()
           .from(TpDepartmentTable)
@@ -1186,8 +1205,8 @@ export namespace UserService {
       )
       if (!parent) return { ok: false as const, code: "department_parent_missing" }
     }
-    Database.use((db) => {
-      db.update(TpDepartmentTable)
+    await Database.use(async (db) => {
+      await db.update(TpDepartmentTable)
         .set({
           name: input.name,
           code: input.code,
@@ -1199,7 +1218,7 @@ export namespace UserService {
         .where(eq(TpDepartmentTable.id, input.department_id))
         .run()
     })
-    audit({
+    auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.department.update",
       target_type: "tp_department",
@@ -1218,7 +1237,7 @@ export namespace UserService {
     return { ok: true as const }
   }
 
-  export function updateUser(input: {
+  export async function updateUser(input: {
     user_id: string
     display_name?: string
     email?: string
@@ -1229,11 +1248,11 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const user = userByID(input.user_id)
+    const user = await userByID(input.user_id)
     if (!user) return { ok: false as const, code: "user_missing" }
     if (input.department_id) {
       const department_id = input.department_id
-      const department = Database.use((db) =>
+      const department = await Database.use((db) =>
         db
           .select()
           .from(TpDepartmentTable)
@@ -1242,8 +1261,8 @@ export namespace UserService {
       )
       if (!department) return { ok: false as const, code: "department_missing" }
     }
-    Database.use((db) => {
-      db.update(TpUserTable)
+    await Database.use(async (db) => {
+      await db.update(TpUserTable)
         .set({
           display_name: input.display_name,
           email: input.email,
@@ -1255,7 +1274,7 @@ export namespace UserService {
         .where(eq(TpUserTable.id, input.user_id))
         .run()
     })
-    audit({
+    auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.user.update",
       target_type: "tp_user",
@@ -1274,27 +1293,27 @@ export namespace UserService {
     return { ok: true as const }
   }
 
-  export function setRolePermissions(input: {
+  export async function setRolePermissions(input: {
     role_code: string
     permission_codes: string[]
     actor_user_id?: string
     ip?: string
     user_agent?: string
   }) {
-    const role = Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
     if (!role) return { ok: false as const, code: "role_missing" }
     const codes = [...new Set(input.permission_codes)]
-    const permission_ids = permissionIDs(codes)
+    const permission_ids = await permissionIDs(codes)
     if (permission_ids.length !== codes.length) return { ok: false as const, code: "permission_missing" }
-    Database.use((db) => {
-      db.delete(TpRolePermissionTable).where(eq(TpRolePermissionTable.role_id, role.id)).run()
+    await Database.use(async (db) => {
+      await db.delete(TpRolePermissionTable).where(eq(TpRolePermissionTable.role_id, role.id)).run()
       if (permission_ids.length > 0) {
-        db.insert(TpRolePermissionTable)
+        await db.insert(TpRolePermissionTable)
           .values(permission_ids.map((permission_id) => ({ role_id: role.id, permission_id })))
           .run()
       }
     })
-    audit({
+    auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.role.permissions.update",
       target_type: "tp_role",

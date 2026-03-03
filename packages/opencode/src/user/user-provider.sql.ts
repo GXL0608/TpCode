@@ -1,8 +1,8 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { index, integer, boolean_int, table, text, uniqueIndex } from "../storage/orm-core"
 import { TpUserTable } from "./user.sql"
 import { Timestamps } from "@/storage/schema.sql"
 
-export const TpUserProviderTable = sqliteTable(
+export const TpUserProviderTable = table(
   "tp_user_provider",
   {
     id: text().primaryKey(),
@@ -13,7 +13,7 @@ export const TpUserProviderTable = sqliteTable(
     auth_type: text().notNull(),
     secret_cipher: text().notNull(),
     meta_json: text({ mode: "json" }).$type<Record<string, unknown>>(),
-    is_active: integer({ mode: "boolean" })
+    is_active: boolean_int()
       .notNull()
       .$default(() => true),
     ...Timestamps,

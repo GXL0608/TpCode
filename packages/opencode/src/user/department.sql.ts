@@ -1,8 +1,8 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { index, integer, table, text } from "../storage/orm-core"
 import { TpOrganizationTable } from "./organization.sql"
 import { Timestamps } from "@/storage/schema.sql"
 
-export const TpDepartmentTable = sqliteTable(
+export const TpDepartmentTable = table(
   "tp_department",
   {
     id: text().primaryKey(),

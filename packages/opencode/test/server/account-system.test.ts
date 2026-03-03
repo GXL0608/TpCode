@@ -392,7 +392,7 @@ describe("account system", () => {
     })
     expect(shellBlocked.status).toBe(403)
 
-    const logs = Database.use((db) =>
+    const logs = await Database.use((db) =>
       db
         .select()
         .from(TpAuditLogTable)
@@ -460,7 +460,7 @@ describe("account system", () => {
       },
     })
     expect(response.status).toBe(204)
-    const row = Database.use((db) =>
+    const row = await Database.use((db) =>
       db
         .select()
         .from(TpAuditLogTable)

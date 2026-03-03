@@ -147,10 +147,10 @@ export const ImportCommand = cmd({
         return
       }
 
-      Database.use((db) => db.insert(SessionTable).values(Session.toRow(exportData.info)).onConflictDoNothing().run())
+      await Database.use((db) => db.insert(SessionTable).values(Session.toRow(exportData.info)).onConflictDoNothing().run())
 
       for (const msg of exportData.messages) {
-        Database.use((db) =>
+        await Database.use((db) =>
           db
             .insert(MessageTable)
             .values({
@@ -164,7 +164,7 @@ export const ImportCommand = cmd({
         )
 
         for (const part of msg.parts) {
-          Database.use((db) =>
+          await Database.use((db) =>
             db
               .insert(PartTable)
               .values({

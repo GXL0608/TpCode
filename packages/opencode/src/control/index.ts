@@ -19,15 +19,15 @@ export namespace Control {
     }
   }
 
-  export function account(): Account | undefined {
-    const row = Database.use((db) =>
+  export async function account(): Promise<Account | undefined> {
+    const row = await Database.use((db) =>
       db.select().from(ControlAccountTable).where(eq(ControlAccountTable.active, true)).get(),
     )
     return row ? fromRow(row) : undefined
   }
 
   export async function token(): Promise<string | undefined> {
-    const row = Database.use((db) =>
+    const row = await Database.use((db) =>
       db.select().from(ControlAccountTable).where(eq(ControlAccountTable.active, true)).get(),
     )
     if (!row) return undefined
@@ -50,7 +50,7 @@ export namespace Control {
       expires_in?: number
     }
 
-    Database.use((db) =>
+    await Database.use((db) =>
       db
         .update(ControlAccountTable)
         .set({

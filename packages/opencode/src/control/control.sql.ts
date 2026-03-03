@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { table, text, integer, boolean_int, primaryKey, uniqueIndex } from "../storage/orm-core"
 import { eq } from "drizzle-orm"
 import { Timestamps } from "@/storage/schema.sql"
 
-export const ControlAccountTable = sqliteTable(
+export const ControlAccountTable = table(
   "control_account",
   {
     email: text().notNull(),
@@ -10,7 +10,7 @@ export const ControlAccountTable = sqliteTable(
     access_token: text().notNull(),
     refresh_token: text().notNull(),
     token_expiry: integer(),
-    active: integer({ mode: "boolean" })
+    active: boolean_int()
       .notNull()
       .$default(() => false),
     ...Timestamps,

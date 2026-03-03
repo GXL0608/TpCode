@@ -60,7 +60,7 @@ export const ApprovalRoutes = lazy(() =>
       async (c) => {
         const current = actor(c)
         if ("status" in current) return current
-        return c.json(ApprovalService.listReviewer({ actor: current }))
+        return c.json(await ApprovalService.listReviewer({ actor: current }))
       },
     )
     .get(
@@ -95,7 +95,7 @@ export const ApprovalRoutes = lazy(() =>
         if ("status" in current) return current
         const query = c.req.valid("query")
         return c.json(
-          ApprovalService.listChange({
+          await ApprovalService.listChange({
             actor: current,
             status: query.status,
             mine: query.mine,
@@ -141,7 +141,7 @@ export const ApprovalRoutes = lazy(() =>
         const current = actor(c)
         if ("status" in current) return current
         const body = c.req.valid("json")
-        const result = ApprovalService.create({
+        const result = await ApprovalService.create({
           actor: current,
           ...body,
           ip: c.req.header("x-forwarded-for"),
@@ -174,7 +174,7 @@ export const ApprovalRoutes = lazy(() =>
         const current = actor(c)
         if ("status" in current) return current
         const param = c.req.valid("param")
-        const result = ApprovalService.getChange({
+        const result = await ApprovalService.getChange({
           actor: current,
           change_request_id: param.change_request_id,
         })
@@ -220,7 +220,7 @@ export const ApprovalRoutes = lazy(() =>
         if ("status" in current) return current
         const param = c.req.valid("param")
         const body = c.req.valid("json")
-        const result = ApprovalService.update({
+        const result = await ApprovalService.update({
           actor: current,
           change_request_id: param.change_request_id,
           ...body,
@@ -257,7 +257,7 @@ export const ApprovalRoutes = lazy(() =>
         const current = actor(c)
         if ("status" in current) return current
         const param = c.req.valid("param")
-        const result = ApprovalService.confirm({
+        const result = await ApprovalService.confirm({
           actor: current,
           change_request_id: param.change_request_id,
           ip: c.req.header("x-forwarded-for"),
@@ -309,7 +309,7 @@ export const ApprovalRoutes = lazy(() =>
         if ("status" in current) return current
         const param = c.req.valid("param")
         const body = c.req.valid("json")
-        const result = ApprovalService.submit({
+        const result = await ApprovalService.submit({
           actor: current,
           change_request_id: param.change_request_id,
           reviewer_ids: body.reviewer_ids,
@@ -349,7 +349,7 @@ export const ApprovalRoutes = lazy(() =>
         const current = actor(c)
         if ("status" in current) return current
         const param = c.req.valid("param")
-        const result = ApprovalService.executing({
+        const result = await ApprovalService.executing({
           actor: current,
           change_request_id: param.change_request_id,
           ip: c.req.header("x-forwarded-for"),
@@ -386,7 +386,7 @@ export const ApprovalRoutes = lazy(() =>
         const current = actor(c)
         if ("status" in current) return current
         const param = c.req.valid("param")
-        const result = ApprovalService.completed({
+        const result = await ApprovalService.completed({
           actor: current,
           change_request_id: param.change_request_id,
           ip: c.req.header("x-forwarded-for"),
@@ -430,7 +430,7 @@ export const ApprovalRoutes = lazy(() =>
         if ("status" in current) return current
         const query = c.req.valid("query")
         return c.json(
-          ApprovalService.listReview({
+          await ApprovalService.listReview({
             actor: current,
             status: query.status,
             mine: query.mine,
@@ -471,7 +471,7 @@ export const ApprovalRoutes = lazy(() =>
         if ("status" in current) return current
         const param = c.req.valid("param")
         const body = c.req.valid("json")
-        const result = ApprovalService.review({
+        const result = await ApprovalService.review({
           actor: current,
           approval_id: param.approval_id,
           action: "approved",
@@ -518,7 +518,7 @@ export const ApprovalRoutes = lazy(() =>
         if ("status" in current) return current
         const param = c.req.valid("param")
         const body = c.req.valid("json")
-        const result = ApprovalService.review({
+        const result = await ApprovalService.review({
           actor: current,
           approval_id: param.approval_id,
           action: "rejected",

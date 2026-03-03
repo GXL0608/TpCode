@@ -78,7 +78,7 @@ export namespace ShareNext {
     })
       .then((x) => x.json())
       .then((x) => x as { id: string; url: string; secret: string })
-    Database.use((db) =>
+    await Database.use((db) =>
       db
         .insert(SessionShareTable)
         .values({ session_id: sessionID, id: result.id, secret: result.secret, url: result.url })
@@ -92,8 +92,8 @@ export namespace ShareNext {
     return result
   }
 
-  function get(sessionID: string) {
-    const row = Database.use((db) =>
+  async function get(sessionID: string) {
+    const row = await Database.use((db) =>
       db.select().from(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).get(),
     )
     if (!row) return
@@ -142,7 +142,7 @@ export namespace ShareNext {
       const queued = queue.get(sessionID)
       if (!queued) return
       queue.delete(sessionID)
-      const share = get(sessionID)
+      const share = await get(sessionID)
       if (!share) return
 
       await fetch(`${await url()}/api/share/${share.id}/sync`, {
@@ -162,7 +162,7 @@ export namespace ShareNext {
   export async function remove(sessionID: string) {
     if (disabled) return
     log.info("removing share", { sessionID })
-    const share = get(sessionID)
+    const share = await get(sessionID)
     if (!share) return
     await fetch(`${await url()}/api/share/${share.id}`, {
       method: "DELETE",
@@ -173,7 +173,7 @@ export namespace ShareNext {
         secret: share.secret,
       }),
     })
-    Database.use((db) => db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).run())
+    await Database.use((db) => db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).run())
   }
 
   async function fullSync(sessionID: string) {

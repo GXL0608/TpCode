@@ -189,8 +189,8 @@ export const AccountRoutes = lazy(() =>
         if (typeof user_id !== "string") return user_id
         const token = UserService.parseBearer(c.req.header("authorization"))
         if (!token) return c.json({ error: "unauthorized" }, 401)
-        UserService.revokeToken({ token })
-        UserService.audit({
+        await UserService.revokeToken({ token })
+        UserService.auditLater({
           actor_user_id: user_id,
           action: "account.logout",
           target_type: "tp_user",
@@ -223,8 +223,8 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
-        UserService.revokeAll({ user_id })
-        UserService.audit({
+        await UserService.revokeAll({ user_id })
+        UserService.auditLater({
           actor_user_id: user_id,
           action: "account.logout_all",
           target_type: "tp_user",
@@ -257,7 +257,7 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
-        const me = UserService.me(user_id)
+        const me = await UserService.me(user_id)
         if (!me) return c.json({ error: "unauthorized" }, 401)
         return c.json(me)
       },
@@ -311,8 +311,8 @@ export const AccountRoutes = lazy(() =>
         })
       },
     )
-    .get("/admin/roles", UserRbac.require("role:manage"), async (c) => c.json(UserService.listRoles()))
-    .get("/admin/permissions", UserRbac.require("role:manage"), async (c) => c.json(UserService.listPermissions()))
+    .get("/admin/roles", UserRbac.require("role:manage"), async (c) => c.json(await UserService.listRoles()))
+    .get("/admin/permissions", UserRbac.require("role:manage"), async (c) => c.json(await UserService.listPermissions()))
     .post(
       "/admin/roles/:role_code/permissions",
       UserRbac.require("role:manage"),
@@ -323,7 +323,7 @@ export const AccountRoutes = lazy(() =>
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
         const body = c.req.valid("json")
-        const result = UserService.setRolePermissions({
+        const result = await UserService.setRolePermissions({
           role_code: param.role_code,
           permission_codes: body.permission_codes,
           actor_user_id,
@@ -346,7 +346,7 @@ export const AccountRoutes = lazy(() =>
         const param = c.req.valid("param")
         const body = c.req.valid("json")
         await Auth.setGlobal(param.provider_id, body)
-        UserService.audit({
+        await UserService.audit({
           actor_user_id,
           action: "account.provider.global.set",
           target_type: "provider",
@@ -367,7 +367,7 @@ export const AccountRoutes = lazy(() =>
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
         await Auth.removeGlobal(param.provider_id)
-        UserService.audit({
+        await UserService.audit({
           actor_user_id,
           action: "account.provider.global.remove",
           target_type: "provider",
@@ -393,7 +393,7 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const query = c.req.valid("query")
         return c.json(
-          UserService.listAudit({
+          await UserService.listAudit({
             actor_user_id: query.actor_user_id,
             action: query.action,
             limit: query.limit,
@@ -415,7 +415,7 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const query = c.req.valid("query")
         return c.json(
-          UserService.listUsers({
+          await UserService.listUsers({
             org_id: query.org_id,
             department_id: query.department_id,
             keyword: query.keyword,
@@ -474,7 +474,7 @@ export const AccountRoutes = lazy(() =>
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
         const body = c.req.valid("json")
-        const result = UserService.updateUser({
+        const result = await UserService.updateUser({
           user_id: param.user_id,
           ...body,
           actor_user_id,
@@ -495,7 +495,7 @@ export const AccountRoutes = lazy(() =>
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
         const body = c.req.valid("json")
-        const result = UserService.setUserRoles({
+        const result = await UserService.setUserRoles({
           user_id: param.user_id,
           role_codes: body.role_codes,
           actor_user_id,
@@ -566,7 +566,7 @@ export const AccountRoutes = lazy(() =>
       validator("json", z.object({ username: z.string() })),
       async (c) => {
         const body = c.req.valid("json")
-        const result = UserService.resetRequest({
+        const result = await UserService.resetRequest({
           ...body,
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),

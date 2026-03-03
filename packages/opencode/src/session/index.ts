@@ -67,8 +67,8 @@ export namespace Session {
     return row.user_id === a.user_id
   }
 
-  function assertWritable(sessionID: string) {
-    const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
+  async function assertWritable(sessionID: string) {
+    const row = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
     if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
     if (!canWrite(row)) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
     return row
@@ -302,10 +302,10 @@ export namespace Session {
   )
 
   export const touch = fn(Identifier.schema("session"), async (sessionID) => {
-    assertWritable(sessionID)
+    await assertWritable(sessionID)
     const now = Date.now()
-    Database.use((db) => {
-      const row = db
+    await Database.use(async (db) => {
+      const row = await db
         .update(SessionTable)
         .set({ time_updated: now })
         .where(eq(SessionTable.id, sessionID))
@@ -343,8 +343,8 @@ export namespace Session {
       },
     }
     log.info("created", result)
-    Database.use((db) => {
-      db.insert(SessionTable)
+    await Database.use(async (db) => {
+      await db.insert(SessionTable)
         .values({
           ...toRow(result),
           user_id: a?.user_id,
@@ -378,22 +378,22 @@ export namespace Session {
   }
 
   export const get = fn(Identifier.schema("session"), async (id) => {
-    const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+    const row = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
     if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
     if (!canRead(row)) throw new NotFoundError({ message: `Session not found: ${id}` })
     return fromRow(row)
   })
 
   export const share = fn(Identifier.schema("session"), async (id) => {
-    assertWritable(id)
+    await assertWritable(id)
     const cfg = await Config.get()
     if (cfg.share === "disabled") {
       throw new Error("Sharing is disabled in configuration")
     }
     const { ShareNext } = await import("@/share/share-next")
     const share = await ShareNext.create(id)
-    Database.use((db) => {
-      const row = db.update(SessionTable).set({ share_url: share.url }).where(eq(SessionTable.id, id)).returning().get()
+    await Database.use(async (db) => {
+      const row = await db.update(SessionTable).set({ share_url: share.url }).where(eq(SessionTable.id, id)).returning().get()
       if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
       const info = fromRow(row)
       Database.effect(() => Bus.publish(Event.Updated, { info }))
@@ -402,12 +402,12 @@ export namespace Session {
   })
 
   export const unshare = fn(Identifier.schema("session"), async (id) => {
-    assertWritable(id)
+    await assertWritable(id)
     // Use ShareNext to remove the share (same as share function uses ShareNext to create)
     const { ShareNext } = await import("@/share/share-next")
     await ShareNext.remove(id)
-    Database.use((db) => {
-      const row = db.update(SessionTable).set({ share_url: null }).where(eq(SessionTable.id, id)).returning().get()
+    await Database.use(async (db) => {
+      const row = await db.update(SessionTable).set({ share_url: null }).where(eq(SessionTable.id, id)).returning().get()
       if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
       const info = fromRow(row)
       Database.effect(() => Bus.publish(Event.Updated, { info }))
@@ -420,9 +420,9 @@ export namespace Session {
       title: z.string(),
     }),
     async (input) => {
-      assertWritable(input.sessionID)
-      return Database.use((db) => {
-        const row = db
+      await assertWritable(input.sessionID)
+      return await Database.use(async (db) => {
+        const row = await db
           .update(SessionTable)
           .set({ title: input.title })
           .where(eq(SessionTable.id, input.sessionID))
@@ -442,9 +442,9 @@ export namespace Session {
       time: z.number().optional(),
     }),
     async (input) => {
-      assertWritable(input.sessionID)
-      return Database.use((db) => {
-        const row = db
+      await assertWritable(input.sessionID)
+      return await Database.use(async (db) => {
+        const row = await db
           .update(SessionTable)
           .set({ time_archived: input.time })
           .where(eq(SessionTable.id, input.sessionID))
@@ -464,9 +464,9 @@ export namespace Session {
       permission: PermissionNext.Ruleset,
     }),
     async (input) => {
-      assertWritable(input.sessionID)
-      return Database.use((db) => {
-        const row = db
+      await assertWritable(input.sessionID)
+      return await Database.use(async (db) => {
+        const row = await db
           .update(SessionTable)
           .set({ permission: input.permission, time_updated: Date.now() })
           .where(eq(SessionTable.id, input.sessionID))
@@ -486,7 +486,7 @@ export namespace Session {
       visibility: z.enum(["private", "department", "org", "public"]),
     }),
     async (input) => {
-      const current = assertWritable(input.sessionID)
+      const current = await assertWritable(input.sessionID)
       const a = actor()
       const visibility = a ? "private" : input.visibility
       const patch = {
@@ -495,8 +495,8 @@ export namespace Session {
         department_id: visibility === "department" && !current.department_id ? a?.department_id : undefined,
         time_updated: Date.now(),
       }
-      return Database.use((db) => {
-        const row = db.update(SessionTable).set(patch).where(eq(SessionTable.id, input.sessionID)).returning().get()
+      return await Database.use(async (db) => {
+        const row = await db.update(SessionTable).set(patch).where(eq(SessionTable.id, input.sessionID)).returning().get()
         if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
         const info = fromRow(row)
         Database.effect(() => Bus.publish(Event.Updated, { info }))
@@ -512,9 +512,9 @@ export namespace Session {
       summary: Info.shape.summary,
     }),
     async (input) => {
-      assertWritable(input.sessionID)
-      return Database.use((db) => {
-        const row = db
+      await assertWritable(input.sessionID)
+      return await Database.use(async (db) => {
+        const row = await db
           .update(SessionTable)
           .set({
             revert: input.revert ?? null,
@@ -535,9 +535,9 @@ export namespace Session {
   )
 
   export const clearRevert = fn(Identifier.schema("session"), async (sessionID) => {
-    assertWritable(sessionID)
-    return Database.use((db) => {
-      const row = db
+    await assertWritable(sessionID)
+    return await Database.use(async (db) => {
+      const row = await db
         .update(SessionTable)
         .set({
           revert: null,
@@ -559,9 +559,9 @@ export namespace Session {
       summary: Info.shape.summary,
     }),
     async (input) => {
-      assertWritable(input.sessionID)
-      return Database.use((db) => {
-        const row = db
+      await assertWritable(input.sessionID)
+      return await Database.use(async (db) => {
+        const row = await db
           .update(SessionTable)
           .set({
             summary_additions: input.summary?.additions,
@@ -605,7 +605,7 @@ export namespace Session {
     },
   )
 
-  export function* list(input?: {
+  export async function* list(input?: {
     directory?: string
     roots?: boolean
     start?: number
@@ -630,7 +630,7 @@ export namespace Session {
 
     const limit = input?.limit ?? 100
 
-    const rows = Database.use((db) =>
+    const rows = await Database.use((db) =>
       db
         .select()
         .from(SessionTable)
@@ -644,7 +644,7 @@ export namespace Session {
     }
   }
 
-  export function* listGlobal(input?: {
+  export async function* listGlobal(input?: {
     directory?: string
     roots?: boolean
     start?: number
@@ -676,7 +676,7 @@ export namespace Session {
 
     const limit = input?.limit ?? 100
 
-    const rows = Database.use((db) => {
+    const rows = await Database.use((db) => {
       const query =
         conditions.length > 0
           ? db
@@ -691,7 +691,7 @@ export namespace Session {
     const projects = new Map<string, ProjectInfo>()
 
     if (ids.length > 0) {
-      const items = Database.use((db) =>
+      const items = await Database.use((db) =>
         db
           .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
           .from(ProjectTable)
@@ -715,7 +715,7 @@ export namespace Session {
 
   export const children = fn(Identifier.schema("session"), async (parentID) => {
     const project = Instance.project
-    const rows = Database.use((db) =>
+    const rows = await Database.use((db) =>
       db
         .select()
         .from(SessionTable)
@@ -728,15 +728,15 @@ export namespace Session {
   export const remove = fn(Identifier.schema("session"), async (sessionID) => {
     const project = Instance.project
     try {
-      assertWritable(sessionID)
+      await assertWritable(sessionID)
       const session = await get(sessionID)
       for (const child of await children(sessionID)) {
         await remove(child.id)
       }
       await unshare(sessionID).catch(() => {})
       // CASCADE delete handles messages and parts automatically
-      Database.use((db) => {
-        db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run()
+      await Database.use(async (db) => {
+        await db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run()
         Database.effect(() =>
           Bus.publish(Event.Deleted, {
             info: session,
@@ -749,11 +749,11 @@ export namespace Session {
   })
 
   export const updateMessage = fn(MessageV2.Info, async (msg) => {
-    assertWritable(msg.sessionID)
+    await assertWritable(msg.sessionID)
     const time_created = msg.time.created
     const { id, sessionID, ...data } = msg
-    Database.use((db) => {
-      db.insert(MessageTable)
+    await Database.use(async (db) => {
+      await db.insert(MessageTable)
         .values({
           id,
           session_id: sessionID,
@@ -777,10 +777,10 @@ export namespace Session {
       messageID: Identifier.schema("message"),
     }),
     async (input) => {
-      assertWritable(input.sessionID)
+      await assertWritable(input.sessionID)
       // CASCADE delete handles parts automatically
-      Database.use((db) => {
-        db.delete(MessageTable)
+      await Database.use(async (db) => {
+        await db.delete(MessageTable)
           .where(and(eq(MessageTable.id, input.messageID), eq(MessageTable.session_id, input.sessionID)))
           .run()
         Database.effect(() =>
@@ -801,9 +801,9 @@ export namespace Session {
       partID: Identifier.schema("part"),
     }),
     async (input) => {
-      assertWritable(input.sessionID)
-      Database.use((db) => {
-        db.delete(PartTable)
+      await assertWritable(input.sessionID)
+      await Database.use(async (db) => {
+        await db.delete(PartTable)
           .where(and(eq(PartTable.id, input.partID), eq(PartTable.session_id, input.sessionID)))
           .run()
         Database.effect(() =>
@@ -821,11 +821,11 @@ export namespace Session {
   const UpdatePartInput = MessageV2.Part
 
   export const updatePart = fn(UpdatePartInput, async (part) => {
-    assertWritable(part.sessionID)
+    await assertWritable(part.sessionID)
     const { id, messageID, sessionID, ...data } = part
     const time = Date.now()
-    Database.use((db) => {
-      db.insert(PartTable)
+    await Database.use(async (db) => {
+      await db.insert(PartTable)
         .values({
           id,
           message_id: messageID,

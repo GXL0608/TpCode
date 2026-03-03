@@ -1,7 +1,7 @@
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core"
+import { table, text, integer, index } from "../storage/orm-core"
 import { TpUserTable } from "./user.sql"
 
-export const TpPasswordResetTable = sqliteTable(
+export const TpPasswordResetTable = table(
   "tp_password_reset",
   {
     id: text().primaryKey(),

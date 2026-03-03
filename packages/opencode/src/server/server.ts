@@ -41,6 +41,7 @@ import { errors } from "./error"
 import { QuestionRoutes } from "./routes/question"
 import { PermissionRoutes } from "./routes/permission"
 import { GlobalRoutes } from "./routes/global"
+import { ApprovalRoutes } from "./routes/approval"
 import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
@@ -436,6 +437,7 @@ export namespace Server {
         .route("/experimental", ExperimentalRoutes())
         .route("/session", SessionRoutes())
         .route("/permission", PermissionRoutes())
+        .route("/approval", ApprovalRoutes())
         .route("/question", QuestionRoutes())
         .route("/provider", ProviderRoutes())
         .route("/", FileRoutes())
@@ -719,7 +721,7 @@ export namespace Server {
                 }),
               })
               const unsub = Bus.subscribeAll(async (event) => {
-                if (!eventVisibleToUser({ event, userID: accountUserID })) return
+                if (!(await eventVisibleToUser({ event, userID: accountUserID }))) return
                 await stream.writeSSE({
                   data: JSON.stringify(event),
                 })

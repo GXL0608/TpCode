@@ -1,8 +1,8 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { index, integer, table, text } from "../storage/orm-core"
 import { TpChangeRequestTable } from "./change-request.sql"
 import { TpUserTable } from "@/user/user.sql"
 
-export const TpTimelineTable = sqliteTable(
+export const TpTimelineTable = table(
   "tp_timeline",
   {
     id: text().primaryKey(),

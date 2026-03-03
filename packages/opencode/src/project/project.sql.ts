@@ -1,7 +1,7 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
+import { table, text, integer } from "../storage/orm-core"
 import { Timestamps } from "@/storage/schema.sql"
 
-export const ProjectTable = sqliteTable("project", {
+export const ProjectTable = table("project", {
   id: text().primaryKey(),
   worktree: text().notNull(),
   vcs: text(),

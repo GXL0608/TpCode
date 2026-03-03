@@ -717,7 +717,7 @@ export namespace MessageV2 {
     const size = 50
     let offset = 0
     while (true) {
-      const rows = Database.use((db) =>
+      const rows = await Database.use((db) =>
         db
           .select()
           .from(MessageTable)
@@ -732,7 +732,7 @@ export namespace MessageV2 {
       const ids = rows.map((row) => row.id)
       const partsByMessage = new Map<string, MessageV2.Part[]>()
       if (ids.length > 0) {
-        const partRows = Database.use((db) =>
+        const partRows = await Database.use((db) =>
           db
             .select()
             .from(PartTable)
@@ -767,7 +767,7 @@ export namespace MessageV2 {
   })
 
   export const parts = fn(Identifier.schema("message"), async (message_id) => {
-    const rows = Database.use((db) =>
+    const rows = await Database.use((db) =>
       db.select().from(PartTable).where(eq(PartTable.message_id, message_id)).orderBy(PartTable.id).all(),
     )
     return rows.map(
@@ -781,7 +781,7 @@ export namespace MessageV2 {
       messageID: Identifier.schema("message"),
     }),
     async (input): Promise<WithParts> => {
-      const row = Database.use((db) =>
+      const row = await Database.use((db) =>
         db
           .select()
           .from(MessageTable)

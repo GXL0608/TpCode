@@ -1,17 +1,15 @@
-import { Database as BunDatabase } from "bun:sqlite"
-import { drizzle, type SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
-import { migrate } from "drizzle-orm/bun-sqlite/migrator"
-import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
+import { drizzle } from "./orm-driver"
+import type { AsyncDatabase, AsyncTransaction } from "./orm-driver"
 export * from "drizzle-orm"
 import { Context } from "../util/context"
 import { lazy } from "../util/lazy"
-import { Global } from "../global"
 import { Log } from "../util/log"
 import { NamedError } from "@opencode-ai/util/error"
 import z from "zod"
 import path from "path"
 import { readFileSync, readdirSync, existsSync } from "fs"
 import * as schema from "./schema"
+import { QueryTrack } from "./query-track"
 
 declare const OPENCODE_MIGRATIONS: { sql: string; timestamp: number }[] | undefined
 
@@ -23,18 +21,22 @@ export const NotFoundError = NamedError.create(
 )
 
 const log = Log.create({ service: "db" })
+const seed = "postgres://opencode:opencode@182.92.74.187:9124/opencode"
 
 export namespace Database {
-  export const Path = path.join(Global.Path.data, "opencode.db")
   type Schema = typeof schema
-  export type Transaction = SQLiteTransaction<"sync", void, Schema>
-
-  type Client = SQLiteBunDatabase<Schema>
+  type RawClient = {
+    unsafe: (sql: string, params?: unknown[]) => Promise<unknown>
+    close?: () => void
+    end?: () => Promise<void> | void
+  }
+  export type Transaction = AsyncTransaction<Schema>
+  type Client = AsyncDatabase<Schema> & { $client: RawClient }
 
   type Journal = { sql: string; timestamp: number }[]
 
   const state = {
-    sqlite: undefined as BunDatabase | undefined,
+    db: undefined as Client | undefined,
   }
 
   function time(tag: string) {
@@ -69,60 +71,150 @@ export namespace Database {
     return sql.sort((a, b) => a.timestamp - b.timestamp)
   }
 
-  export const Client = lazy(() => {
-    log.info("opening database", { path: path.join(Global.Path.data, "opencode.db") })
+  function split(sql: string) {
+    return sql
+      .split("--> statement-breakpoint")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => (item.endsWith(";") ? item.slice(0, -1) : item))
+  }
 
-    const sqlite = new BunDatabase(path.join(Global.Path.data, "opencode.db"), { create: true })
-    state.sqlite = sqlite
+  function convert(sql: string) {
+    return sql.replaceAll("`", '"').replace(/\binteger\b/gi, "bigint")
+  }
 
-    sqlite.run("PRAGMA journal_mode = WAL")
-    sqlite.run("PRAGMA synchronous = NORMAL")
-    sqlite.run("PRAGMA busy_timeout = 5000")
-    sqlite.run("PRAGMA cache_size = -64000")
-    sqlite.run("PRAGMA foreign_keys = ON")
-    sqlite.run("PRAGMA wal_checkpoint(PASSIVE)")
+  export function url() {
+    return process.env.OPENCODE_DATABASE_URL ?? process.env.OPENCODE_PG_URL ?? seed
+  }
 
-    const db = drizzle({ client: sqlite, schema })
+  export function masked() {
+    const value = url()
+    const marker = "://"
+    const start = value.indexOf(marker)
+    const at = value.indexOf("@")
+    if (start < 0 || at < 0 || at <= start + marker.length) return value
+    const auth = value.slice(start + marker.length, at)
+    const split = auth.indexOf(":")
+    if (split < 0) return value
+    const name = auth.slice(0, split)
+    return `${value.slice(0, start + marker.length)}${name}:****${value.slice(at)}`
+  }
 
-    // Apply schema migrations
-    const entries =
-      typeof OPENCODE_MIGRATIONS !== "undefined"
-        ? OPENCODE_MIGRATIONS
-        : migrations(path.join(import.meta.dirname, "../../migration"))
-    if (entries.length > 0) {
-      log.info("applying migrations", {
-        count: entries.length,
-        mode: typeof OPENCODE_MIGRATIONS !== "undefined" ? "bundled" : "dev",
-      })
-      migrate(db, entries)
+  function entries() {
+    if (typeof OPENCODE_MIGRATIONS !== "undefined") return OPENCODE_MIGRATIONS
+    return migrations(path.join(import.meta.dirname, "../../migration"))
+  }
+
+  function esc(input: string) {
+    return input.replaceAll('"', '""')
+  }
+
+  function id(input: string) {
+    return `"${esc(input)}"`
+  }
+
+  async function query(client: { unsafe: (sql: string, params?: unknown[]) => Promise<unknown> }, sql: string, params: unknown[] = []) {
+    return client.unsafe(sql, params)
+  }
+
+  async function migrate(client: { unsafe: (sql: string, params?: unknown[]) => Promise<unknown> }) {
+    await query(client, `create table if not exists "opencode_migration" ("timestamp" bigint primary key not null)`)
+
+    const rows = (await query(client, `select "timestamp" from "opencode_migration"`)) as { timestamp: number | string }[]
+    const done = new Set(rows.map((row) => Number(row.timestamp)))
+
+    for (const entry of entries()) {
+      if (done.has(entry.timestamp)) continue
+      let queue = split(entry.sql).map(convert)
+      let step = 0
+      while (queue.length > 0) {
+        const next: string[] = []
+        const size = queue.length
+        let progress = false
+        let last = ""
+        for (const stmt of queue) {
+          try {
+            await query(client, stmt)
+            progress = true
+          } catch (err) {
+            const text = err instanceof Error ? err.message : String(err)
+            if (text.includes("already exists")) {
+              progress = true
+              continue
+            }
+            last = text
+            next.push(stmt)
+          }
+        }
+        queue = next
+        step += 1
+        if (queue.length === 0) break
+        if (!progress || step > size + 5) {
+          throw new Error(`PostgreSQL migration failed at ${entry.timestamp}: ${last}`)
+        }
+      }
+      await query(
+        client,
+        `insert into "opencode_migration" ("timestamp") values ($1) on conflict ("timestamp") do nothing`,
+        [entry.timestamp],
+      )
     }
 
+    const ints = (await query(
+      client,
+      `select table_name, column_name from information_schema.columns where table_schema = current_schema() and data_type = 'integer'`,
+    )) as { table_name: string; column_name: string }[]
+
+    for (const row of ints) {
+      await query(
+        client,
+        `alter table ${id(row.table_name)} alter column ${id(row.column_name)} type bigint using ${id(row.column_name)}::bigint`,
+      )
+    }
+  }
+
+  export const Client = lazy(async () => {
+    const value = url()
+    log.info("opening database", { postgres: masked() })
+
+    const db = drizzle(value, { schema }) as Client
+    await migrate(db.$client)
+
+    state.db = db
     return db
   })
 
-  export function close() {
-    const sqlite = state.sqlite
-    if (!sqlite) return
-    sqlite.close()
-    state.sqlite = undefined
+  export async function close() {
+    const db = state.db
+    if (!db) return
+    const client = db.$client
+    if (client.end) await client.end()
+    if (client.close) client.close()
+    state.db = undefined
     Client.reset()
   }
 
-  export type TxOrDb = Transaction | Client
+  export async function raw(queryText: string, params: unknown[] = []) {
+    const db = await Client()
+    return (await query(db.$client, queryText, params)) as Record<string, unknown>[]
+  }
+
+  export type TxOrDb = Client | Transaction
 
   const ctx = Context.create<{
     tx: TxOrDb
     effects: (() => void | Promise<void>)[]
   }>("database")
 
-  export function use<T>(callback: (trx: TxOrDb) => T): T {
+  export async function use<T>(callback: (trx: TxOrDb) => Promise<T> | T): Promise<T> {
     try {
-      return callback(ctx.use().tx)
+      return await callback(ctx.use().tx)
     } catch (err) {
       if (err instanceof Context.NotFound) {
         const effects: (() => void | Promise<void>)[] = []
-        const result = ctx.provide({ effects, tx: Client() }, () => callback(Client()))
-        for (const effect of effects) effect()
+        const db = await Client()
+        const result = await QueryTrack.scoped(() => ctx.provide({ effects, tx: db }, () => callback(db)))
+        for (const effect of effects) await effect()
         return result
       }
       throw err
@@ -133,20 +225,21 @@ export namespace Database {
     try {
       ctx.use().effects.push(fn)
     } catch {
-      fn()
+      void fn()
     }
   }
 
-  export function transaction<T>(callback: (tx: TxOrDb) => T): T {
+  export async function transaction<T>(callback: (tx: TxOrDb) => Promise<T> | T): Promise<T> {
     try {
-      return callback(ctx.use().tx)
+      return await callback(ctx.use().tx)
     } catch (err) {
       if (err instanceof Context.NotFound) {
         const effects: (() => void | Promise<void>)[] = []
-        const result = Client().transaction((tx) => {
-          return ctx.provide({ tx, effects }, () => callback(tx))
+        const db = await Client()
+        const result = await db.transaction(async (tx: Transaction) => {
+          return QueryTrack.scoped(() => ctx.provide({ tx, effects }, () => callback(tx)))
         })
-        for (const effect of effects) effect()
+        for (const effect of effects) await effect()
         return result
       }
       throw err

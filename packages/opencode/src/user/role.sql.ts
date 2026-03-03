@@ -1,8 +1,8 @@
-import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { integer, primaryKey, table, text } from "../storage/orm-core"
 import { TpUserTable } from "./user.sql"
 import { Timestamps } from "@/storage/schema.sql"
 
-export const TpRoleTable = sqliteTable("tp_role", {
+export const TpRoleTable = table("tp_role", {
   id: text().primaryKey(),
   code: text().notNull().unique(),
   name: text().notNull(),
@@ -14,7 +14,7 @@ export const TpRoleTable = sqliteTable("tp_role", {
   ...Timestamps,
 })
 
-export const TpUserRoleTable = sqliteTable(
+export const TpUserRoleTable = table(
   "tp_user_role",
   {
     user_id: text()

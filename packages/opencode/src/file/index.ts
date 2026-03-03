@@ -129,7 +129,6 @@ export namespace File {
     "woff",
     "woff2",
     "eot",
-    "sqlite",
     "db",
     "mdb",
     "apk",

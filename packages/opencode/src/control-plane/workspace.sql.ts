@@ -1,8 +1,8 @@
-import { sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { table, text } from "../storage/orm-core"
 import { ProjectTable } from "@/project/project.sql"
 import type { Config } from "./config"
 
-export const WorkspaceTable = sqliteTable("workspace", {
+export const WorkspaceTable = table("workspace", {
   id: text().primaryKey(),
   branch: text(),
   project_id: text()

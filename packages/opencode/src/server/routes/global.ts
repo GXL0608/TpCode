@@ -83,7 +83,7 @@ export const GlobalRoutes = lazy(() =>
           async function handler(event: any) {
             const payload = event?.payload
             if (!payload || typeof payload !== "object") return
-            if (!eventVisibleToUser({ event: payload, userID })) return
+            if (!(await eventVisibleToUser({ event: payload, userID }))) return
             await stream.writeSSE({
               data: JSON.stringify(event),
             })
