@@ -12,12 +12,22 @@ import { createHash } from "crypto"
 const log = Log.create({ service: "sync" })
 
 export namespace SessionSync {
+  type SessionVisibility = "private" | "department" | "org" | "public"
+
+  type SessionAccountSnapshot = {
+    user_id: string | null
+    org_id: string | null
+    department_id: string | null
+    visibility: SessionVisibility
+  }
+
   const state = Instance.state(() => ({
     initialized: false,
     retryWorkerRunning: false,
     replayingSessions: new Set<string>(),
     replayRequestedSessions: new Set<string>(),
     lastPayloadHashByEntity: new Map<string, string>(),
+    sessionAccountByID: new Map<string, SessionAccountSnapshot>(),
   }))
 
   interface SyncPayload {
@@ -27,6 +37,7 @@ export namespace SessionSync {
   }
 
   const FULL_SYNC_SCOPE = "default"
+  const SESSION_ACCOUNT_SCOPE = "session-account-v1"
   const DEFAULT_INITIAL_FULL_SYNC_BATCH_SIZE = 25
   const MAX_RETRY_DELAY_MS = 5 * 60 * 1000
   const MAX_BACKOFF_EXPONENT = 8
@@ -59,12 +70,14 @@ export namespace SessionSync {
     })
 
     await runInitialFullSyncIfNeeded(initialFullSyncBatchSize)
+    await runSessionAccountBackfillIfNeeded(initialFullSyncBatchSize)
 
     // 订阅会话事件
     log.info("subscribing to session events")
     const sub1 = Bus.subscribe(Session.Event.Created, async (event) => {
       log.info("session.created event received", { sessionID: event.properties.info.id })
       try {
+        sessionAccount(event.properties.info.id, { forceRefresh: true })
         await handleSessionEvent("session.created", event.properties.info)
       } catch (err) {
         log.error("error handling session.created", { error: err })
@@ -75,12 +88,23 @@ export namespace SessionSync {
     const sub2 = Bus.subscribe(Session.Event.Updated, async (event) => {
       log.info("session.updated event received", { sessionID: event.properties.info.id })
       try {
+        sessionAccount(event.properties.info.id, { forceRefresh: true })
         await handleSessionEvent("session.updated", event.properties.info)
       } catch (err) {
         log.error("error handling session.updated", { error: err })
       }
     })
     log.info("session.updated subscription created", { hasSubscription: !!sub2 })
+
+    const sub6 = Bus.subscribe(Session.Event.Deleted, async (event) => {
+      const sessionID = event.properties.info.id
+      const instanceState = state()
+      instanceState.sessionAccountByID.delete(sessionID)
+      instanceState.lastPayloadHashByEntity.delete(sessionEntityKey(sessionID))
+      instanceState.replayingSessions.delete(sessionID)
+      instanceState.replayRequestedSessions.delete(sessionID)
+    })
+    log.info("session.deleted subscription created", { hasSubscription: !!sub6 })
 
     // 订阅消息事件
     log.info("subscribing to message events")
@@ -139,11 +163,11 @@ export namespace SessionSync {
    */
   async function handleSessionEvent(eventType: string, sessionInfo: Session.Info): Promise<void> {
     try {
-      await sendToServer(toSessionPayload(sessionInfo))
+      await sendToServer(await toSessionPayload(sessionInfo))
       log.debug("session synced successfully", { sessionID: sessionInfo.id, eventType })
     } catch (error) {
       log.warn("failed to sync session", { sessionID: sessionInfo.id, error })
-      await enqueueRetry(eventType, sessionInfo.id, { type: "session", data: sessionInfo }, error)
+      await enqueueRetry(eventType, sessionInfo.id, { type: "session", sessionID: sessionInfo.id }, error)
     }
   }
 
@@ -185,9 +209,9 @@ export namespace SessionSync {
     const sessionInfo = await Session.get(sessionID)
 
     try {
-      await sendToServer(toSessionPayload(sessionInfo))
+      await sendToServer(await toSessionPayload(sessionInfo))
     } catch (error) {
-      await enqueueRetry("session.replay", sessionID, { type: "session", data: sessionInfo }, error)
+      await enqueueRetry("session.replay", sessionID, { type: "session", sessionID }, error)
     }
 
     for await (const message of MessageV2.stream(sessionID)) {
@@ -202,13 +226,80 @@ export namespace SessionSync {
     log.info("session history replay finished", { sessionID, reason, messageCount })
   }
 
-  function toSessionPayload(sessionInfo: Session.Info): SyncPayload {
+  function sessionEntityKey(sessionID: string) {
+    return `session:${sessionID}`
+  }
+
+  function sessionAccountFromDB(sessionID: string): SessionAccountSnapshot {
+    const row = Database.use((db) =>
+      db
+        .select({
+          user_id: SessionTable.user_id,
+          org_id: SessionTable.org_id,
+          department_id: SessionTable.department_id,
+          visibility: SessionTable.visibility,
+        })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, sessionID))
+        .get(),
+    )
+
+    const visibility =
+      row?.visibility === "private" ||
+      row?.visibility === "department" ||
+      row?.visibility === "org" ||
+      row?.visibility === "public"
+        ? row.visibility
+        : "public"
+
+    return {
+      user_id: row?.user_id ?? null,
+      org_id: row?.org_id ?? null,
+      department_id: row?.department_id ?? null,
+      visibility,
+    }
+  }
+
+  function sessionAccount(sessionID: string, options?: { forceRefresh?: boolean }): SessionAccountSnapshot {
+    const instanceState = state()
+    const forceRefresh = options?.forceRefresh === true
+    const cached = instanceState.sessionAccountByID.get(sessionID)
+
+    if (!forceRefresh && cached) {
+      return cached
+    }
+
+    try {
+      const value = sessionAccountFromDB(sessionID)
+      instanceState.sessionAccountByID.set(sessionID, value)
+      return value
+    } catch (error) {
+      if (cached) {
+        log.warn("session account query failed, fallback to cached snapshot", { sessionID, error })
+        return cached
+      }
+      throw error
+    }
+  }
+
+  async function toSessionPayload(sessionInfo: Session.Info): Promise<SyncPayload> {
+    const account = sessionAccount(sessionInfo.id)
     return {
       type: "session",
       timestamp: Date.now(),
       // Keep full session info to avoid dropping fields (share/revert/permission/archived...)
-      data: sessionInfo,
+      data: {
+        ...sessionInfo,
+        user_id: account.user_id,
+        org_id: account.org_id,
+        department_id: account.department_id,
+        visibility: account.visibility,
+      },
     }
+  }
+
+  async function buildSessionPayload(sessionID: string): Promise<SyncPayload> {
+    return toSessionPayload(await Session.get(sessionID))
   }
 
   function toMessagePayload(sessionID: string, message: any): SyncPayload {
@@ -266,23 +357,39 @@ export namespace SessionSync {
   }
 
   function hasCompletedInitialFullSync(): boolean {
+    return hasCompletedSyncScope(FULL_SYNC_SCOPE)
+  }
+
+  function markInitialFullSyncCompleted(): void {
+    markSyncScopeCompleted(FULL_SYNC_SCOPE)
+  }
+
+  function hasCompletedSessionAccountBackfill(): boolean {
+    return hasCompletedSyncScope(SESSION_ACCOUNT_SCOPE)
+  }
+
+  function markSessionAccountBackfillCompleted(): void {
+    markSyncScopeCompleted(SESSION_ACCOUNT_SCOPE)
+  }
+
+  function hasCompletedSyncScope(scope: string): boolean {
     const row = Database.use((db) =>
       db
         .select({ fullSyncCompletedAt: SyncStateTable.full_sync_completed_at })
         .from(SyncStateTable)
-        .where(eq(SyncStateTable.scope, FULL_SYNC_SCOPE))
+        .where(eq(SyncStateTable.scope, scope))
         .get(),
     )
 
     return typeof row?.fullSyncCompletedAt === "number" && row.fullSyncCompletedAt > 0
   }
 
-  function markInitialFullSyncCompleted(): void {
+  function markSyncScopeCompleted(scope: string): void {
     const now = Date.now()
     Database.use((db) => {
       db.insert(SyncStateTable)
         .values({
-          scope: FULL_SYNC_SCOPE,
+          scope,
           full_sync_completed_at: now,
           time_created: now,
           time_updated: now,
@@ -329,10 +436,10 @@ export namespace SessionSync {
         }
 
         try {
-          await sendToServer(toSessionPayload(sessionInfo))
+          await sendToServer(await toSessionPayload(sessionInfo))
           sessionsSynced += 1
         } catch (error) {
-          await enqueueRetry("session.full-sync", row.id, { type: "session", data: sessionInfo }, error)
+          await enqueueRetry("session.full-sync", row.id, { type: "session", sessionID: row.id }, error)
         }
 
         for await (const message of MessageV2.stream(row.id)) {
@@ -355,6 +462,63 @@ export namespace SessionSync {
     }
 
     log.info("initial full sync finished", { batchSize, sessionsSynced, messagesSynced })
+  }
+
+  async function runSessionAccountBackfillIfNeeded(batchSize: number): Promise<void> {
+    try {
+      if (hasCompletedSessionAccountBackfill()) {
+        log.info("session account backfill already completed, skipping")
+        return
+      }
+    } catch (error) {
+      log.warn("failed to read session account backfill marker, fallback to account backfill", { error })
+    }
+
+    log.info("session account backfill marker missing, running one-time session-only backfill", { batchSize })
+    await runSessionAccountBackfill(batchSize)
+    try {
+      markSessionAccountBackfillCompleted()
+      log.info("session account backfill completed and marked")
+    } catch (error) {
+      log.error("session account backfill finished but failed to write marker", { error })
+    }
+  }
+
+  async function runSessionAccountBackfill(batchSize: number): Promise<void> {
+    let offset = 0
+    let sessionsSynced = 0
+
+    log.info("session account backfill started", { batchSize })
+
+    while (true) {
+      const sessionIDs = Database.use((db) =>
+        db
+          .select({ id: SessionTable.id })
+          .from(SessionTable)
+          .where(eq(SessionTable.project_id, Instance.project.id))
+          .orderBy(desc(SessionTable.time_updated), desc(SessionTable.id))
+          .limit(batchSize)
+          .offset(offset)
+          .all(),
+      )
+
+      if (sessionIDs.length === 0) break
+
+      for (const row of sessionIDs) {
+        try {
+          const payload = await buildSessionPayload(row.id)
+          await sendToServer(payload)
+          sessionsSynced += 1
+        } catch (error) {
+          await enqueueRetry("session.account-backfill", row.id, { type: "session", sessionID: row.id }, error)
+        }
+      }
+
+      offset += sessionIDs.length
+      if (sessionIDs.length < batchSize) break
+    }
+
+    log.info("session account backfill finished", { batchSize, sessionsSynced })
   }
 
   /**
@@ -502,11 +666,8 @@ export namespace SessionSync {
         // 根据类型重新构建完整的同步数据
         let syncPayload: SyncPayload
         if (payload.type === "session") {
-          syncPayload = {
-            type: "session",
-            timestamp: Date.now(),
-            data: payload.data,
-          }
+          const sessionID = payload.sessionID ?? task.session_id
+          syncPayload = await buildSessionPayload(sessionID)
         } else if (payload.type === "session-replay") {
           await replaySessionHistory(payload.sessionID ?? task.session_id, "retry")
           Database.use((db) => {
@@ -516,11 +677,12 @@ export namespace SessionSync {
           continue
         } else {
           // 对于消息，需要重新获取最新数据
+          const sessionID = payload.sessionID ?? task.session_id
           const message = await MessageV2.get({
-            sessionID: payload.sessionID,
+            sessionID,
             messageID: payload.messageID,
           })
-          syncPayload = toMessagePayload(payload.sessionID, message)
+          syncPayload = toMessagePayload(sessionID, message)
         }
 
         await sendToServer(syncPayload)
@@ -579,6 +741,8 @@ export namespace SessionSync {
     instanceState.retryWorkerRunning = false
     instanceState.replayingSessions.clear()
     instanceState.replayRequestedSessions.clear()
+    instanceState.lastPayloadHashByEntity.clear()
+    instanceState.sessionAccountByID.clear()
     instanceState.initialized = false
     log.info("session sync shutdown")
   }
