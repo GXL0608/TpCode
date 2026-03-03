@@ -828,6 +828,7 @@ export type Session = {
     archived?: number
   }
   permission?: PermissionRuleset
+  visibility: "private" | "department" | "org" | "public"
   revert?: {
     messageID: string
     partID?: string
@@ -1527,6 +1528,24 @@ export type WellKnownAuth = {
 
 export type Auth = OAuth | ApiAuth | WellKnownAuth
 
+export type AccountLoginResult = {
+  access_token: string
+  refresh_token: string
+  access_expires_at: number
+  refresh_expires_at: number
+  user: {
+    id: string
+    username: string
+    display_name: string
+    account_type: string
+    org_id: string
+    department_id?: string
+    force_password_reset: boolean
+    roles: Array<string>
+    permissions: Array<string>
+  }
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
@@ -1691,6 +1710,7 @@ export type GlobalSession = {
     archived?: number
   }
   permission?: PermissionRuleset
+  visibility: "private" | "department" | "org" | "public"
   revert?: {
     messageID: string
     partID?: string
@@ -2045,6 +2065,434 @@ export type AuthSetResponses = {
 }
 
 export type AuthSetResponse = AuthSetResponses[keyof AuthSetResponses]
+
+export type AccountRegisterData = {
+  body?: {
+    username: string
+    password: string
+    display_name?: string
+    email?: string
+    phone?: string
+    invite_code?: string
+  }
+  path?: never
+  query?: never
+  url: "/account/register"
+}
+
+export type AccountRegisterErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountRegisterError = AccountRegisterErrors[keyof AccountRegisterErrors]
+
+export type AccountRegisterResponses = {
+  /**
+   * Register result
+   */
+  200: {
+    ok: boolean
+    code?: string
+  }
+}
+
+export type AccountRegisterResponse = AccountRegisterResponses[keyof AccountRegisterResponses]
+
+export type AccountLoginData = {
+  body?: {
+    username: string
+    password: string
+  }
+  path?: never
+  query?: never
+  url: "/account/login"
+}
+
+export type AccountLoginErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountLoginError = AccountLoginErrors[keyof AccountLoginErrors]
+
+export type AccountLoginResponses = {
+  /**
+   * Login result
+   */
+  200: AccountLoginResult
+}
+
+export type AccountLoginResponse = AccountLoginResponses[keyof AccountLoginResponses]
+
+export type AccountTokenRefreshData = {
+  body?: {
+    refresh_token: string
+  }
+  path?: never
+  query?: never
+  url: "/account/token/refresh"
+}
+
+export type AccountTokenRefreshErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountTokenRefreshError = AccountTokenRefreshErrors[keyof AccountTokenRefreshErrors]
+
+export type AccountTokenRefreshResponses = {
+  /**
+   * Token result
+   */
+  200: AccountLoginResult
+}
+
+export type AccountTokenRefreshResponse = AccountTokenRefreshResponses[keyof AccountTokenRefreshResponses]
+
+export type AccountLogoutData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/account/logout"
+}
+
+export type AccountLogoutErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountLogoutError = AccountLogoutErrors[keyof AccountLogoutErrors]
+
+export type AccountLogoutResponses = {
+  /**
+   * Result
+   */
+  200: boolean
+}
+
+export type AccountLogoutResponse = AccountLogoutResponses[keyof AccountLogoutResponses]
+
+export type AccountLogoutAllData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/account/logout-all"
+}
+
+export type AccountLogoutAllErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountLogoutAllError = AccountLogoutAllErrors[keyof AccountLogoutAllErrors]
+
+export type AccountLogoutAllResponses = {
+  /**
+   * Result
+   */
+  200: boolean
+}
+
+export type AccountLogoutAllResponse = AccountLogoutAllResponses[keyof AccountLogoutAllResponses]
+
+export type AccountMeData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/account/me"
+}
+
+export type AccountMeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountMeError = AccountMeErrors[keyof AccountMeErrors]
+
+export type AccountMeResponses = {
+  /**
+   * Current user
+   */
+  200: {
+    id: string
+    username: string
+    display_name: string
+    account_type: string
+    org_id: string
+    department_id?: string
+    force_password_reset: boolean
+    roles: Array<string>
+    permissions: Array<string>
+  }
+}
+
+export type AccountMeResponse = AccountMeResponses[keyof AccountMeResponses]
+
+export type AccountMeProviderData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/me/provider/{provider_id}"
+}
+
+export type AccountMeProviderErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountMeProviderError = AccountMeProviderErrors[keyof AccountMeProviderErrors]
+
+export type AccountMeProviderResponses = {
+  /**
+   * Provider credential
+   */
+  200: {
+    provider_id: string
+    auth: Auth | null
+  }
+}
+
+export type AccountMeProviderResponse = AccountMeProviderResponses[keyof AccountMeProviderResponses]
+
+export type PostAccountAdminRolesRoleCodePermissionsData = {
+  body?: {
+    permission_codes: Array<string>
+  }
+  path: {
+    role_code: string
+  }
+  query?: never
+  url: "/account/admin/roles/{role_code}/permissions"
+}
+
+export type PostAccountAdminRolesRoleCodePermissionsResponses = {
+  200: unknown
+}
+
+export type DeleteAccountAdminProviderProviderIdGlobalData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/provider/{provider_id}/global"
+}
+
+export type DeleteAccountAdminProviderProviderIdGlobalResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminProviderProviderIdGlobalData = {
+  body?: Auth
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/provider/{provider_id}/global"
+}
+
+export type PutAccountAdminProviderProviderIdGlobalResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminAuditData = {
+  body?: never
+  path?: never
+  query?: {
+    actor_user_id?: string
+    action?: string
+    limit?: number
+  }
+  url: "/account/admin/audit"
+}
+
+export type GetAccountAdminAuditResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminUsersData = {
+  body?: never
+  path?: never
+  query?: {
+    org_id?: string
+    department_id?: string
+    keyword?: string
+  }
+  url: "/account/admin/users"
+}
+
+export type GetAccountAdminUsersResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminUsersData = {
+  body?: {
+    username: string
+    password: string
+    display_name?: string
+    email?: string
+    phone?: string
+    account_type: "internal" | "hospital" | "partner"
+    org_id: string
+    department_id?: string
+    role_codes?: Array<string>
+    force_password_reset?: boolean
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/users"
+}
+
+export type PostAccountAdminUsersResponses = {
+  200: unknown
+}
+
+export type PatchAccountAdminUsersUserIdData = {
+  body?: {
+    display_name?: string
+    email?: string
+    phone?: string
+    status?: "active" | "inactive"
+    department_id?: string | null
+  }
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}"
+}
+
+export type PatchAccountAdminUsersUserIdResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminUsersUserIdRolesData = {
+  body?: {
+    role_codes: Array<string>
+  }
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/roles"
+}
+
+export type PostAccountAdminUsersUserIdRolesResponses = {
+  200: unknown
+}
+
+export type AccountPasswordChangeData = {
+  body?: {
+    current_password: string
+    new_password: string
+  }
+  path?: never
+  query?: never
+  url: "/account/password/change"
+}
+
+export type AccountPasswordChangeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountPasswordChangeError = AccountPasswordChangeErrors[keyof AccountPasswordChangeErrors]
+
+export type AccountPasswordChangeResponses = {
+  /**
+   * Result
+   */
+  200: {
+    ok: boolean
+    code?: string
+  }
+}
+
+export type AccountPasswordChangeResponse = AccountPasswordChangeResponses[keyof AccountPasswordChangeResponses]
+
+export type AccountPasswordForgotRequestData = {
+  body?: {
+    username: string
+  }
+  path?: never
+  query?: never
+  url: "/account/password/forgot/request"
+}
+
+export type AccountPasswordForgotRequestErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountPasswordForgotRequestError =
+  AccountPasswordForgotRequestErrors[keyof AccountPasswordForgotRequestErrors]
+
+export type AccountPasswordForgotRequestResponses = {
+  /**
+   * Result
+   */
+  200: {
+    ok: boolean
+    reset_code?: string
+  }
+}
+
+export type AccountPasswordForgotRequestResponse =
+  AccountPasswordForgotRequestResponses[keyof AccountPasswordForgotRequestResponses]
+
+export type AccountPasswordForgotResetData = {
+  body?: {
+    username: string
+    code: string
+    new_password: string
+  }
+  path?: never
+  query?: never
+  url: "/account/password/forgot/reset"
+}
+
+export type AccountPasswordForgotResetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountPasswordForgotResetError = AccountPasswordForgotResetErrors[keyof AccountPasswordForgotResetErrors]
+
+export type AccountPasswordForgotResetResponses = {
+  /**
+   * Result
+   */
+  200: {
+    ok: boolean
+    code?: string
+  }
+}
+
+export type AccountPasswordForgotResetResponse =
+  AccountPasswordForgotResetResponses[keyof AccountPasswordForgotResetResponses]
 
 export type ProjectListData = {
   body?: never
@@ -2721,6 +3169,7 @@ export type SessionCreateData = {
     parentID?: string
     title?: string
     permission?: PermissionRuleset
+    visibility?: "private" | "department" | "org" | "public"
   }
   path?: never
   query?: {
@@ -2845,6 +3294,7 @@ export type SessionGetResponse = SessionGetResponses[keyof SessionGetResponses]
 export type SessionUpdateData = {
   body?: {
     title?: string
+    visibility?: "private" | "department" | "org" | "public"
     time?: {
       archived?: number
     }

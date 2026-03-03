@@ -3,6 +3,26 @@
 import { client } from "./client.gen.js"
 import { buildClientParams, type Client, type Options as Options2, type TDataShape } from "./client/index.js"
 import type {
+  AccountLoginErrors,
+  AccountLoginResponses,
+  AccountLogoutAllErrors,
+  AccountLogoutAllResponses,
+  AccountLogoutErrors,
+  AccountLogoutResponses,
+  AccountMeErrors,
+  AccountMeProviderErrors,
+  AccountMeProviderResponses,
+  AccountMeResponses,
+  AccountPasswordChangeErrors,
+  AccountPasswordChangeResponses,
+  AccountPasswordForgotRequestErrors,
+  AccountPasswordForgotRequestResponses,
+  AccountPasswordForgotResetErrors,
+  AccountPasswordForgotResetResponses,
+  AccountRegisterErrors,
+  AccountRegisterResponses,
+  AccountTokenRefreshErrors,
+  AccountTokenRefreshResponses,
   AgentPartInput,
   AppAgentsResponses,
   AppLogErrors,
@@ -19,6 +39,7 @@ import type {
   ConfigProvidersResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
+  DeleteAccountAdminProviderProviderIdGlobalResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute,
   EventTuiPromptAppend,
@@ -40,6 +61,8 @@ import type {
   FindSymbolsResponses,
   FindTextResponses,
   FormatterStatusResponses,
+  GetAccountAdminAuditResponses,
+  GetAccountAdminUsersResponses,
   GlobalConfigGetResponses,
   GlobalConfigUpdateErrors,
   GlobalConfigUpdateResponses,
@@ -69,6 +92,7 @@ import type {
   PartDeleteResponses,
   PartUpdateErrors,
   PartUpdateResponses,
+  PatchAccountAdminUsersUserIdResponses,
   PathGetResponses,
   PermissionListResponses,
   PermissionReplyErrors,
@@ -76,6 +100,9 @@ import type {
   PermissionRespondErrors,
   PermissionRespondResponses,
   PermissionRuleset,
+  PostAccountAdminRolesRoleCodePermissionsResponses,
+  PostAccountAdminUsersResponses,
+  PostAccountAdminUsersUserIdRolesResponses,
   ProjectCurrentResponses,
   ProjectListResponses,
   ProjectUpdateErrors,
@@ -97,6 +124,7 @@ import type {
   PtyRemoveResponses,
   PtyUpdateErrors,
   PtyUpdateResponses,
+  PutAccountAdminProviderProviderIdGlobalResponses,
   QuestionAnswer,
   QuestionListResponses,
   QuestionRejectErrors,
@@ -361,6 +389,310 @@ export class Auth extends HeyApiClient {
         ...params.headers,
       },
     })
+  }
+}
+
+export class Token extends HeyApiClient {
+  /**
+   * Refresh access token
+   *
+   * Refresh access token by refresh token.
+   */
+  public refresh<ThrowOnError extends boolean = false>(
+    parameters?: {
+      refresh_token?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "refresh_token" }] }])
+    return (options?.client ?? this.client).post<AccountTokenRefreshResponses, AccountTokenRefreshErrors, ThrowOnError>(
+      {
+        url: "/account/token/refresh",
+        ...options,
+        ...params,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+          ...params.headers,
+        },
+      },
+    )
+  }
+}
+
+export class Logout extends HeyApiClient {
+  /**
+   * Logout all sessions
+   *
+   * Revoke all tokens for current user.
+   */
+  public all<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).post<AccountLogoutAllResponses, AccountLogoutAllErrors, ThrowOnError>({
+      url: "/account/logout-all",
+      ...options,
+    })
+  }
+}
+
+export class Me extends HeyApiClient {
+  /**
+   * Current user provider credential
+   *
+   * Get current authenticated user's own provider credential.
+   */
+  public provider<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).get<AccountMeProviderResponses, AccountMeProviderErrors, ThrowOnError>({
+      url: "/account/me/provider/{provider_id}",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Forgot extends HeyApiClient {
+  /**
+   * Request password reset
+   *
+   * Create password reset code for the user.
+   */
+  public request<ThrowOnError extends boolean = false>(
+    parameters?: {
+      username?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "username" }] }])
+    return (options?.client ?? this.client).post<
+      AccountPasswordForgotRequestResponses,
+      AccountPasswordForgotRequestErrors,
+      ThrowOnError
+    >({
+      url: "/account/password/forgot/request",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Reset password
+   *
+   * Reset password by reset code.
+   */
+  public reset<ThrowOnError extends boolean = false>(
+    parameters?: {
+      username?: string
+      code?: string
+      new_password?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "username" },
+            { in: "body", key: "code" },
+            { in: "body", key: "new_password" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AccountPasswordForgotResetResponses,
+      AccountPasswordForgotResetErrors,
+      ThrowOnError
+    >({
+      url: "/account/password/forgot/reset",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Password extends HeyApiClient {
+  /**
+   * Change password
+   *
+   * Change password for current authenticated user.
+   */
+  public change<ThrowOnError extends boolean = false>(
+    parameters?: {
+      current_password?: string
+      new_password?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "current_password" },
+            { in: "body", key: "new_password" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AccountPasswordChangeResponses,
+      AccountPasswordChangeErrors,
+      ThrowOnError
+    >({
+      url: "/account/password/change",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  private _forgot?: Forgot
+  get forgot(): Forgot {
+    return (this._forgot ??= new Forgot({ client: this.client }))
+  }
+}
+
+export class Account extends HeyApiClient {
+  /**
+   * Register account
+   *
+   * Register a new account for tpCode account system.
+   */
+  public register<ThrowOnError extends boolean = false>(
+    parameters?: {
+      username?: string
+      password?: string
+      display_name?: string
+      email?: string
+      phone?: string
+      invite_code?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "username" },
+            { in: "body", key: "password" },
+            { in: "body", key: "display_name" },
+            { in: "body", key: "email" },
+            { in: "body", key: "phone" },
+            { in: "body", key: "invite_code" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AccountRegisterResponses, AccountRegisterErrors, ThrowOnError>({
+      url: "/account/register",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Login
+   *
+   * Login with username and password.
+   */
+  public login<ThrowOnError extends boolean = false>(
+    parameters?: {
+      username?: string
+      password?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "username" },
+            { in: "body", key: "password" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AccountLoginResponses, AccountLoginErrors, ThrowOnError>({
+      url: "/account/login",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Logout current session
+   *
+   * Revoke current access token.
+   */
+  public logout<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).post<AccountLogoutResponses, AccountLogoutErrors, ThrowOnError>({
+      url: "/account/logout",
+      ...options,
+    })
+  }
+
+  /**
+   * Current user
+   *
+   * Get current authenticated account profile.
+   */
+  public me<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<AccountMeResponses, AccountMeErrors, ThrowOnError>({
+      url: "/account/me",
+      ...options,
+    })
+  }
+
+  private _token?: Token
+  get token(): Token {
+    return (this._token ??= new Token({ client: this.client }))
+  }
+
+  private _logout?: Logout
+  get logout2(): Logout {
+    return (this._logout ??= new Logout({ client: this.client }))
+  }
+
+  private _me?: Me
+  get me2(): Me {
+    return (this._me ??= new Me({ client: this.client }))
+  }
+
+  private _password?: Password
+  get password(): Password {
+    return (this._password ??= new Password({ client: this.client }))
   }
 }
 
@@ -1135,6 +1467,7 @@ export class Session2 extends HeyApiClient {
       parentID?: string
       title?: string
       permission?: PermissionRuleset
+      visibility?: "private" | "department" | "org" | "public"
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1147,6 +1480,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "parentID" },
             { in: "body", key: "title" },
             { in: "body", key: "permission" },
+            { in: "body", key: "visibility" },
           ],
         },
       ],
@@ -1252,6 +1586,7 @@ export class Session2 extends HeyApiClient {
       sessionID: string
       directory?: string
       title?: string
+      visibility?: "private" | "department" | "org" | "public"
       time?: {
         archived?: number
       }
@@ -1266,6 +1601,7 @@ export class Session2 extends HeyApiClient {
             { in: "path", key: "sessionID" },
             { in: "query", key: "directory" },
             { in: "body", key: "title" },
+            { in: "body", key: "visibility" },
             { in: "body", key: "time" },
           ],
         },
@@ -3388,6 +3724,260 @@ export class OpencodeClient extends HeyApiClient {
     OpencodeClient.__registry.set(this, args?.key)
   }
 
+  public postAccountAdminRolesRoleCodePermissions<ThrowOnError extends boolean = false>(
+    parameters: {
+      role_code: string
+      permission_codes?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "role_code" },
+            { in: "body", key: "permission_codes" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      PostAccountAdminRolesRoleCodePermissionsResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/roles/{role_code}/permissions",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public deleteAccountAdminProviderProviderIdGlobal<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).delete<
+      DeleteAccountAdminProviderProviderIdGlobalResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/provider/{provider_id}/global",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminProviderProviderIdGlobal<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+      auth?: Auth3
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "provider_id" },
+            { key: "auth", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      PutAccountAdminProviderProviderIdGlobalResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/provider/{provider_id}/global",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminAudit<ThrowOnError extends boolean = false>(
+    parameters?: {
+      actor_user_id?: string
+      action?: string
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "actor_user_id" },
+            { in: "query", key: "action" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GetAccountAdminAuditResponses, unknown, ThrowOnError>({
+      url: "/account/admin/audit",
+      ...options,
+      ...params,
+    })
+  }
+
+  public getAccountAdminUsers<ThrowOnError extends boolean = false>(
+    parameters?: {
+      org_id?: string
+      department_id?: string
+      keyword?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "org_id" },
+            { in: "query", key: "department_id" },
+            { in: "query", key: "keyword" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GetAccountAdminUsersResponses, unknown, ThrowOnError>({
+      url: "/account/admin/users",
+      ...options,
+      ...params,
+    })
+  }
+
+  public postAccountAdminUsers<ThrowOnError extends boolean = false>(
+    parameters?: {
+      username?: string
+      password?: string
+      display_name?: string
+      email?: string
+      phone?: string
+      account_type?: "internal" | "hospital" | "partner"
+      org_id?: string
+      department_id?: string
+      role_codes?: Array<string>
+      force_password_reset?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "username" },
+            { in: "body", key: "password" },
+            { in: "body", key: "display_name" },
+            { in: "body", key: "email" },
+            { in: "body", key: "phone" },
+            { in: "body", key: "account_type" },
+            { in: "body", key: "org_id" },
+            { in: "body", key: "department_id" },
+            { in: "body", key: "role_codes" },
+            { in: "body", key: "force_password_reset" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PostAccountAdminUsersResponses, unknown, ThrowOnError>({
+      url: "/account/admin/users",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public patchAccountAdminUsersUserId<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      display_name?: string
+      email?: string
+      phone?: string
+      status?: "active" | "inactive"
+      department_id?: string | null
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "body", key: "display_name" },
+            { in: "body", key: "email" },
+            { in: "body", key: "phone" },
+            { in: "body", key: "status" },
+            { in: "body", key: "department_id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<PatchAccountAdminUsersUserIdResponses, unknown, ThrowOnError>({
+      url: "/account/admin/users/{user_id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public postAccountAdminUsersUserIdRoles<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      role_codes?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "body", key: "role_codes" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PostAccountAdminUsersUserIdRolesResponses, unknown, ThrowOnError>({
+      url: "/account/admin/users/{user_id}/roles",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
   private _global?: Global
   get global(): Global {
     return (this._global ??= new Global({ client: this.client }))
@@ -3396,6 +3986,11 @@ export class OpencodeClient extends HeyApiClient {
   private _auth?: Auth
   get auth(): Auth {
     return (this._auth ??= new Auth({ client: this.client }))
+  }
+
+  private _account?: Account
+  get account(): Account {
+    return (this._account ??= new Account({ client: this.client }))
   }
 
   private _project?: Project

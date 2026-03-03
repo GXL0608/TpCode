@@ -218,7 +218,7 @@ for (const item of targets) {
         os: [item.os],
         cpu: [item.arch],
         bin: {
-          opencode: "bin/opencode",
+          opencode: item.os === "win32" ? "bin/opencode.exe" : "bin/opencode",
         },
       },
       null,
