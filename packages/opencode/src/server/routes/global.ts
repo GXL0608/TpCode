@@ -10,6 +10,8 @@ import { Log } from "../../util/log"
 import { lazy } from "../../util/lazy"
 import { Config } from "../../config/config"
 import { errors } from "../error"
+import { Flag } from "../../flag/flag"
+import { eventVisibleToUser } from "../event-visibility"
 
 const log = Log.create({ service: "server" })
 
@@ -68,6 +70,7 @@ export const GlobalRoutes = lazy(() =>
         log.info("global event connected")
         c.header("X-Accel-Buffering", "no")
         c.header("X-Content-Type-Options", "nosniff")
+        const userID = Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_user_id" as never) as string | undefined) : undefined
         return streamSSE(c, async (stream) => {
           stream.writeSSE({
             data: JSON.stringify({
@@ -78,6 +81,9 @@ export const GlobalRoutes = lazy(() =>
             }),
           })
           async function handler(event: any) {
+            const payload = event?.payload
+            if (!payload || typeof payload !== "object") return
+            if (!eventVisibleToUser({ event: payload, userID })) return
             await stream.writeSSE({
               data: JSON.stringify(event),
             })
