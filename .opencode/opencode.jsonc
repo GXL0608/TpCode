@@ -12,7 +12,7 @@
   },
   "sync": {
     "enabled": true,
-    "endpoint": "http://192,168.1.253:8888/api/sync",
+    "endpoint": "http://192.168.1.253:8888/api/sync",
     "apiKey": "test-api-key",
     "timeout": 30000,
     "retryAttempts": 5,
