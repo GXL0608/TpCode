@@ -45,6 +45,7 @@ import { LLM } from "./llm"
 import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
+import { TokenUsageService } from "@/usage/service"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1948,7 +1949,45 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           : MessageV2.toModelMessages(contextMessages, model)),
       ],
     })
-    const text = await result.text.catch((err) => log.error("failed to generate title", { error: err }))
+    const text = await result.text.catch((err) => {
+      log.error("failed to generate title", { error: err })
+      return undefined
+    })
+    void (async () => {
+      const [totalUsage, providerMetadata] = await Promise.all([
+        result.totalUsage.catch((err) => {
+          log.warn("failed to read title generation usage", { error: err })
+          return undefined
+        }),
+        result.providerMetadata.catch((err) => {
+          log.warn("failed to read title generation provider metadata", { error: err })
+          return undefined
+        }),
+      ])
+      if (!totalUsage) return
+      const usage = Session.getUsage({
+        model,
+        usage: totalUsage,
+        metadata: providerMetadata,
+      })
+      await TokenUsageService.recordAutoTitle({
+        sessionID: input.session.id,
+        messageID: firstRealUser.info.id,
+        sourceID: `title:${input.session.id}:${firstRealUser.info.id}`,
+        providerID: model.providerID,
+        modelID: model.id,
+        tokens: usage.tokens,
+        cost: usage.cost,
+      })
+    })().catch((error) => {
+      log.warn("failed to record token usage on auto-title", {
+        error,
+        sessionID: input.session.id,
+        messageID: firstRealUser.info.id,
+        providerID: model.providerID,
+        modelID: model.id,
+      })
+    })
     if (text) {
       const cleaned = text
         .replace(/<think>[\s\S]*?<\/think>\s*/g, "")

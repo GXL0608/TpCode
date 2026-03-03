@@ -29,6 +29,7 @@ import { Global } from "@/global"
 import type { LanguageModelV2Usage } from "@ai-sdk/provider"
 import { iife } from "@/util/iife"
 import { AccountCurrent } from "@/user/current"
+import { TokenUsageService } from "@/usage/service"
 
 export namespace Session {
   const log = Log.create({ service: "session" })
@@ -841,6 +842,16 @@ export namespace Session {
         }),
       )
     })
+    if (part.type === "step-finish") {
+      void TokenUsageService.recordStepFinish({ part, persistedAt: time }).catch((error) => {
+        log.warn("failed to record token usage on step-finish", {
+          error,
+          sessionID: part.sessionID,
+          messageID: part.messageID,
+          partID: part.id,
+        })
+      })
+    }
     return part
   })
 
