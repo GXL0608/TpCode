@@ -9,6 +9,7 @@
   "tools": {
     "github-triage": false,
     "github-pr-search": false,
+  },
   "sync": {
     "enabled": true,
     "endpoint": "http://localhost:8888/api/sync",

@@ -12,7 +12,7 @@ import { UI } from "./cli/ui"
 import { Installation } from "./installation"
 import { NamedError } from "@opencode-ai/util/error"
 import { FormatError } from "./cli/error"
-import { ServeCommand } from "./cli/cmd/serve"
+import { ServeCommand, applyServeDefaults } from "./cli/cmd/serve"
 import { WorkspaceServeCommand } from "./cli/cmd/workspace-serve"
 import { Filesystem } from "./util/filesystem"
 import { DebugCommand } from "./cli/cmd/debug"
@@ -33,6 +33,7 @@ import path from "path"
 import { Global } from "./global"
 import { JsonMigration } from "./storage/json-migration"
 import { Database } from "./storage/db"
+import { PgSync } from "./storage/pg-sync"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -82,6 +83,9 @@ let cli = yargs(hideBin(process.argv))
       args: process.argv.slice(2),
     })
 
+    const command = String(opts._?.[0] ?? "")
+    if (command === "serve") applyServeDefaults()
+
     const marker = path.join(Global.Path.data, "opencode.db")
     if (!(await Filesystem.exists(marker))) {
       const tty = process.stderr.isTTY
@@ -118,6 +122,9 @@ let cli = yargs(hideBin(process.argv))
       }
       process.stderr.write("Database migration complete." + EOL)
     }
+
+    Database.Client()
+    await PgSync.start()
   })
   .usage("\n" + UI.logo())
   .completion("completion", "generate shell completion script")

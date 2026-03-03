@@ -6,11 +6,27 @@ import { Workspace } from "../../control-plane/workspace"
 import { Project } from "../../project/project"
 import { Installation } from "../../installation"
 
+const defaults = {
+  TPCODE_ACCOUNT_ENABLED: "1",
+  TPCODE_REGISTER_MODE: "open",
+  TPCODE_ACCOUNT_JWT_SECRET: "tpcode-local-dev-secret",
+  TPCODE_ADMIN_PASSWORD: "TpCode@2026",
+  OPENCODE_PG_SYNC_BOOTSTRAP: "remote",
+} as const
+
+export function applyServeDefaults() {
+  for (const [key, value] of Object.entries(defaults)) {
+    if (!process.env[key]) process.env[key] = value
+  }
+}
+
 export const ServeCommand = cmd({
   command: "serve",
   builder: (yargs) => withNetworkOptions(yargs),
   describe: "starts a headless opencode server",
   handler: async (args) => {
+    applyServeDefaults()
+
     if (!Flag.OPENCODE_SERVER_PASSWORD) {
       console.log("Warning: OPENCODE_SERVER_PASSWORD is not set; server is unsecured.")
     }
