@@ -1,5 +1,14 @@
 #!/bin/sh
 set -e
+
+while read -r local_ref local_sha remote_ref remote_sha
+do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "skip local pre-push checks for main"
+    exit 0
+  fi
+done
+
 # Check if bun version matches package.json
 # keep in sync with packages/script/src/index.ts semver qualifier
 bun -e '

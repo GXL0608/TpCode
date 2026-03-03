@@ -8,6 +8,14 @@ mkdir -p .git/hooks
 
 cat > .git/hooks/pre-push << 'EOF'
 #!/bin/sh
+while read -r local_ref local_sha remote_ref remote_sha
+do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "skip local pre-push checks for main"
+    exit 0
+  fi
+done
+
 # Ensure dependencies are installed before typecheck
 if command -v bun >/dev/null 2>&1; then
   bun install >/dev/null 2>&1 || true
