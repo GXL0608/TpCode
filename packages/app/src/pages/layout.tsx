@@ -527,6 +527,22 @@ export default function Layout(props: ParentProps) {
     ),
   )
 
+  createEffect(
+    on(
+      () => ({ ready: pageReady(), layoutReady: layoutReady(), directory: currentDir(), list: layout.projects.list() }),
+      (value) => {
+        if (!value.ready) return
+        if (!value.layoutReady) return
+        if (!value.directory) return
+        const root = projectRoot(value.directory)
+        const exists = value.list.some((item) => item.worktree === root)
+        if (exists) return
+        layout.projects.open(root)
+      },
+      { defer: true },
+    ),
+  )
+
   const workspaceName = (directory: string, projectId?: string, branch?: string) => {
     const key = workspaceKey(directory)
     const direct = store.workspaceName[key] ?? store.workspaceName[directory]
@@ -1105,18 +1121,25 @@ export default function Layout(props: ParentProps) {
     const dirs = Array.from(new Set([root, ...(store.workspaceOrder[root] ?? []), ...(project?.sandboxes ?? [])]))
     const openSession = async (target: { directory: string; id: string }) => {
       const resolved = await globalSDK.client.session
-        .get({ sessionID: target.id })
+        .get({ directory: target.directory, sessionID: target.id })
         .then((x) => x.data)
         .catch(() => undefined)
-      const next = resolved?.directory ? resolved : target
+      if (!resolved?.id || !resolved.directory) return false
+      const next = resolved
       setStore("lastProjectSession", root, { directory: next.directory, id: next.id, at: Date.now() })
       navigateWithSidebarReset(`/${base64Encode(next.directory)}/session/${next.id}`)
+      return true
     }
 
     const projectSession = store.lastProjectSession[root]
     if (projectSession?.id) {
-      await openSession(projectSession)
-      return
+      if (await openSession(projectSession)) return
+      setStore(
+        "lastProjectSession",
+        produce((draft) => {
+          delete draft[root]
+        }),
+      )
     }
 
     const latest = latestRootSession(
@@ -1124,8 +1147,7 @@ export default function Layout(props: ParentProps) {
       Date.now(),
     )
     if (latest) {
-      await openSession(latest)
-      return
+      if (await openSession(latest)) return
     }
 
     const fetched = latestRootSession(
@@ -1141,8 +1163,7 @@ export default function Layout(props: ParentProps) {
       Date.now(),
     )
     if (fetched) {
-      await openSession(fetched)
-      return
+      if (await openSession(fetched)) return
     }
 
     navigateWithSidebarReset(`/${base64Encode(root)}/session`)
@@ -1238,14 +1259,21 @@ export default function Layout(props: ParentProps) {
       const target = projects.find((item) => item.id === projectID)
       if (!target) return
       if (auth.user()?.context_project_id !== projectID) {
-        const ok = await auth.selectContext(projectID)
-        if (!ok) {
+        const result = await auth.selectContext(projectID)
+        if (!result.ok) {
           showToast({
-            title: "切换项目失败",
-            description: "请稍后重试",
+            title: "找不到文件夹",
+            description: "请联系管理员检查项目路径",
           })
           return
         }
+      }
+      if (!target.worktree?.trim()) {
+        showToast({
+          title: "找不到文件夹",
+          description: "请联系管理员检查项目路径",
+        })
+        return
       }
       openProject(target.worktree)
       return

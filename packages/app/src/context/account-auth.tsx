@@ -333,11 +333,26 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           body: { project_id },
           auth: "required",
         }).catch(() => undefined)
-        if (!response?.ok) return false
+        if (!response?.ok) {
+          const code = await responseCode(response)
+          setState("last_error", code ?? "context_select_failed")
+          return {
+            ok: false as const,
+            code: code ?? "context_select_failed",
+          }
+        }
         const result = json<LoginResult>(await response.json().catch(() => undefined))
-        if (!result?.access_token || !result.refresh_token || !result.user) return false
+        if (!result?.access_token || !result.refresh_token || !result.user) {
+          setState("last_error", "context_select_failed")
+          return {
+            ok: false as const,
+            code: "context_select_failed",
+          }
+        }
         writeSession(result)
-        return true
+        return {
+          ok: true as const,
+        }
       },
     }
   },

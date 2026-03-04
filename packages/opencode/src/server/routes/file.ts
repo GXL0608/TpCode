@@ -10,6 +10,8 @@ import { lazy } from "../../util/lazy"
 export const FileRoutes = lazy(() =>
   new Hono()
     .use(async (c, next) => {
+      const path = c.req.path
+      if (!path.startsWith("/file") && !path.startsWith("/find")) return next()
       const permissions = c.get("account_permissions" as never) as string[] | undefined
       if (!permissions || permissions.includes("file:browse")) return next()
       return c.json(

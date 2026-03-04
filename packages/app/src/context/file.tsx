@@ -8,6 +8,7 @@ import { useSDK } from "./sdk"
 import { useSync } from "./sync"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
+import { useAccountAuth } from "@/context/account-auth"
 import { createPathHelpers } from "./file/path"
 import {
   approxBytes,
@@ -54,6 +55,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
   gate: false,
   init: () => {
     const sdk = useSDK()
+    const auth = useAccountAuth()
     useSync()
     const params = useParams()
     const language = useLanguage()
@@ -62,6 +64,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const scope = createMemo(() => sdk.directory)
     const path = createPathHelpers(scope)
     const tabs = layout.tabs(() => `${params.dir}${params.id ? "/" + params.id : ""}`)
+    const canBrowse = createMemo(() => auth.has("file:browse"))
 
     const inflight = new Map<string, Promise<void>>()
     const [store, setStore] = createStore<{
@@ -73,7 +76,10 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const tree = createFileTreeStore({
       scope,
       normalizeDir: path.normalizeDir,
-      list: (dir) => sdk.client.file.list({ path: dir }).then((x) => x.data ?? []),
+      list: (dir) => {
+        if (!canBrowse()) return Promise.resolve([])
+        return sdk.client.file.list({ path: dir }).then((x) => x.data ?? [])
+      },
       onError: (message) => {
         showToast({
           variant: "error",
@@ -158,6 +164,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const load = (input: string, options?: { force?: boolean }) => {
       const file = path.normalize(input)
       if (!file) return Promise.resolve()
+      if (!canBrowse()) return Promise.resolve()
 
       const directory = scope()
       const key = `${directory}\n${file}`
@@ -195,10 +202,12 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     }
 
     const search = (query: string, dirs: "true" | "false") =>
-      sdk.client.find.files({ query, dirs }).then(
-        (x) => (x.data ?? []).map(path.normalize),
-        () => [],
-      )
+      canBrowse()
+        ? sdk.client.find.files({ query, dirs }).then(
+            (x) => (x.data ?? []).map(path.normalize),
+            () => [],
+          )
+        : Promise.resolve([])
 
     const stop = sdk.event.listen((e) => {
       invalidateFromWatcher(e.details, {

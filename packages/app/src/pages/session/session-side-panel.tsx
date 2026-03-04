@@ -237,72 +237,79 @@ export function SessionSidePanel(props: {
               <ConstrainDragYAxis />
               <Tabs value={activeTab()} onChange={openTab}>
                 <div class="sticky top-0 shrink-0 flex">
-                  <Tabs.List
-                    ref={(el: HTMLDivElement) => {
-                      const stop = createFileTabListSync({ el, contextOpen })
-                      onCleanup(stop)
-                    }}
-                  >
-                    <Show when={reviewTab()}>
-                      <Tabs.Trigger value="review">
-                        <div class="flex items-center gap-1.5">
-                          <div>{language.t("session.tab.review")}</div>
-                          <Show when={hasReview()}>
-                            <div>{reviewCount()}</div>
-                          </Show>
-                        </div>
-                      </Tabs.Trigger>
-                    </Show>
-                    <Show when={contextOpen()}>
-                      <Tabs.Trigger
-                        value="context"
-                        closeButton={
+                  <div class="w-full flex flex-col">
+                    <Tabs.List
+                      ref={(el: HTMLDivElement) => {
+                        const stop = createFileTabListSync({ el, contextOpen })
+                        onCleanup(stop)
+                      }}
+                    >
+                      <Show when={reviewTab()}>
+                        <Tabs.Trigger value="review">
+                          <div class="flex items-center gap-1.5">
+                            <div>{language.t("session.tab.review")}</div>
+                            <Show when={hasReview()}>
+                              <div>{reviewCount()}</div>
+                            </Show>
+                          </div>
+                        </Tabs.Trigger>
+                      </Show>
+                      <Show when={contextOpen()}>
+                        <Tabs.Trigger
+                          value="context"
+                          closeButton={
+                            <TooltipKeybind
+                              title={language.t("common.closeTab")}
+                              keybind={command.keybind("tab.close")}
+                              placement="bottom"
+                              gutter={10}
+                            >
+                              <IconButton
+                                icon="close-small"
+                                variant="ghost"
+                                class="h-5 w-5"
+                                onClick={() => tabs().close("context")}
+                                aria-label={language.t("common.closeTab")}
+                              />
+                            </TooltipKeybind>
+                          }
+                          hideCloseButton
+                          onMiddleClick={() => tabs().close("context")}
+                        >
+                          <div class="flex items-center gap-2">
+                            <SessionContextUsage variant="indicator" />
+                            <div>{language.t("session.tab.context")}</div>
+                          </div>
+                        </Tabs.Trigger>
+                      </Show>
+                      <SortableProvider ids={openedTabs()}>
+                        <For each={openedTabs()}>{(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}</For>
+                      </SortableProvider>
+                      <Show when={canBrowse()}>
+                        <StickyAddButton>
                           <TooltipKeybind
-                            title={language.t("common.closeTab")}
-                            keybind={command.keybind("tab.close")}
-                            placement="bottom"
-                            gutter={10}
+                            title={language.t("command.file.open")}
+                            keybind={command.keybind("file.open")}
+                            class="flex items-center"
                           >
                             <IconButton
-                              icon="close-small"
+                              icon="plus-small"
                               variant="ghost"
-                              class="h-5 w-5"
-                              onClick={() => tabs().close("context")}
-                              aria-label={language.t("common.closeTab")}
+                              iconSize="large"
+                              class="!rounded-md"
+                              onClick={() => dialog.show(() => <DialogSelectFile mode="files" onOpenFile={showAllFiles} />)}
+                              aria-label={language.t("command.file.open")}
                             />
                           </TooltipKeybind>
-                        }
-                        hideCloseButton
-                        onMiddleClick={() => tabs().close("context")}
-                      >
-                        <div class="flex items-center gap-2">
-                          <SessionContextUsage variant="indicator" />
-                          <div>{language.t("session.tab.context")}</div>
-                        </div>
-                      </Tabs.Trigger>
+                        </StickyAddButton>
+                      </Show>
+                    </Tabs.List>
+                    <Show when={!canBrowse()}>
+                      <div class="px-3 py-2 border-b border-border-weak-base text-12-regular text-text-weak bg-surface-panel">
+                        找不到项目文件夹：当前账号未开通文件浏览权限（file:browse）
+                      </div>
                     </Show>
-                    <SortableProvider ids={openedTabs()}>
-                      <For each={openedTabs()}>{(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}</For>
-                    </SortableProvider>
-                    <Show when={canBrowse()}>
-                      <StickyAddButton>
-                        <TooltipKeybind
-                          title={language.t("command.file.open")}
-                          keybind={command.keybind("file.open")}
-                          class="flex items-center"
-                        >
-                          <IconButton
-                            icon="plus-small"
-                            variant="ghost"
-                            iconSize="large"
-                            class="!rounded-md"
-                            onClick={() => dialog.show(() => <DialogSelectFile mode="files" onOpenFile={showAllFiles} />)}
-                            aria-label={language.t("command.file.open")}
-                          />
-                        </TooltipKeybind>
-                      </StickyAddButton>
-                    </Show>
-                  </Tabs.List>
+                  </div>
                 </div>
 
                 <Show when={reviewTab()}>
@@ -316,9 +323,12 @@ export function SessionSidePanel(props: {
                     <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
                       <div class="h-full px-6 pb-42 flex flex-col items-center justify-center text-center gap-6">
                         <Mark class="w-14 opacity-10" />
-                        <div class="text-14-regular text-text-weak max-w-56">
-                          {language.t("session.files.selectToOpen")}
-                        </div>
+                        <Show
+                          when={canBrowse()}
+                          fallback={<div class="text-14-regular text-text-weak max-w-56">找不到项目文件夹，请联系管理员开通 file:browse 权限</div>}
+                        >
+                          <div class="text-14-regular text-text-weak max-w-56">{language.t("session.files.selectToOpen")}</div>
+                        </Show>
                       </div>
                     </div>
                   </Show>

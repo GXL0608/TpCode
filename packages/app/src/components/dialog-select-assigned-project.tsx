@@ -1,6 +1,7 @@
 import { Button } from "@opencode-ai/ui/button"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
-import { For, createMemo, createSignal } from "solid-js"
+import { For, Show, createMemo, createSignal } from "solid-js"
 
 type Item = {
   id: string
@@ -14,6 +15,7 @@ export function DialogSelectAssignedProject(props: {
   projects: Item[]
   onSelect: (projectID: string | null) => void
 }) {
+  const dialog = useDialog()
   const first = createMemo(() => props.projects.find((item) => item.last_selected)?.id ?? props.projects[0]?.id ?? "")
   const [selected, setSelected] = createSignal(first())
 
@@ -29,12 +31,21 @@ export function DialogSelectAssignedProject(props: {
             {(item) => (
               <button
                 type="button"
-                class="w-full rounded-md border border-border-weak-base bg-surface-base px-3 py-2 text-left"
+                class="w-full rounded-md px-3 py-2 text-left transition-colors"
+                classList={{
+                  "border-2 border-icon-strong-base bg-surface-base-hover": selected() === item.id,
+                  "border border-border-weak-base bg-surface-base hover:bg-surface-base-hover": selected() !== item.id,
+                }}
+                aria-pressed={selected() === item.id}
                 onClick={() => setSelected(item.id)}
               >
                 <div class="flex items-center justify-between gap-2">
                   <div class="text-14-medium text-text-strong">{item.name || item.worktree}</div>
-                  <div class="text-12-regular text-text-weak">{selected() === item.id ? "已选择" : ""}</div>
+                  <Show when={selected() === item.id}>
+                    <div class="rounded-full bg-icon-success-base/10 px-2 py-0.5 text-11-medium text-icon-success-base">
+                      当前选择
+                    </div>
+                  </Show>
                 </div>
                 <div class="text-12-regular text-text-weak mt-1 break-all">{item.worktree}</div>
               </button>
@@ -42,10 +53,24 @@ export function DialogSelectAssignedProject(props: {
           </For>
         </div>
         <div class="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={() => props.onSelect(null)}>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              props.onSelect(null)
+              dialog.close()
+            }}
+          >
             取消
           </Button>
-          <Button type="button" disabled={!selected()} onClick={() => props.onSelect(selected())}>
+          <Button
+            type="button"
+            disabled={!selected()}
+            onClick={() => {
+              props.onSelect(selected())
+              dialog.close()
+            }}
+          >
             进入项目
           </Button>
         </div>

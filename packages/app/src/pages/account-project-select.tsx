@@ -1,4 +1,5 @@
 import { Button } from "@opencode-ai/ui/button"
+import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
@@ -62,15 +63,22 @@ export default function AccountProjectSelect() {
     event.preventDefault()
     const project_id = chosen()
     if (!project_id) return
-    setPending(true)
-    setError("")
-    const ok = await auth.selectContext(project_id)
-    setPending(false)
-    if (!ok) {
-      setError("选择项目失败")
+    const target = rows().find((item) => item.id === project_id)
+    if (!target) {
+      setError("所选项目不存在，请重新选择")
       return
     }
-    navigate("/")
+    setPending(true)
+    setError("")
+    const result = await auth.selectContext(project_id)
+    if (!result.ok) {
+      setPending(false)
+      setError("找不到文件夹，请联系管理员检查项目路径")
+      return
+    }
+    setPending(false)
+    const href = `/${base64Encode(target.worktree)}/session`
+    setTimeout(() => navigate(href, { replace: true }))
   }
 
   return (
@@ -90,12 +98,21 @@ export default function AccountProjectSelect() {
               {(item) => (
                 <button
                   type="button"
-                  class="w-full rounded-md border border-border-weak-base bg-surface-base px-3 py-2 text-left"
+                  class="w-full rounded-md px-3 py-2 text-left transition-colors"
+                  classList={{
+                    "border-2 border-icon-strong-base bg-surface-base-hover": chosen() === item.id,
+                    "border border-border-weak-base bg-surface-base hover:bg-surface-base-hover": chosen() !== item.id,
+                  }}
+                  aria-pressed={chosen() === item.id}
                   onClick={() => setCurrent(item.id)}
                 >
                   <div class="flex items-center justify-between gap-2">
                     <div class="text-14-medium text-text-strong">{item.name || item.worktree}</div>
-                    <div class="text-12-regular text-text-weak">{chosen() === item.id ? "已选择" : ""}</div>
+                    <Show when={chosen() === item.id}>
+                      <div class="rounded-full bg-icon-success-base/10 px-2 py-0.5 text-11-medium text-icon-success-base">
+                        当前选择
+                      </div>
+                    </Show>
                   </div>
                   <div class="text-12-regular text-text-weak mt-1 break-all">{item.worktree}</div>
                 </button>
