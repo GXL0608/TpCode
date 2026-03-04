@@ -53,6 +53,8 @@ export namespace Agent {
 
     const skillDirs = await Skill.dirs()
     const whitelistedDirs = [Truncate.GLOB, ...skillDirs.map((dir) => path.join(dir, "*"))]
+    const root = Instance.worktree === "/" ? Instance.directory : Instance.worktree
+    const dirs = [root]
     const defaults = PermissionNext.fromConfig({
       "*": "allow",
       doom_loop: "ask",
@@ -99,7 +101,14 @@ export namespace Agent {
             question: "allow",
             plan_exit: "allow",
             external_directory: {
-              [path.join(Global.Path.data, "plans", "*")]: "allow",
+              "*": "deny",
+              [path.join(root, ".opencode", "plans", "*.md")]: "allow",
+              ...Object.fromEntries(dirs.map((dir) => [path.join(dir, "*"), "allow"])),
+            },
+            read: {
+              "*": "deny",
+              [path.join(root, ".opencode", "plans", "*.md")]: "allow",
+              ...Object.fromEntries(dirs.map((dir) => [path.join(dir, "*"), "allow"])),
             },
             edit: {
               "*": "deny",
