@@ -557,7 +557,12 @@ export namespace Server {
                 const context_project_id = c.get("account_context_project_id" as never) as string | undefined
                 if (user_id && context_project_id) {
                   if (Instance.project.id !== context_project_id) {
-                    return c.json({ error: "project_context_mismatch" }, 403)
+                    const context = await contextProject(context_project_id)
+                    const expected = context.project?.worktree
+                    if (!expected) return c.json({ error: "project_context_mismatch" }, 403)
+                    const current = Filesystem.windowsPath(path.resolve(Instance.directory)).toLowerCase()
+                    const target = Filesystem.windowsPath(path.resolve(expected)).toLowerCase()
+                    if (current !== target) return c.json({ error: "project_context_mismatch" }, 403)
                   }
                 }
               }

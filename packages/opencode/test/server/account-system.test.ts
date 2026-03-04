@@ -87,6 +87,81 @@ describe("account system", () => {
     expect(body.username).toBe("admin")
   })
 
+  test.skipIf(!accountEnabled)("role manager can create role and assign it to user", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const admin = await login("admin", "TpCode@2026")
+    const roleCode = uid("role_custom")
+    const roleName = `自定义角色_${Date.now()}`
+
+    const createdRole = await call({
+      path: "/account/admin/roles",
+      method: "POST",
+      token: admin,
+      body: {
+        code: roleCode,
+        name: roleName,
+        scope: "system",
+      },
+    })
+    expect(createdRole.status).toBe(200)
+    const createdRoleBody = (await createdRole.json()) as Record<string, unknown>
+    expect(createdRoleBody.ok).toBe(true)
+    expect(createdRoleBody.code).toBe(roleCode)
+    expect(createdRoleBody.name).toBe(roleName)
+
+    const duplicateRole = await call({
+      path: "/account/admin/roles",
+      method: "POST",
+      token: admin,
+      body: {
+        code: roleCode,
+        name: roleName,
+      },
+    })
+    expect(duplicateRole.status).toBe(400)
+    const duplicateRoleBody = (await duplicateRole.json()) as Record<string, unknown>
+    expect(duplicateRoleBody.code).toBe("role_exists")
+
+    const listedRoles = await call({
+      path: "/account/admin/roles",
+      token: admin,
+    })
+    expect(listedRoles.status).toBe(200)
+    const roles = (await listedRoles.json()) as Array<Record<string, unknown>>
+    const role = roles.find((item) => item.code === roleCode)
+    expect(role?.name).toBe(roleName)
+    const rolePermissions = Array.isArray(role?.permissions) ? role.permissions : []
+    expect(rolePermissions).toEqual(
+      expect.arrayContaining(["session:create", "session:view_own", "code:generate", "prototype:view", "file:browse", "agent:use_plan"]),
+    )
+
+    const username = uid("role_user")
+    const password = "TpCode@123A"
+    const createdUser = await service.createUser({
+      username,
+      password,
+      display_name: "Role User",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: [roleCode],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(createdUser.ok).toBe(true)
+
+    const userToken = await login(username, password)
+    const me = await call({
+      path: "/account/me",
+      token: userToken,
+    })
+    expect(me.status).toBe(200)
+    const meBody = (await me.json()) as Record<string, unknown>
+    expect(Array.isArray(meBody.roles) ? meBody.roles : []).toContain(roleCode)
+    expect(Array.isArray(meBody.permissions) ? meBody.permissions : []).toEqual(
+      expect.arrayContaining(["session:create", "code:generate"]),
+    )
+  }, 60000)
+
   test.skipIf(!accountEnabled)("role change invalidates auth cache immediately", async () => {
     const service = state.user
     if (!service) throw new Error("user_service_missing")

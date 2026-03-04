@@ -473,6 +473,34 @@ export const AccountRoutes = lazy(() =>
         )
       },
     )
+    .post(
+      "/admin/roles",
+      UserRbac.require("role:manage"),
+      validator(
+        "json",
+        z.object({
+          code: z.string(),
+          name: z.string(),
+          scope: z.enum(["system", "org"]).optional(),
+          description: z.string().optional(),
+          permission_codes: z.array(z.string()).optional(),
+        }),
+      ),
+      async (c) => {
+        await UserService.ensureSeed()
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const body = c.req.valid("json")
+        const result = await UserService.createRole({
+          ...body,
+          actor_user_id,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        if (!result.ok) return c.json(result, 400)
+        return c.json(result)
+      },
+    )
     .get(
       "/admin/settings/project-scan-root",
       UserRbac.require("role:manage"),

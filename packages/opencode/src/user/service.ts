@@ -204,6 +204,10 @@ function permissionName(code: string) {
   return permissionNameMap[code as keyof typeof permissionNameMap] ?? code
 }
 
+function roleCodeValid(code: string) {
+  return /^[a-z][a-z0-9_]{1,63}$/.test(code)
+}
+
 function profile(input: { user: UserRow; roles: string[]; permissions: string[]; context_project_id?: string }) {
   return {
     id: input.user.id,
@@ -1238,7 +1242,7 @@ export namespace UserService {
     const memberByRole = new Map(users.map((item) => [item.role_id, Number(item.total)]))
     return rows.map((item) => ({
       ...item,
-      name: roleName(item.code),
+      name: item.name || roleName(item.code),
       permissions: [...new Set(codeByRole.get(item.id) ?? [])].sort(),
       member_count: memberByRole.get(item.id) ?? 0,
     }))
@@ -1548,6 +1552,70 @@ export namespace UserService {
       user_agent: input.user_agent,
     })
     return { ok: true as const, id: department_id }
+  }
+
+  export async function createRole(input: {
+    code: string
+    name: string
+    scope?: "system" | "org"
+    description?: string
+    permission_codes?: string[]
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const code = input.code.trim().toLowerCase()
+    if (!roleCodeValid(code)) return { ok: false as const, code: "role_code_invalid" }
+    const name = input.name.trim()
+    if (!name) return { ok: false as const, code: "role_name_invalid" }
+    const exists = await Database.use((db) => db.select({ id: TpRoleTable.id }).from(TpRoleTable).where(eq(TpRoleTable.code, code)).get())
+    if (exists) return { ok: false as const, code: "role_exists" }
+    const permission_codes = [
+      ...new Set(
+        input.permission_codes && input.permission_codes.length > 0 ? input.permission_codes : [...rolePerm.developer],
+      ),
+    ]
+    const permission_ids = await permissionIDs(permission_codes)
+    if (permission_ids.length !== permission_codes.length) return { ok: false as const, code: "permission_missing" }
+    const role_id = ulid()
+    await Database.use(async (db) => {
+      await db.insert(TpRoleTable)
+        .values({
+          id: role_id,
+          code,
+          name,
+          scope: input.scope ?? "system",
+          description: input.description?.trim() || undefined,
+          status: "active",
+        })
+        .run()
+      if (permission_ids.length === 0) return
+      await db.insert(TpRolePermissionTable)
+        .values(permission_ids.map((permission_id) => ({ role_id, permission_id })))
+        .run()
+    })
+    auditLater({
+      actor_user_id: input.actor_user_id,
+      action: "account.role.create",
+      target_type: "tp_role",
+      target_id: role_id,
+      result: "success",
+      detail_json: {
+        code,
+        name,
+        scope: input.scope ?? "system",
+        permission_codes,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return {
+      ok: true as const,
+      id: role_id,
+      code,
+      name,
+      scope: input.scope ?? "system",
+    }
   }
 
   export async function createUser(input: {

@@ -71,6 +71,9 @@ export const SettingsRoles = () => {
     pending: false,
     error: "",
     message: "",
+    createCode: "",
+    createName: "",
+    createScope: "system" as "system" | "org",
     rolePage: 1,
     rolePageSize: 15,
     roleTotal: 0,
@@ -157,6 +160,13 @@ export const SettingsRoles = () => {
   })
   const roleMembersCount = (roleCode: string) => state.roles.find((item) => item.code === roleCode)?.member_count ?? 0
   const roleProjectCount = (roleCode: string) => (state.roleProjects[roleCode] ?? []).length
+  const roleTitle = (code: string) => {
+    const role = state.roles.find((item) => item.code === code)
+    if (role?.name) return `${role.name} (${role.code})`
+    const name = roleZh(code)
+    if (name === code) return code
+    return `${name} (${code})`
+  }
 
   const togglePerm = (code: string) => {
     if (state.permCodes.includes(code)) {
@@ -522,6 +532,36 @@ export const SettingsRoles = () => {
     await load()
   }
 
+  const saveRole = async (event: SubmitEvent) => {
+    event.preventDefault()
+    const code = state.createCode.trim()
+    const name = state.createName.trim()
+    if (!code || !name) return
+    setState("pending", true)
+    setState("message", "")
+    setState("error", "")
+    const response = await request({
+      method: "POST",
+      path: "/account/admin/roles",
+      body: {
+        code,
+        name,
+        scope: state.createScope,
+      },
+    }).catch(() => undefined)
+    setState("pending", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    setState("createCode", "")
+    setState("createName", "")
+    setState("createScope", "system")
+    setState("message", "角色已创建")
+    setState("rolePage", 1)
+    await load({ page: 1 })
+  }
+
   createEffect(() => {
     if (!auth.ready()) return
     if (!auth.authenticated()) return
@@ -573,6 +613,32 @@ export const SettingsRoles = () => {
             </Button>
           </div>
 
+          <form class="rounded-xl border border-border-weak-base bg-surface-panel/35 p-3 grid grid-cols-1 md:grid-cols-4 gap-2" onSubmit={saveRole}>
+            <input
+              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+              placeholder="角色编码（如：feature_owner）"
+              value={state.createCode}
+              onInput={(event) => setState("createCode", event.currentTarget.value)}
+            />
+            <input
+              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+              placeholder="角色名称（如：功能负责人）"
+              value={state.createName}
+              onInput={(event) => setState("createName", event.currentTarget.value)}
+            />
+            <select
+              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+              value={state.createScope}
+              onChange={(event) => setState("createScope", event.currentTarget.value === "org" ? "org" : "system")}
+            >
+              <option value="system">系统级角色</option>
+              <option value="org">组织级角色</option>
+            </select>
+            <Button type="submit" disabled={state.pending || !state.createCode.trim() || !state.createName.trim()}>
+              {state.pending ? "提交中..." : "新增角色"}
+            </Button>
+          </form>
+
           <Show when={state.message}>
             <div class="rounded-md bg-icon-success-base/10 px-3 py-2 text-12-regular text-icon-success-base">{state.message}</div>
           </Show>
@@ -604,7 +670,7 @@ export const SettingsRoles = () => {
                     {(item) => (
                       <tr class="border-t border-border-weak-base hover:bg-surface-panel/45 transition-colors">
                         <td class="px-3 py-2">{item.code}</td>
-                        <td class="px-3 py-2">{roleZh(item.code)}</td>
+                        <td class="px-3 py-2">{item.name || roleZh(item.code)}</td>
                         <td class="px-3 py-2">{item.permissions.length}</td>
                         <td class="px-3 py-2">{roleMembersCount(item.code)}</td>
                         <td class="px-3 py-2">{roleProjectCount(item.code)}</td>
@@ -714,7 +780,7 @@ export const SettingsRoles = () => {
       <Show when={state.permOpen}>
         <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
           <form class="w-full max-w-2xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={savePerm}>
-            <div class="text-16-medium text-text-strong">权限设置 · {roleZh(state.permRoleCode)}</div>
+            <div class="text-16-medium text-text-strong">权限设置 · {roleTitle(state.permRoleCode)}</div>
             <div class="rounded-md border border-border-weak-base bg-surface-panel p-3 flex flex-col gap-2">
               <div class="text-12-medium text-text-strong">设置页可见性、用户供应商与智能体可用性</div>
               <For each={quickPermissions()}>
@@ -759,7 +825,7 @@ export const SettingsRoles = () => {
       <Show when={state.memberOpen}>
         <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
           <form class="w-full max-w-2xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={saveMember}>
-            <div class="text-16-medium text-text-strong">成员管理 · {roleZh(state.memberRoleCode)}</div>
+            <div class="text-16-medium text-text-strong">成员管理 · {roleTitle(state.memberRoleCode)}</div>
             <div class="max-h-80 overflow-auto rounded-md border border-border-weak-base bg-surface-base p-2 flex flex-col gap-1">
               <Show when={!state.memberLoading} fallback={<div class="px-2 py-3 text-12-regular text-text-weak">加载成员中...</div>}>
                 <For each={state.users}>
@@ -791,7 +857,7 @@ export const SettingsRoles = () => {
       <Show when={state.projectOpen}>
         <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
           <form class="w-full max-w-3xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={saveProject}>
-            <div class="text-16-medium text-text-strong">分配项目 · {roleZh(state.projectRoleCode)}</div>
+            <div class="text-16-medium text-text-strong">分配项目 · {roleTitle(state.projectRoleCode)}</div>
             <input
               class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
               placeholder="搜索项目名称/路径"
