@@ -30,6 +30,11 @@ export namespace SessionSync {
     sessionAccountByID: new Map<string, SessionAccountSnapshot>(),
   }))
 
+  /**
+   * sync-server /api/sync contract:
+   * - session.data must include user_id/org_id/department_id/visibility keys (nullable except visibility)
+   * - message.data must include sessionID + message (+ parts)
+   */
   interface SyncPayload {
     type: "session" | "message"
     timestamp: number
@@ -276,9 +281,26 @@ export namespace SessionSync {
 
   async function toSessionPayload(sessionInfo: Session.Info, options?: { forceRefresh?: boolean }): Promise<SyncPayload> {
     const account = await sessionAccount(sessionInfo.id, options)
+    return buildSessionPayloadForAccount(sessionInfo, account)
+  }
+
+  async function buildSessionPayload(sessionID: string): Promise<SyncPayload> {
+    return toSessionPayload(await Session.get(sessionID))
+  }
+
+  function toMessagePayload(sessionID: string, message: any): SyncPayload {
+    return buildMessagePayloadForTesting(sessionID, message)
+  }
+
+  /** @internal Exported for testing */
+  export function buildSessionPayloadForAccount(
+    sessionInfo: Session.Info,
+    account: SessionAccountSnapshot,
+    timestamp = Date.now(),
+  ): SyncPayload {
     return {
       type: "session",
-      timestamp: Date.now(),
+      timestamp,
       // Keep full session info to avoid dropping fields (share/revert/permission/archived...)
       data: {
         ...sessionInfo,
@@ -290,22 +312,30 @@ export namespace SessionSync {
     }
   }
 
-  async function buildSessionPayload(sessionID: string): Promise<SyncPayload> {
-    return toSessionPayload(await Session.get(sessionID))
-  }
-
-  function toMessagePayload(sessionID: string, message: any): SyncPayload {
+  /** @internal Exported for testing */
+  export function buildMessagePayloadForTesting(sessionID: string, message: any, timestamp = Date.now()): SyncPayload {
     const info = message.info ?? {}
     const { sessionID: _ignoredSessionID, ...messageInfo } = info
     return {
       type: "message",
-      timestamp: Date.now(),
+      timestamp,
       data: {
         sessionID,
         // Keep full message info + parts to preserve thinking/tool/model metadata.
         message: { ...messageInfo, parts: message.parts },
       },
     }
+  }
+
+  function decodeRetryPayload(raw: unknown): any {
+    if (typeof raw === "string") return JSON.parse(raw)
+    if (raw && typeof raw === "object") return raw
+    throw new Error(`invalid retry payload type: ${typeof raw}`)
+  }
+
+  /** @internal Exported for testing */
+  export function parseRetryPayloadForTesting(raw: unknown) {
+    return decodeRetryPayload(raw)
   }
 
   function payloadEntityKey(payload: SyncPayload): string | undefined {
@@ -653,7 +683,7 @@ export namespace SessionSync {
 
     for (const task of tasks) {
       try {
-        const payload = JSON.parse(task.payload)
+        const payload = decodeRetryPayload(task.payload)
 
         // 根据类型重新构建完整的同步数据
         let syncPayload: SyncPayload

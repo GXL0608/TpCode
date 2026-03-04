@@ -1,14 +1,11 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import path from "path"
 import { Log } from "../../src/util/log"
+import { Flag } from "../../src/flag/flag"
 
 const root = path.join(__dirname, "../..")
 Log.init({ print: false })
-
-const on = (() => {
-  const value = process.env.TPCODE_ACCOUNT_ENABLED?.toLowerCase()
-  return value === "1" || value === "true"
-})()
+const on = Flag.TPCODE_ACCOUNT_ENABLED
 
 async function init() {
   const [{ Server }, { UserService }] = await Promise.all([

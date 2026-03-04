@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "TPCODE_ACCOUNT_ENABLED": true,
   "provider": {
     "opencode": {
       "options": {}

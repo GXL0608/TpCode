@@ -50,7 +50,10 @@ export default function AccountApiKeys() {
       baseUrl: current.http.url,
       fetcher,
     })
-    if (!refreshed) return response
+    if (!refreshed) {
+      AccountToken.handleUnauthorized()
+      return response
+    }
     const retry = new Headers()
     retry.set("authorization", `Bearer ${refreshed}`)
     return fetcher(endpoint, {

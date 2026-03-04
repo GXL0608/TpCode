@@ -1,6 +1,84 @@
+import { existsSync, readFileSync, statSync } from "fs"
+import path from "path"
+import { parse as parseJsonc, type ParseError as JsoncParseError } from "jsonc-parser"
+
 function truthy(key: string) {
   const value = process.env[key]?.toLowerCase()
   return value === "true" || value === "1"
+}
+
+const accountEnabledCache = {
+  cwd: "",
+  configPath: undefined as string | undefined,
+  mtimeMs: undefined as number | undefined,
+  value: true,
+}
+
+function findTPCODEConfigPath(start: string) {
+  let dir = start
+  while (true) {
+    const jsonc = path.join(dir, ".opencode", "opencode.jsonc")
+    if (existsSync(jsonc)) return jsonc
+    const json = path.join(dir, ".opencode", "opencode.json")
+    if (existsSync(json)) return json
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return
+}
+
+function parseTPCODEAccountEnabled(filepath: string) {
+  try {
+    const text = readFileSync(filepath, "utf-8")
+    const errors: JsoncParseError[] = []
+    const parsed = parseJsonc(text, errors, { allowTrailingComma: true })
+    if (errors.length > 0) return
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+    const value = (parsed as Record<string, unknown>).TPCODE_ACCOUNT_ENABLED
+    if (typeof value === "boolean") return value
+  } catch {
+    return
+  }
+  return
+}
+
+function readTPCODEAccountEnabledFromConfig() {
+  const cwd = process.cwd()
+  if (accountEnabledCache.cwd !== cwd) {
+    accountEnabledCache.cwd = cwd
+    accountEnabledCache.configPath = findTPCODEConfigPath(cwd)
+    accountEnabledCache.mtimeMs = undefined
+  }
+
+  if (!accountEnabledCache.configPath) {
+    accountEnabledCache.value = true
+    return accountEnabledCache.value
+  }
+
+  let mtimeMs: number
+  try {
+    mtimeMs = statSync(accountEnabledCache.configPath).mtimeMs
+  } catch {
+    accountEnabledCache.configPath = findTPCODEConfigPath(cwd)
+    accountEnabledCache.mtimeMs = undefined
+    if (!accountEnabledCache.configPath) {
+      accountEnabledCache.value = true
+      return accountEnabledCache.value
+    }
+    try {
+      mtimeMs = statSync(accountEnabledCache.configPath).mtimeMs
+    } catch {
+      accountEnabledCache.value = true
+      return accountEnabledCache.value
+    }
+  }
+
+  if (accountEnabledCache.mtimeMs === mtimeMs) return accountEnabledCache.value
+
+  accountEnabledCache.mtimeMs = mtimeMs
+  accountEnabledCache.value = parseTPCODEAccountEnabled(accountEnabledCache.configPath) ?? true
+  return accountEnabledCache.value
 }
 
 export namespace Flag {
@@ -119,7 +197,7 @@ Object.defineProperty(Flag, "OPENCODE_CLIENT", {
 
 Object.defineProperty(Flag, "TPCODE_ACCOUNT_ENABLED", {
   get() {
-    return truthy("TPCODE_ACCOUNT_ENABLED")
+    return readTPCODEAccountEnabledFromConfig()
   },
   enumerable: true,
   configurable: false,

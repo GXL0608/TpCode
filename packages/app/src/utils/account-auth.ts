@@ -2,6 +2,7 @@ const ACCESS = "tpcode.account.access_token"
 const REFRESH = "tpcode.account.refresh_token"
 const ACCESS_EXPIRES = "tpcode.account.access_expires_at"
 const REFRESH_EXPIRES = "tpcode.account.refresh_expires_at"
+export const ACCOUNT_UNAUTHORIZED_EVENT = "tpcode.account.unauthorized"
 
 let refreshing: Promise<string | undefined> | undefined
 const memory = new Map<string, string>()
@@ -35,6 +36,11 @@ function remove(key: string) {
   } catch {
     return
   }
+}
+
+function emitUnauthorized() {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(new CustomEvent(ACCOUNT_UNAUTHORIZED_EVENT))
 }
 
 function toNumber(input?: string) {
@@ -78,6 +84,11 @@ export namespace AccountToken {
     remove(REFRESH)
     remove(ACCESS_EXPIRES)
     remove(REFRESH_EXPIRES)
+  }
+
+  export function handleUnauthorized() {
+    clear()
+    emitUnauthorized()
   }
 
   export async function refreshIfNeeded(input: {

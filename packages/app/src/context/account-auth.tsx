@@ -1,9 +1,9 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createStore } from "solid-js/store"
-import { createEffect, createMemo } from "solid-js"
+import { createEffect, createMemo, onCleanup } from "solid-js"
 import { useServer } from "./server"
 import { usePlatform } from "./platform"
-import { AccountToken } from "@/utils/account-auth"
+import { ACCOUNT_UNAUTHORIZED_EVENT, AccountToken } from "@/utils/account-auth"
 
 type User = {
   id: string
@@ -174,6 +174,19 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
     createEffect(() => {
       server.key
       void bootstrap()
+    })
+
+    createEffect(() => {
+      if (typeof window === "undefined") return
+      const onUnauthorized = () => {
+        setState("enabled", true)
+        clearSession()
+        setState("ready", true)
+      }
+      window.addEventListener(ACCOUNT_UNAUTHORIZED_EVENT, onUnauthorized)
+      onCleanup(() => {
+        window.removeEventListener(ACCOUNT_UNAUTHORIZED_EVENT, onUnauthorized)
+      })
     })
 
     return {

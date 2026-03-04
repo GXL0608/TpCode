@@ -984,6 +984,7 @@ export namespace Config {
   export const Info = z
     .object({
       $schema: z.string().optional().describe("JSON schema reference for configuration validation"),
+      TPCODE_ACCOUNT_ENABLED: z.boolean().optional().describe("Enable tpCode account system"),
       logLevel: Log.Level.optional().describe("Log level"),
       server: Server.optional().describe("Server configuration for opencode serve and web commands"),
       command: z

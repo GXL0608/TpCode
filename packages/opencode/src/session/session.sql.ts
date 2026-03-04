@@ -7,6 +7,7 @@ import { Timestamps } from "@/storage/schema.sql"
 import { TpDepartmentTable } from "@/user/department.sql"
 import { TpOrganizationTable } from "@/user/organization.sql"
 import { TpUserTable } from "@/user/user.sql"
+import { isNull } from "drizzle-orm"
 
 type PartData = Omit<MessageV2.Part, "id" | "sessionID" | "messageID">
 type InfoData = Omit<MessageV2.Info, "id" | "sessionID">
@@ -49,6 +50,13 @@ export const SessionTable = table(
     index("session_org_idx").on(table.org_id),
     index("session_department_idx").on(table.department_id),
     index("session_visibility_idx").on(table.visibility),
+    index("session_project_user_time_idx").on(table.project_id, table.user_id, table.time_updated, table.id),
+    index("session_project_parent_time_idx").on(table.project_id, table.parent_id, table.time_updated, table.id),
+    index("session_project_time_idx").on(table.project_id, table.time_updated, table.id),
+    index("session_time_id_idx").on(table.time_updated, table.id),
+    index("session_user_time_active_idx")
+      .on(table.user_id, table.time_updated, table.id)
+      .where(isNull(table.time_archived)),
   ],
 )
 

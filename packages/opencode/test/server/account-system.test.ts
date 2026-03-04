@@ -4,13 +4,11 @@ import { Log } from "../../src/util/log"
 import { and, Database, eq } from "../../src/storage/db"
 import { TpAuditLogTable } from "../../src/user/audit-log.sql"
 import { parseSSE } from "../../src/control-plane/sse"
+import { Flag } from "../../src/flag/flag"
 
 const projectRoot = path.join(__dirname, "../..")
 Log.init({ print: false })
-const accountEnabled = (() => {
-  const value = process.env.TPCODE_ACCOUNT_ENABLED?.toLowerCase()
-  return value === "1" || value === "true"
-})()
+const accountEnabled = Flag.TPCODE_ACCOUNT_ENABLED
 
 async function boot() {
   const [{ Server }, { UserService }] = await Promise.all([
@@ -87,6 +85,96 @@ describe("account system", () => {
     expect(response.status).toBe(200)
     const body = (await response.json()) as Record<string, unknown>
     expect(body.username).toBe("admin")
+  })
+
+  test.skipIf(!accountEnabled)("role change invalidates auth cache immediately", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("cache_role")
+    const password = "TpCode@123A"
+    const created = await service.createUser({
+      username,
+      password,
+      display_name: "Cache Role",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+    if (!("id" in created) || !created.id) throw new Error("user_id_missing")
+
+    const token = await login(username, password)
+    const warm = await call({
+      path: "/account/me",
+      token,
+    })
+    expect(warm.status).toBe(200)
+
+    const allowedBefore = await call({
+      path: "/session?directory=" + encodeURIComponent(projectRoot),
+      method: "POST",
+      token,
+      body: { title: uid("cache_role_before") },
+    })
+    expect(allowedBefore.status).toBe(200)
+
+    const admin = await login("admin", "TpCode@2026")
+    const updated = await call({
+      path: `/account/admin/users/${encodeURIComponent(created.id)}/roles`,
+      method: "POST",
+      token: admin,
+      body: { role_codes: [] },
+    })
+    expect(updated.status).toBe(200)
+
+    const deniedAfter = await call({
+      path: "/session?directory=" + encodeURIComponent(projectRoot),
+      method: "POST",
+      token,
+      body: { title: uid("cache_role_after") },
+    })
+    expect(deniedAfter.status).toBe(403)
+  })
+
+  test.skipIf(!accountEnabled)("user deactivation invalidates auth cache immediately", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("cache_status")
+    const password = "TpCode@123A"
+    const created = await service.createUser({
+      username,
+      password,
+      display_name: "Cache Status",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+    if (!("id" in created) || !created.id) throw new Error("user_id_missing")
+
+    const token = await login(username, password)
+    const warm = await call({
+      path: "/account/me",
+      token,
+    })
+    expect(warm.status).toBe(200)
+
+    const admin = await login("admin", "TpCode@2026")
+    const patched = await call({
+      path: `/account/admin/users/${encodeURIComponent(created.id)}`,
+      method: "PATCH",
+      token: admin,
+      body: { status: "inactive" },
+    })
+    expect(patched.status).toBe(200)
+
+    const denied = await call({
+      path: "/account/me",
+      token,
+    })
+    expect(denied.status).toBe(401)
   })
 
   test.skipIf(!accountEnabled)("private session is isolated between users", async () => {

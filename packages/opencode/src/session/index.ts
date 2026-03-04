@@ -29,6 +29,7 @@ import { Global } from "@/global"
 import type { LanguageModelV2Usage } from "@ai-sdk/provider"
 import { iife } from "@/util/iife"
 import { AccountCurrent } from "@/user/current"
+import { TokenUsageService } from "@/usage/service"
 
 export namespace Session {
   const log = Log.create({ service: "session" })
@@ -621,7 +622,11 @@ export namespace Session {
     limit?: number
   }) {
     const project = Instance.project
-    const conditions = [eq(SessionTable.project_id, project.id)]
+    const conditions: SQL[] = [eq(SessionTable.project_id, project.id)]
+    const a = actor()
+    if (a) {
+      conditions.push(eq(SessionTable.user_id, a.user_id))
+    }
 
     if (input?.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
@@ -635,7 +640,6 @@ export namespace Session {
     if (input?.search) {
       conditions.push(like(SessionTable.title, `%${input.search}%`))
     }
-    const a = actor()
     if (a?.context_project_id) {
       const scope = or(
         eq(SessionTable.context_project_id, a.context_project_id),
@@ -657,7 +661,7 @@ export namespace Session {
         .limit(limit)
         .all(),
     )
-    for (const row of rows.filter(canRead)) {
+    for (const row of rows) {
       yield fromRow(row)
     }
   }
@@ -672,6 +676,10 @@ export namespace Session {
     archived?: boolean
   }) {
     const conditions: SQL[] = []
+    const a = actor()
+    if (a) {
+      conditions.push(eq(SessionTable.user_id, a.user_id))
+    }
 
     if (input?.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
@@ -691,7 +699,6 @@ export namespace Session {
     if (!input?.archived) {
       conditions.push(isNull(SessionTable.time_archived))
     }
-    const a = actor()
     if (a?.context_project_id) {
       const scope = or(
         eq(SessionTable.context_project_id, a.context_project_id),
@@ -735,7 +742,7 @@ export namespace Session {
       }
     }
 
-    for (const row of rows.filter(canRead)) {
+    for (const row of rows) {
       const project = projects.get(row.project_id) ?? null
       yield { ...fromRow(row), project }
     }
@@ -743,14 +750,19 @@ export namespace Session {
 
   export const children = fn(Identifier.schema("session"), async (parentID) => {
     const project = Instance.project
+    const a = actor()
+    const conditions: SQL[] = [eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID)]
+    if (a) {
+      conditions.push(eq(SessionTable.user_id, a.user_id))
+    }
     const rows = await Database.use((db) =>
       db
         .select()
         .from(SessionTable)
-        .where(and(eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID)))
+        .where(and(...conditions))
         .all(),
     )
-    return rows.filter(canRead).map(fromRow)
+    return rows.map(fromRow)
   })
 
   export const remove = fn(Identifier.schema("session"), async (sessionID) => {
@@ -869,6 +881,16 @@ export namespace Session {
         }),
       )
     })
+    if (part.type === "step-finish") {
+      void TokenUsageService.recordStepFinish({ part, persistedAt: time }).catch((error) => {
+        log.warn("failed to record token usage on step-finish", {
+          error,
+          sessionID: part.sessionID,
+          messageID: part.messageID,
+          partID: part.id,
+        })
+      })
+    }
     return part
   })
 

@@ -17,6 +17,7 @@ import { AccountContextService } from "./context"
 
 type UserRow = typeof TpUserTable.$inferSelect
 const log = Log.create({ service: "user" })
+const AUTH_CACHE_TTL_MS = 300_000
 
 function hash(input: string) {
   return createHash("sha256").update(input).digest("hex")
@@ -217,6 +218,66 @@ function registerMode() {
   const mode = (Flag.TPCODE_REGISTER_MODE ?? "invite").toLowerCase()
   if (mode === "open" || mode === "invite" || mode === "closed") return mode
   return "invite"
+}
+
+type AuthorizeDetailOk = {
+  ok: true
+  user: ReturnType<typeof profile>
+  sid: string
+  sub: string
+}
+
+type AuthorizeDetail =
+  | AuthorizeDetailOk
+  | {
+      ok: false
+      reason: "jwt_invalid" | "session_missing" | "session_expired" | "user_inactive" | "user_locked"
+      sid?: string
+      sub?: string
+      locked_until?: number
+    }
+
+const authCacheByTokenHash = new Map<
+  string,
+  {
+    expiresAt: number
+    detail: AuthorizeDetailOk
+    userID: string
+  }
+>()
+const authCacheTokenSetByUserID = new Map<string, Set<string>>()
+
+function invalidateByTokenHash(tokenHash: string) {
+  const existing = authCacheByTokenHash.get(tokenHash)
+  if (!existing) return
+  authCacheByTokenHash.delete(tokenHash)
+  const tokens = authCacheTokenSetByUserID.get(existing.userID)
+  if (!tokens) return
+  tokens.delete(tokenHash)
+  if (tokens.size === 0) authCacheTokenSetByUserID.delete(existing.userID)
+}
+
+function invalidateByUserID(userID: string) {
+  const tokens = authCacheTokenSetByUserID.get(userID)
+  if (!tokens || tokens.size === 0) return
+  for (const tokenHash of tokens) {
+    authCacheByTokenHash.delete(tokenHash)
+  }
+  authCacheTokenSetByUserID.delete(userID)
+}
+
+function cacheAuthorizeDetail(input: { tokenHash: string; userID: string; detail: AuthorizeDetailOk; now: number }) {
+  authCacheByTokenHash.set(input.tokenHash, {
+    expiresAt: input.now + AUTH_CACHE_TTL_MS,
+    detail: input.detail,
+    userID: input.userID,
+  })
+  let tokens = authCacheTokenSetByUserID.get(input.userID)
+  if (!tokens) {
+    tokens = new Set()
+    authCacheTokenSetByUserID.set(input.userID, tokens)
+  }
+  tokens.add(input.tokenHash)
 }
 
 export namespace UserService {
@@ -644,6 +705,7 @@ export namespace UserService {
         .where(eq(TpUserTable.id, input.user_id))
         .run(),
     )
+    invalidateByUserID(input.user_id)
     auditLater({
       actor_user_id: input.user_id,
       action: "account.password.change",
@@ -694,13 +756,15 @@ export namespace UserService {
   }
 
   export async function revokeToken(input: { token: string }) {
+    const hashed = tokenHash(input.token)
     await Database.use((db) =>
       db
         .update(TpSessionTokenTable)
         .set({ revoked_at: Date.now() })
-        .where(eq(TpSessionTokenTable.token_hash, tokenHash(input.token)))
+        .where(eq(TpSessionTokenTable.token_hash, hashed))
         .run(),
     )
+    invalidateByTokenHash(hashed)
   }
 
   export async function revokeAll(input: { user_id: string }) {
@@ -711,27 +775,21 @@ export namespace UserService {
         .where(and(eq(TpSessionTokenTable.user_id, input.user_id), isNull(TpSessionTokenTable.revoked_at)))
         .run(),
     )
+    invalidateByUserID(input.user_id)
   }
-
-  type AuthorizeDetail =
-    | {
-        ok: true
-        user: ReturnType<typeof profile>
-        sid: string
-        sub: string
-      }
-    | {
-        ok: false
-        reason: "jwt_invalid" | "session_missing" | "session_expired" | "user_inactive" | "user_locked"
-        sid?: string
-        sub?: string
-        locked_until?: number
-      }
 
   export async function authorizeDetail(token: string): Promise<AuthorizeDetail> {
     const parsed = await UserJwt.verifyAccess(token)
     if (!parsed) return { ok: false, reason: "jwt_invalid" }
     const now = Date.now()
+    const hashed = tokenHash(token)
+    const cached = authCacheByTokenHash.get(hashed)
+    if (cached && cached.expiresAt > now) {
+      return cached.detail
+    }
+    if (cached) {
+      invalidateByTokenHash(hashed)
+    }
     const row = await Database.use((db) =>
       db
         .select()
@@ -740,7 +798,7 @@ export namespace UserService {
           and(
             eq(TpSessionTokenTable.id, parsed.sid),
             eq(TpSessionTokenTable.user_id, parsed.sub),
-            eq(TpSessionTokenTable.token_hash, tokenHash(token)),
+            eq(TpSessionTokenTable.token_hash, hashed),
             eq(TpSessionTokenTable.token_type, "access"),
             isNull(TpSessionTokenTable.revoked_at),
           ),
@@ -762,7 +820,7 @@ export namespace UserService {
     }
     const roles = await rolesByUser(user.id)
     const permissions = await permissionsByUser(user.id)
-    return {
+    const detail: AuthorizeDetailOk = {
       ok: true,
       user: profile({
         user,
@@ -773,6 +831,13 @@ export namespace UserService {
       sid: parsed.sid,
       sub: parsed.sub,
     }
+    cacheAuthorizeDetail({
+      tokenHash: hashed,
+      userID: user.id,
+      detail,
+      now,
+    })
+    return detail
   }
 
   export async function authorize(token: string) {
@@ -996,6 +1061,7 @@ export namespace UserService {
         .where(and(eq(TpSessionTokenTable.user_id, user.id), isNull(TpSessionTokenTable.revoked_at)))
         .run()
     })
+    invalidateByUserID(user.id)
     auditLater({
       actor_user_id: user.id,
       action: "account.password.reset",
@@ -1416,6 +1482,7 @@ export namespace UserService {
           .run()
       }
     })
+    invalidateByUserID(input.user_id)
     auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.user.roles.update",
@@ -1564,6 +1631,7 @@ export namespace UserService {
         .where(eq(TpUserTable.id, input.user_id))
         .run()
     })
+    invalidateByUserID(input.user_id)
     auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.user.update",
@@ -1595,6 +1663,13 @@ export namespace UserService {
     const codes = [...new Set(input.permission_codes)]
     const permission_ids = await permissionIDs(codes)
     if (permission_ids.length !== codes.length) return { ok: false as const, code: "permission_missing" }
+    const affectedUsers = await Database.use((db) =>
+      db
+        .select({ user_id: TpUserRoleTable.user_id })
+        .from(TpUserRoleTable)
+        .where(eq(TpUserRoleTable.role_id, role.id))
+        .all(),
+    )
     await Database.use(async (db) => {
       await db.delete(TpRolePermissionTable).where(eq(TpRolePermissionTable.role_id, role.id)).run()
       if (permission_ids.length > 0) {
@@ -1603,6 +1678,9 @@ export namespace UserService {
           .run()
       }
     })
+    for (const item of affectedUsers) {
+      invalidateByUserID(item.user_id)
+    }
     auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.role.permissions.update",

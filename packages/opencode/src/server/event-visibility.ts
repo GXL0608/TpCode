@@ -52,27 +52,22 @@ export function eventProjectID(event: Event) {
   return
 }
 
-export async function eventVisibleToUser(input: { event: Event; userID?: string; projectID?: string }) {
+export async function eventVisibleToUser(input: { event: Event; userID?: string; cache?: Map<string, boolean>; projectID?: string }) {
   if (!input.userID && !input.projectID) return true
   const sessionID = eventSessionID(input.event)
-  if (sessionID) {
-    const row = await Database.use((db) =>
-      db
-        .select({
-          user_id: SessionTable.user_id,
-          project_id: SessionTable.project_id,
-          context_project_id: SessionTable.context_project_id,
-        })
-        .from(SessionTable)
-        .where(eq(SessionTable.id, sessionID))
-        .get(),
-    )
-    if (!row) return false
-    if (input.userID && row.user_id !== input.userID) return false
-    if (input.projectID && (row.context_project_id ?? row.project_id) !== input.projectID) return false
-    return true
-  }
-  const projectID = eventProjectID(input.event)
-  if (projectID && input.projectID && projectID !== input.projectID) return false
-  return true
+  if (!sessionID) return true
+  const cached = input.cache?.get(sessionID)
+  if (cached !== undefined) return cached
+  const row = await Database.use((db) =>
+    db
+      .select({
+        user_id: SessionTable.user_id,
+      })
+      .from(SessionTable)
+      .where(eq(SessionTable.id, sessionID))
+      .get(),
+  )
+  const visible = !!row?.user_id && row.user_id === input.userID
+  input.cache?.set(sessionID, visible)
+  return visible
 }

@@ -289,7 +289,8 @@ export const AccountRoutes = lazy(() =>
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
         const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-        const me = await UserService.me({ user_id, context_project_id })
+        const cached = c.get("account_user" as never) as z.infer<typeof LoginResult.shape.user> | undefined
+        const me = cached ?? (await UserService.me({ user_id, context_project_id }))
         if (!me) return c.json({ error: "unauthorized" }, 401)
         return c.json(me)
       },
