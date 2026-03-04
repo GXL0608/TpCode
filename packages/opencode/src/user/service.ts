@@ -1,4 +1,4 @@
-import { and, Database, desc, eq, inArray, isNull, like, or, type SQL } from "@/storage/db"
+import { and, Database, desc, eq, inArray, isNull, like, or, sql, type SQL } from "@/storage/db"
 import { TpOrganizationTable } from "./organization.sql"
 import { TpDepartmentTable } from "./department.sql"
 import { TpUserTable } from "./user.sql"
@@ -8,6 +8,7 @@ import { TpSessionTokenTable } from "./token.sql"
 import { TpPasswordResetTable } from "./password-reset.sql"
 import { TpAuditLogTable } from "./audit-log.sql"
 import { UserPassword } from "./password"
+import { UserPhone } from "./phone"
 import { UserJwt } from "./jwt"
 import { createHash, randomInt } from "crypto"
 import { ulid } from "ulid"
@@ -217,9 +218,9 @@ function profile(input: { user: UserRow; roles: string[]; permissions: string[];
 }
 
 function registerMode() {
-  const mode = (Flag.TPCODE_REGISTER_MODE ?? "invite").toLowerCase()
-  if (mode === "open" || mode === "invite" || mode === "closed") return mode
-  return "invite"
+  const mode = (Flag.TPCODE_REGISTER_MODE ?? "open").toLowerCase()
+  if (mode === "closed") return "closed"
+  return "open"
 }
 
 type AuthorizeDetailOk = {
@@ -492,17 +493,14 @@ export namespace UserService {
     password: string
     display_name?: string
     email?: string
-    phone?: string
-    invite_code?: string
+    phone: string
     ip?: string
     user_agent?: string
   }) {
     const mode = registerMode()
     if (mode === "closed") return { ok: false as const, code: "register_closed" }
-    if (mode === "invite") {
-      const invite = Flag.TPCODE_ACCOUNT_INVITE_CODE
-      if (!invite || input.invite_code !== invite) return { ok: false as const, code: "invite_invalid" }
-    }
+    const phone = UserPhone.normalize(input.phone)
+    if (!phone) return { ok: false as const, code: "phone_invalid" }
     if (!UserPassword.valid(input.password)) return { ok: false as const, code: "password_invalid" }
     const exists = await userByUsername(input.username)
     if (exists) return { ok: false as const, code: "username_exists" }
@@ -521,7 +519,7 @@ export namespace UserService {
           password_hash,
           display_name: input.display_name ?? input.username,
           email: input.email,
-          phone: input.phone,
+          phone,
           account_type,
           org_id: org.id,
           department_id: undefined,
@@ -960,7 +958,8 @@ export namespace UserService {
     const user = await userByID(input.user_id)
     if (!user) return { ok: false as const, code: "user_missing" }
     const vho_user_id = input.vho_user_id?.trim() || null
-    const phone = input.phone === undefined ? user.phone : input.phone.trim() || null
+    const phone = input.phone === undefined ? user.phone : input.phone.trim() ? UserPhone.normalize(input.phone) : null
+    if (input.phone !== undefined && !!input.phone.trim() && !phone) return { ok: false as const, code: "phone_invalid" }
     await Database.use((db) =>
       db
         .update(TpUserTable)
@@ -996,7 +995,7 @@ export namespace UserService {
   }) {
     const user = await userByID(input.user_id)
     if (!user) return { ok: false as const, code: "user_missing" }
-    const phone = input.phone.trim()
+    const phone = UserPhone.normalize(input.phone)
     if (!phone) return { ok: false as const, code: "phone_invalid" }
     await Database.use((db) =>
       db
@@ -1196,33 +1195,89 @@ export namespace UserService {
     })
   }
 
-  export async function listRoles() {
-    const rows = await Database.use((db) => db.select().from(TpRoleTable).orderBy(TpRoleTable.code).all())
-    const links = await Database.use((db) => db.select().from(TpRolePermissionTable).all())
-    const perms = await Database.use((db) => db.select().from(TpPermissionTable).all())
+  async function roleItems(rows: (typeof TpRoleTable.$inferSelect)[]) {
+    if (rows.length === 0) return []
+    const role_ids = rows.map((item) => item.id)
+    const [links, perms, users] = await Promise.all([
+      Database.use((db) =>
+        db
+          .select()
+          .from(TpRolePermissionTable)
+          .where(inArray(TpRolePermissionTable.role_id, role_ids))
+          .all(),
+      ),
+      Database.use((db) => db.select().from(TpPermissionTable).all()),
+      Database.use((db) =>
+        db
+          .select({
+            role_id: TpUserRoleTable.role_id,
+            total: sql<number>`count(*)`,
+          })
+          .from(TpUserRoleTable)
+          .where(inArray(TpUserRoleTable.role_id, role_ids))
+          .groupBy(TpUserRoleTable.role_id)
+          .all(),
+      ),
+    ])
     const permByID = new Map(perms.map((item) => [item.id, item.code]))
-    const codesByRole = links.reduce(
+    const codeByRole = links.reduce(
       (acc, item) => {
         const code = permByID.get(item.permission_id)
         if (!code) return acc
-        const current = acc.get(item.role_id)
-        if (!current) {
-          acc.set(item.role_id, [code])
-          return acc
-        }
-        current.push(code)
+        const list = acc.get(item.role_id)
+        if (list) list.push(code)
+        if (!list) acc.set(item.role_id, [code])
         return acc
       },
       new Map<string, string[]>(),
     )
+    const memberByRole = new Map(users.map((item) => [item.role_id, Number(item.total)]))
     return rows.map((item) => ({
       ...item,
       name: roleName(item.code),
-      permissions: [...new Set(codesByRole.get(item.id) ?? [])].sort(),
+      permissions: [...new Set(codeByRole.get(item.id) ?? [])].sort(),
+      member_count: memberByRole.get(item.id) ?? 0,
     }))
   }
 
-  export async function listUsers(input?: { org_id?: string; department_id?: string; keyword?: string }) {
+  export async function listRoles() {
+    const rows = await Database.use((db) => db.select().from(TpRoleTable).orderBy(TpRoleTable.code).all())
+    return await roleItems(rows)
+  }
+
+  export async function listRolesPaged(input?: { page?: number; page_size?: number }) {
+    const page = input?.page ?? 1
+    const page_size = input?.page_size ?? 15
+    const offset = (page - 1) * page_size
+    const [rows, totalRow] = await Promise.all([
+      Database.use((db) =>
+        db
+          .select()
+          .from(TpRoleTable)
+          .orderBy(TpRoleTable.code)
+          .limit(page_size)
+          .offset(offset)
+          .all(),
+      ),
+      Database.use((db) =>
+        db
+          .select({
+            total: sql<number>`count(*)`,
+          })
+          .from(TpRoleTable)
+          .get(),
+      ),
+    ])
+    const items = await roleItems(rows)
+    return {
+      items,
+      total: Number(totalRow?.total ?? 0),
+      page,
+      page_size,
+    }
+  }
+
+  function userFilter(input?: { org_id?: string; department_id?: string; keyword?: string }) {
     const conditions: SQL[] = []
     if (input?.org_id) conditions.push(eq(TpUserTable.org_id, input.org_id))
     if (input?.department_id) conditions.push(eq(TpUserTable.department_id, input.department_id))
@@ -1231,23 +1286,11 @@ export namespace UserService {
       const match = or(like(TpUserTable.username, word), like(TpUserTable.display_name, word), like(TpUserTable.phone, word))
       if (match) conditions.push(match)
     }
-    const rows = await Database.use((db) => {
-      if (conditions.length === 0) {
-        return db
-          .select()
-          .from(TpUserTable)
-          .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
-          .all()
-      }
-      return db
-        .select()
-        .from(TpUserTable)
-        .where(and(...conditions))
-        .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
-        .all()
-    })
-    if (rows.length === 0) return []
+    return conditions
+  }
 
+  async function userItems(rows: UserRow[]) {
+    if (rows.length === 0) return []
     const user_ids = rows.map((item) => item.id)
     const userRoles = await Database.use((db) =>
       db
@@ -1341,6 +1384,86 @@ export namespace UserService {
         permissions: permission_codes,
       }
     })
+  }
+
+  export async function listUsers(input?: { org_id?: string; department_id?: string; keyword?: string }) {
+    const conditions = userFilter(input)
+    const where = conditions.length === 0 ? undefined : and(...conditions)
+    const rows = await Database.use((db) => {
+      if (where) {
+        return db
+          .select()
+          .from(TpUserTable)
+          .where(where)
+          .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
+          .all()
+      }
+      return db
+        .select()
+        .from(TpUserTable)
+        .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
+        .all()
+    })
+    return await userItems(rows)
+  }
+
+  export async function listUsersPaged(input?: {
+    org_id?: string
+    department_id?: string
+    keyword?: string
+    page?: number
+    page_size?: number
+  }) {
+    const page = input?.page ?? 1
+    const page_size = input?.page_size ?? 15
+    const offset = (page - 1) * page_size
+    const conditions = userFilter(input)
+    const where = conditions.length === 0 ? undefined : and(...conditions)
+    const [rows, totalRow] = await Promise.all([
+      Database.use((db) => {
+        if (where) {
+          return db
+            .select()
+            .from(TpUserTable)
+            .where(where)
+            .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
+            .limit(page_size)
+            .offset(offset)
+            .all()
+        }
+        return db
+          .select()
+          .from(TpUserTable)
+          .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
+          .limit(page_size)
+          .offset(offset)
+          .all()
+      }),
+      Database.use((db) => {
+        if (where) {
+          return db
+            .select({
+              total: sql<number>`count(*)`,
+            })
+            .from(TpUserTable)
+            .where(where)
+            .get()
+        }
+        return db
+          .select({
+            total: sql<number>`count(*)`,
+          })
+          .from(TpUserTable)
+          .get()
+      }),
+    ])
+    const items = await userItems(rows)
+    return {
+      items,
+      total: Number(totalRow?.total ?? 0),
+      page,
+      page_size,
+    }
   }
 
   export async function createOrganization(input: {
@@ -1439,6 +1562,8 @@ export namespace UserService {
     user_agent?: string
   }) {
     if (!UserPassword.valid(input.password)) return { ok: false as const, code: "password_invalid" }
+    const phone = input.phone === undefined ? undefined : UserPhone.normalize(input.phone)
+    if (input.phone !== undefined && !phone) return { ok: false as const, code: "phone_invalid" }
     const exists = await userByUsername(input.username)
     if (exists) return { ok: false as const, code: "username_exists" }
     const org = await Database.use((db) => db.select().from(TpOrganizationTable).where(eq(TpOrganizationTable.id, input.org_id)).get())
@@ -1468,7 +1593,7 @@ export namespace UserService {
           password_hash,
           display_name: input.display_name ?? input.username,
           email: input.email,
-          phone: input.phone,
+          phone,
           account_type: input.account_type,
           org_id: input.org_id,
           department_id: input.department_id,
@@ -1645,6 +1770,9 @@ export namespace UserService {
   }) {
     const user = await userByID(input.user_id)
     if (!user) return { ok: false as const, code: "user_missing" }
+    const phone = input.phone === undefined ? undefined : UserPhone.normalize(input.phone)
+    if (input.phone !== undefined && !!input.phone.trim() && !phone) return { ok: false as const, code: "phone_invalid" }
+    const next_phone = input.phone === undefined ? undefined : phone || null
     if (input.department_id) {
       const department_id = input.department_id
       const department = await Database.use((db) =>
@@ -1661,7 +1789,7 @@ export namespace UserService {
         .set({
           display_name: input.display_name,
           email: input.email,
-          phone: input.phone,
+          phone: next_phone,
           status: input.status,
           department_id: input.department_id === null ? null : input.department_id,
           time_updated: Date.now(),
@@ -1679,7 +1807,7 @@ export namespace UserService {
       detail_json: {
         display_name: input.display_name,
         email: input.email,
-        phone: input.phone,
+        phone: next_phone ?? undefined,
         status: input.status,
         department_id: input.department_id,
       },

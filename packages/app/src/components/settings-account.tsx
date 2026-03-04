@@ -1,8 +1,9 @@
 import { Button } from "@opencode-ai/ui/button"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useNavigate } from "@solidjs/router"
-import { For, Show, createEffect, createSignal } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
+import { passwordError as passwordIssueText, passwordRule, phoneError as phoneIssueText, phoneRule } from "@/utils/account-rule"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { accountTypeZh, roleZh } from "./settings-rbac-zh"
 
@@ -24,6 +25,8 @@ export const SettingsAccount = () => {
   const [phoneMessage, setPhoneMessage] = createSignal("")
   const [phoneBound, setPhoneBound] = createSignal(false)
   const [vhoBound, setVhoBound] = createSignal(false)
+  const passwordNextIssue = createMemo(() => passwordIssueText(passwordNext()))
+  const phoneIssue = createMemo(() => phoneIssueText(phone()))
 
   const writeVho = (input: { phone?: string; phone_bound?: boolean; vho_bound?: boolean; bound?: boolean }) => {
     const nextPhone = typeof input.phone === "string" ? input.phone : ""
@@ -50,7 +53,7 @@ export const SettingsAccount = () => {
         return
       }
       if (result.code === "new_password_invalid") {
-        setPasswordError("新密码至少需要 8 位")
+        setPasswordError(passwordRule)
         return
       }
       setPasswordError("修改密码失败")
@@ -92,6 +95,12 @@ export const SettingsAccount = () => {
 
   const savePhone = async (event: SubmitEvent) => {
     event.preventDefault()
+    setPhoneMessage("")
+    const current = phoneIssue()
+    if (current) {
+      setPhoneError(current)
+      return
+    }
     setPhonePending(true)
     setPhoneMessage("")
     setPhoneError("")
@@ -204,10 +213,18 @@ export const SettingsAccount = () => {
             value={phone()}
             onInput={(event) => setPhone(event.currentTarget.value)}
           />
-          <Button type="submit" disabled={phonePending() || !phone().trim()}>
+          <Button type="submit" disabled={phonePending() || !phone().trim() || !!phoneIssue()}>
             {phonePending() ? "保存中..." : "保存手机号"}
           </Button>
         </form>
+        <Show when={phone()}>
+          <div class={`text-12-regular ${phoneIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+            {phoneIssue() || "手机号格式正确"}
+          </div>
+        </Show>
+        <Show when={!phone()}>
+          <div class="text-12-regular text-text-weak">{phoneRule}</div>
+        </Show>
         <Show when={phoneError()}>
           <div class="rounded-md bg-icon-critical-base/10 px-3 py-2 text-12-regular text-icon-critical-base">{phoneError()}</div>
         </Show>
@@ -220,7 +237,7 @@ export const SettingsAccount = () => {
         <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
           <form class="w-full max-w-md rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={submitPassword}>
             <div class="text-16-medium text-text-strong">修改密码</div>
-            <div class="text-12-regular text-text-weak">密码规则：至少 8 位</div>
+            <div class="text-12-regular text-text-weak">{passwordRule}</div>
             <input
               class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
               type="password"
@@ -235,6 +252,11 @@ export const SettingsAccount = () => {
               value={passwordNext()}
               onInput={(event) => setPasswordNext(event.currentTarget.value)}
             />
+            <Show when={passwordNext()}>
+              <div class={`text-12-regular ${passwordNextIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+                {passwordNextIssue() || "密码格式正确"}
+              </div>
+            </Show>
             <Show when={passwordError()}>
               <div class="rounded-md bg-icon-critical-base/10 px-3 py-2 text-12-regular text-icon-critical-base">{passwordError()}</div>
             </Show>
@@ -245,7 +267,7 @@ export const SettingsAccount = () => {
               <Button type="button" variant="secondary" onClick={closePassword} disabled={passwordPending()}>
                 取消
               </Button>
-              <Button type="submit" disabled={passwordPending() || !passwordCurrent() || !passwordNext()}>
+              <Button type="submit" disabled={passwordPending() || !passwordCurrent() || !passwordNext() || !!passwordNextIssue()}>
                 {passwordPending() ? "保存中..." : "确认修改"}
               </Button>
             </div>

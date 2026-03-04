@@ -39,7 +39,7 @@ type RegisterInput = {
   username: string
   password: string
   display_name?: string
-  invite_code?: string
+  phone: string
 }
 
 function json<T>(input: unknown): T | undefined {

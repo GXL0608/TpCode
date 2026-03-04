@@ -585,7 +585,6 @@ export class Account extends HeyApiClient {
       display_name?: string
       email?: string
       phone?: string
-      invite_code?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -599,7 +598,6 @@ export class Account extends HeyApiClient {
             { in: "body", key: "display_name" },
             { in: "body", key: "email" },
             { in: "body", key: "phone" },
-            { in: "body", key: "invite_code" },
           ],
         },
       ],

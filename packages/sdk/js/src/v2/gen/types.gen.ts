@@ -2072,8 +2072,7 @@ export type AccountRegisterData = {
     password: string
     display_name?: string
     email?: string
-    phone?: string
-    invite_code?: string
+    phone: string
   }
   path?: never
   query?: never
@@ -2348,7 +2347,7 @@ export type PostAccountAdminUsersData = {
     password: string
     display_name?: string
     email?: string
-    phone?: string
+    phone: string
     account_type: "internal" | "hospital" | "partner"
     org_id: string
     department_id?: string

@@ -18,6 +18,7 @@ export type AccountRole = {
   code: string
   name: string
   permissions: string[]
+  member_count?: number
 }
 
 export type AccountPermission = {

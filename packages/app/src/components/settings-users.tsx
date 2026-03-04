@@ -5,11 +5,29 @@ import { For, Show, createEffect, createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useAccountAuth } from "@/context/account-auth"
 import { popularProviders, useProviders } from "@/hooks/use-providers"
+import { passwordError, passwordRule, phoneError, phoneRule } from "@/utils/account-rule"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { type AccountRole, type AccountUser, accountTypeZh, roleZh, statusZh } from "./settings-rbac-zh"
 
 function list<T>(input: unknown) {
   return Array.isArray(input) ? (input as T[]) : []
+}
+
+function page<T>(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return
+  const row = input as {
+    items?: unknown
+    total?: unknown
+    page?: unknown
+    page_size?: unknown
+  }
+  if (!Array.isArray(row.items)) return
+  return {
+    items: row.items as T[],
+    total: typeof row.total === "number" ? row.total : Number(row.total ?? 0),
+    page: typeof row.page === "number" ? row.page : Number(row.page ?? 1),
+    page_size: typeof row.page_size === "number" ? row.page_size : Number(row.page_size ?? 15),
+  }
 }
 
 export const SettingsUsers = () => {
@@ -26,12 +44,16 @@ export const SettingsUsers = () => {
     error: "",
     message: "",
     query: "",
+    userPage: 1,
+    userPageSize: 15,
+    userTotal: 0,
     users: [] as AccountUser[],
     roles: [] as AccountRole[],
     createOpen: false,
     createUsername: "",
     createDisplayName: "",
     createPassword: "",
+    createPhone: "",
     createType: "internal" as "internal" | "hospital" | "partner",
     createRoles: [] as string[],
     editOpen: false,
@@ -83,6 +105,18 @@ export const SettingsUsers = () => {
     if (iconNames.includes(providerID as IconName)) return providerID as IconName
     return "synthetic"
   }
+  const createPasswordIssue = createMemo(() => passwordError(state.createPassword))
+  const createPhoneIssue = createMemo(() => phoneError(state.createPhone))
+  const userPageTotal = createMemo(() => Math.max(1, Math.ceil(state.userTotal / state.userPageSize)))
+  const userRangeStart = createMemo(() => {
+    if (state.userTotal === 0 || state.users.length === 0) return 0
+    return (state.userPage - 1) * state.userPageSize + 1
+  })
+  const userRangeEnd = createMemo(() => {
+    const start = userRangeStart()
+    if (start === 0) return 0
+    return start + state.users.length - 1
+  })
 
   const toggleCreateRole = (code: string) => {
     if (state.createRoles.includes(code)) {
@@ -97,6 +131,7 @@ export const SettingsUsers = () => {
     setState("createUsername", "")
     setState("createDisplayName", "")
     setState("createPassword", "")
+    setState("createPhone", "")
     setState("createType", "internal")
     setState("createRoles", [])
   }
@@ -109,19 +144,23 @@ export const SettingsUsers = () => {
     setState("roleCodes", (current) => [...current, code])
   }
 
-  const pathUsers = () => {
+  const pathUsers = (pageID: number) => {
     const keyword = state.query.trim()
-    if (!keyword) return "/account/admin/users"
-    const query = new URLSearchParams({ keyword })
+    const query = new URLSearchParams({
+      page: String(pageID),
+      page_size: String(state.userPageSize),
+    })
+    if (keyword) query.set("keyword", keyword)
     return `/account/admin/users?${query.toString()}`
   }
 
-  const load = async () => {
+  const load = async (input?: { page?: number }) => {
     if (!canManage()) return
     setState("loading", true)
     setState("error", "")
+    const pageID = input?.page ?? state.userPage
 
-    const usersResponse = await request({ path: pathUsers() }).catch(() => undefined)
+    const usersResponse = await request({ path: pathUsers(pageID) }).catch(() => undefined)
     const rolesResponse = canRole() ? await request({ path: "/account/admin/roles" }).catch(() => undefined) : undefined
 
     if (!usersResponse?.ok) {
@@ -130,10 +169,17 @@ export const SettingsUsers = () => {
       return
     }
 
-    const users = list<AccountUser>(await usersResponse.json().catch(() => undefined))
-    const roles = rolesResponse?.ok ? list<AccountRole>(await rolesResponse.json().catch(() => undefined)) : []
+    const usersBody = await usersResponse.json().catch(() => undefined)
+    const usersPage = page<AccountUser>(usersBody)
+    const users = usersPage ? list<AccountUser>(usersPage.items) : list<AccountUser>(usersBody)
+    const rolesBody = rolesResponse?.ok ? await rolesResponse.json().catch(() => undefined) : undefined
+    const rolesPage = page<AccountRole>(rolesBody)
+    const roles = rolesPage ? list<AccountRole>(rolesPage.items) : list<AccountRole>(rolesBody)
 
     setState("users", users)
+    setState("userPage", Math.max(1, usersPage?.page ?? pageID))
+    setState("userPageSize", Math.max(1, usersPage?.page_size ?? state.userPageSize))
+    setState("userTotal", Math.max(0, usersPage?.total ?? users.length))
     setState("roles", roles)
     setState("loading", false)
   }
@@ -342,6 +388,7 @@ export const SettingsUsers = () => {
         username: state.createUsername.trim(),
         password: state.createPassword,
         display_name: state.createDisplayName.trim() || undefined,
+        phone: state.createPhone.trim(),
         account_type: state.createType,
         org_id: orgID,
         role_codes: canRole() ? state.createRoles : undefined,
@@ -396,7 +443,7 @@ export const SettingsUsers = () => {
             class="rounded-xl border border-border-weak-base bg-surface-base p-3 flex items-center gap-2"
             onSubmit={(event) => {
               event.preventDefault()
-              void load()
+              void load({ page: 1 })
             }}
           >
             <input
@@ -498,6 +545,31 @@ export const SettingsUsers = () => {
                 </tbody>
               </table>
             </div>
+            <div class="px-4 py-3 border-t border-border-weak-base bg-surface-panel/35 flex items-center justify-between">
+              <div class="text-12-regular text-text-weak">
+                第 {state.userPage} / {userPageTotal()} 页，共 {state.userTotal} 条（当前 {userRangeStart()}-{userRangeEnd()}）
+              </div>
+              <div class="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="small"
+                  variant="secondary"
+                  disabled={state.loading || state.userPage <= 1}
+                  onClick={() => void load({ page: state.userPage - 1 })}
+                >
+                  上一页
+                </Button>
+                <Button
+                  type="button"
+                  size="small"
+                  variant="secondary"
+                  disabled={state.loading || state.userPage >= userPageTotal()}
+                  onClick={() => void load({ page: state.userPage + 1 })}
+                >
+                  下一页
+                </Button>
+              </div>
+            </div>
           </div>
         </section>
       </Show>
@@ -525,6 +597,28 @@ export const SettingsUsers = () => {
               value={state.createPassword}
               onInput={(event) => setState("createPassword", event.currentTarget.value)}
             />
+            <Show when={state.createPassword}>
+              <div class={`text-12-regular ${createPasswordIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+                {createPasswordIssue() || "密码格式正确"}
+              </div>
+            </Show>
+            <Show when={!state.createPassword}>
+              <div class="text-12-regular text-text-weak">{passwordRule}</div>
+            </Show>
+            <input
+              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+              placeholder="手机号"
+              value={state.createPhone}
+              onInput={(event) => setState("createPhone", event.currentTarget.value)}
+            />
+            <Show when={state.createPhone}>
+              <div class={`text-12-regular ${createPhoneIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+                {createPhoneIssue() || "手机号格式正确"}
+              </div>
+            </Show>
+            <Show when={!state.createPhone}>
+              <div class="text-12-regular text-text-weak">{phoneRule}</div>
+            </Show>
             <select
               class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
               value={state.createType}
@@ -559,7 +653,17 @@ export const SettingsUsers = () => {
               <Button type="button" variant="secondary" onClick={resetCreate} disabled={state.pending}>
                 取消
               </Button>
-              <Button type="submit" disabled={state.pending || !state.createUsername.trim() || !state.createPassword}>
+              <Button
+                type="submit"
+                disabled={
+                  state.pending ||
+                  !state.createUsername.trim() ||
+                  !state.createPassword ||
+                  !!createPasswordIssue() ||
+                  !state.createPhone.trim() ||
+                  !!createPhoneIssue()
+                }
+              >
                 {state.pending ? "创建中..." : "确认创建"}
               </Button>
             </div>

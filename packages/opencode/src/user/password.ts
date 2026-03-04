@@ -1,4 +1,7 @@
 export namespace UserPassword {
+  const letter = /[A-Za-z]/
+  const digit = /\d/
+
   export async function hash(input: string) {
     return Bun.password.hash(input)
   }
@@ -9,6 +12,8 @@ export namespace UserPassword {
 
   export function valid(input: string) {
     if (input.length < 8) return false
+    if (!letter.test(input)) return false
+    if (!digit.test(input)) return false
     return true
   }
 }

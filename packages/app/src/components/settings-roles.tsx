@@ -23,6 +23,23 @@ function list<T>(input: unknown) {
   return Array.isArray(input) ? (input as T[]) : []
 }
 
+function page<T>(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return
+  const row = input as {
+    items?: unknown
+    total?: unknown
+    page?: unknown
+    page_size?: unknown
+  }
+  if (!Array.isArray(row.items)) return
+  return {
+    items: row.items as T[],
+    total: typeof row.total === "number" ? row.total : Number(row.total ?? 0),
+    page: typeof row.page === "number" ? row.page : Number(row.page ?? 1),
+    page_size: typeof row.page_size === "number" ? row.page_size : Number(row.page_size ?? 15),
+  }
+}
+
 function sameSet(a: string[], b: string[]) {
   if (a.length !== b.length) return false
   const left = [...new Set(a)].sort()
@@ -42,6 +59,9 @@ export const SettingsRoles = () => {
     pending: false,
     error: "",
     message: "",
+    rolePage: 1,
+    rolePageSize: 15,
+    roleTotal: 0,
     roles: [] as AccountRole[],
     permissions: [] as AccountPermission[],
     users: [] as AccountUser[],
@@ -55,6 +75,7 @@ export const SettingsRoles = () => {
     memberRoleCode: "",
     memberUserIDs: [] as string[],
     memberBase: [] as string[],
+    memberLoading: false,
     projectOpen: false,
     projectRoleCode: "",
     projectIDs: [] as string[],
@@ -107,7 +128,17 @@ export const SettingsRoles = () => {
     })
   })
 
-  const roleMembersCount = (roleCode: string) => state.users.filter((item) => item.roles.includes(roleCode)).length
+  const rolePageTotal = createMemo(() => Math.max(1, Math.ceil(state.roleTotal / state.rolePageSize)))
+  const roleRangeStart = createMemo(() => {
+    if (state.roleTotal === 0 || state.roles.length === 0) return 0
+    return (state.rolePage - 1) * state.rolePageSize + 1
+  })
+  const roleRangeEnd = createMemo(() => {
+    const start = roleRangeStart()
+    if (start === 0) return 0
+    return start + state.roles.length - 1
+  })
+  const roleMembersCount = (roleCode: string) => state.roles.find((item) => item.code === roleCode)?.member_count ?? 0
   const roleProjectCount = (roleCode: string) => (state.roleProjects[roleCode] ?? []).length
 
   const togglePerm = (code: string) => {
@@ -153,15 +184,19 @@ export const SettingsRoles = () => {
     setState("roleProjects", next)
   }
 
-  const load = async () => {
+  const load = async (input?: { page?: number }) => {
     if (!canRole()) return
     setState("loading", true)
     setState("error", "")
+    const pageID = input?.page ?? state.rolePage
 
-    const rolesResponse = await request({ path: "/account/admin/roles" }).catch(() => undefined)
+    const rolesQuery = new URLSearchParams({
+      page: String(pageID),
+      page_size: String(state.rolePageSize),
+    })
+    const rolesResponse = await request({ path: `/account/admin/roles?${rolesQuery.toString()}` }).catch(() => undefined)
     const permissionsResponse = await request({ path: "/account/admin/permissions" }).catch(() => undefined)
     const scanRootResponse = await request({ path: "/account/admin/settings/project-scan-root" }).catch(() => undefined)
-    const usersResponse = canMember() ? await request({ path: "/account/admin/users" }).catch(() => undefined) : undefined
 
     if (!rolesResponse?.ok) {
       setState("loading", false)
@@ -174,18 +209,21 @@ export const SettingsRoles = () => {
       return
     }
 
-    const roles = list<AccountRole>(await rolesResponse.json().catch(() => undefined))
+    const rolesBody = await rolesResponse.json().catch(() => undefined)
+    const rolesPage = page<AccountRole>(rolesBody)
+    const roles = rolesPage ? list<AccountRole>(rolesPage.items) : list<AccountRole>(rolesBody)
     const permissions = list<AccountPermission>(await permissionsResponse.json().catch(() => undefined))
     const scanRoot = scanRootResponse?.ok
       ? ((await scanRootResponse.json().catch(() => undefined)) as { project_scan_root?: string; source?: "env" | "setting" | "default" } | undefined)
       : undefined
-    const users = usersResponse?.ok ? list<AccountUser>(await usersResponse.json().catch(() => undefined)) : []
 
     setState("roles", roles)
+    setState("rolePage", Math.max(1, rolesPage?.page ?? pageID))
+    setState("rolePageSize", Math.max(1, rolesPage?.page_size ?? state.rolePageSize))
+    setState("roleTotal", Math.max(0, rolesPage?.total ?? roles.length))
     setState("permissions", permissions)
     setState("scanRoot", scanRoot?.project_scan_root ?? "")
     setState("scanRootSource", scanRoot?.source ?? "default")
-    setState("users", users)
     await loadRoleProjects(roles)
     setState("loading", false)
   }
@@ -231,11 +269,26 @@ export const SettingsRoles = () => {
     setState("permQuery", "")
   }
 
-  const openMember = (role: AccountRole) => {
+  const openMember = async (role: AccountRole) => {
     if (!canMember()) return
-    const selected = state.users.filter((item) => item.roles.includes(role.code)).map((item) => item.id)
+    setState("error", "")
     setState("memberOpen", true)
     setState("memberRoleCode", role.code)
+    setState("memberUserIDs", [])
+    setState("memberBase", [])
+    setState("users", [])
+    setState("memberLoading", true)
+    const response = await request({ path: "/account/admin/users" }).catch(() => undefined)
+    setState("memberLoading", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    const usersBody = await response.json().catch(() => undefined)
+    const usersPage = page<AccountUser>(usersBody)
+    const users = usersPage ? list<AccountUser>(usersPage.items) : list<AccountUser>(usersBody)
+    const selected = users.filter((item) => item.roles.includes(role.code)).map((item) => item.id)
+    setState("users", users)
     setState("memberUserIDs", selected)
     setState("memberBase", selected)
   }
@@ -272,6 +325,8 @@ export const SettingsRoles = () => {
     setState("memberRoleCode", "")
     setState("memberUserIDs", [])
     setState("memberBase", [])
+    setState("users", [])
+    setState("memberLoading", false)
   }
 
   const closeProject = () => {
@@ -468,7 +523,7 @@ export const SettingsRoles = () => {
                               权限设置
                             </Button>
                             <Show when={canMember()}>
-                              <Button type="button" size="small" variant="secondary" onClick={() => openMember(item)}>
+                              <Button type="button" size="small" variant="secondary" onClick={() => void openMember(item)}>
                                 成员管理
                               </Button>
                             </Show>
@@ -489,6 +544,31 @@ export const SettingsRoles = () => {
                   </Show>
                 </tbody>
               </table>
+            </div>
+            <div class="px-4 py-3 border-t border-border-weak-base bg-surface-panel/35 flex items-center justify-between">
+              <div class="text-12-regular text-text-weak">
+                第 {state.rolePage} / {rolePageTotal()} 页，共 {state.roleTotal} 条（当前 {roleRangeStart()}-{roleRangeEnd()}）
+              </div>
+              <div class="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="small"
+                  variant="secondary"
+                  disabled={state.loading || state.rolePage <= 1}
+                  onClick={() => void load({ page: state.rolePage - 1 })}
+                >
+                  上一页
+                </Button>
+                <Button
+                  type="button"
+                  size="small"
+                  variant="secondary"
+                  disabled={state.loading || state.rolePage >= rolePageTotal()}
+                  onClick={() => void load({ page: state.rolePage + 1 })}
+                >
+                  下一页
+                </Button>
+              </div>
             </div>
           </div>
         </section>
@@ -544,15 +624,20 @@ export const SettingsRoles = () => {
           <form class="w-full max-w-2xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={saveMember}>
             <div class="text-16-medium text-text-strong">成员管理 · {roleZh(state.memberRoleCode)}</div>
             <div class="max-h-80 overflow-auto rounded-md border border-border-weak-base bg-surface-base p-2 flex flex-col gap-1">
-              <For each={state.users}>
-                {(item) => (
-                  <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-panel/50">
-                    <input type="checkbox" checked={state.memberUserIDs.includes(item.id)} onChange={() => toggleMember(item.id)} />
-                    <span class="text-12-regular text-text-strong">{item.display_name}</span>
-                    <span class="text-11-regular text-text-weak">({item.username})</span>
-                  </label>
-                )}
-              </For>
+              <Show when={!state.memberLoading} fallback={<div class="px-2 py-3 text-12-regular text-text-weak">加载成员中...</div>}>
+                <For each={state.users}>
+                  {(item) => (
+                    <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-panel/50">
+                      <input type="checkbox" checked={state.memberUserIDs.includes(item.id)} onChange={() => toggleMember(item.id)} />
+                      <span class="text-12-regular text-text-strong">{item.display_name}</span>
+                      <span class="text-11-regular text-text-weak">({item.username})</span>
+                    </label>
+                  )}
+                </For>
+                <Show when={state.users.length === 0}>
+                  <div class="px-2 py-3 text-12-regular text-text-weak">暂无可选成员</div>
+                </Show>
+              </Show>
             </div>
             <div class="flex justify-end gap-2">
               <Button type="button" variant="secondary" onClick={closeMember} disabled={state.pending}>

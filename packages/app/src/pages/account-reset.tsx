@@ -1,7 +1,8 @@
 import { Button } from "@opencode-ai/ui/button"
 import { A, useNavigate } from "@solidjs/router"
-import { createSignal } from "solid-js"
+import { Show, createMemo, createSignal } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
+import { passwordError, passwordRule } from "@/utils/account-rule"
 
 export default function AccountReset() {
   const auth = useAccountAuth()
@@ -11,6 +12,7 @@ export default function AccountReset() {
   const [password, setPassword] = createSignal("")
   const [pending, setPending] = createSignal(false)
   const [error, setError] = createSignal("")
+  const passwordIssue = createMemo(() => passwordError(password()))
 
   const submit = async (event: SubmitEvent) => {
     event.preventDefault()
@@ -53,8 +55,14 @@ export default function AccountReset() {
           onInput={(event) => setPassword(event.currentTarget.value)}
           autocomplete="new-password"
         />
+        <div class="text-12-regular text-text-weak">{passwordRule}</div>
+        <Show when={password()}>
+          <div class={`text-12-regular ${passwordIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+            {passwordIssue() || "密码格式正确"}
+          </div>
+        </Show>
         {error() && <div class="text-12-regular text-icon-critical-base">{error()}</div>}
-        <Button type="submit" disabled={pending() || !username().trim() || !code().trim() || !password()}>
+        <Button type="submit" disabled={pending() || !username().trim() || !code().trim() || !password() || !!passwordIssue()}>
           {pending() ? "重置中..." : "确认重置"}
         </Button>
         <div class="text-12-regular text-text-weak">

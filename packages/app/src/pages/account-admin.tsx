@@ -6,6 +6,7 @@ import { useAccountAuth } from "@/context/account-auth"
 import { usePlatform } from "@/context/platform"
 import { useServer } from "@/context/server"
 import { AccountToken } from "@/utils/account-auth"
+import { passwordError, passwordRule, phoneError, phoneRule } from "@/utils/account-rule"
 
 type Org = {
   id: string
@@ -156,6 +157,7 @@ export default function AccountAdmin() {
   const [userUsername, setUserUsername] = createSignal("")
   const [userPassword, setUserPassword] = createSignal("")
   const [userDisplayName, setUserDisplayName] = createSignal("")
+  const [userPhone, setUserPhone] = createSignal("")
   const [userType, setUserType] = createSignal<"internal" | "hospital" | "partner">("hospital")
   const [userOrgID, setUserOrgID] = createSignal("")
   const [userDepartmentID, setUserDepartmentID] = createSignal("")
@@ -190,6 +192,8 @@ export default function AccountAdmin() {
   const userAccessRows = createMemo(() =>
     userAccessProjectID() ? state.userAccess.filter((item) => item.project_id === userAccessProjectID()) : state.userAccess,
   )
+  const userPasswordIssue = createMemo(() => passwordError(userPassword()))
+  const userPhoneIssue = createMemo(() => phoneError(userPhone()))
 
   const request = async (input: { path: string; method?: string; body?: Record<string, unknown> }) => {
     const current = server.current
@@ -565,6 +569,7 @@ export default function AccountAdmin() {
                       username: userUsername().trim(),
                       password: userPassword(),
                       display_name: userDisplayName().trim() || undefined,
+                      phone: userPhone().trim(),
                       account_type: userType(),
                       org_id: userOrgID(),
                       department_id: userDepartmentID().trim() || undefined,
@@ -578,6 +583,7 @@ export default function AccountAdmin() {
                     setUserUsername("")
                     setUserPassword("")
                     setUserDisplayName("")
+                    setUserPhone("")
                     setUserDepartmentID("")
                     setUserRoleCodes("")
                     done("用户已创建")
@@ -597,12 +603,34 @@ export default function AccountAdmin() {
                   value={userPassword()}
                   onInput={(event) => setUserPassword(event.currentTarget.value)}
                 />
+                <Show when={userPassword()}>
+                  <div class={`md:col-span-3 text-12-regular ${userPasswordIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+                    {userPasswordIssue() || "密码格式正确"}
+                  </div>
+                </Show>
+                <Show when={!userPassword()}>
+                  <div class="md:col-span-3 text-12-regular text-text-weak">{passwordRule}</div>
+                </Show>
                 <input
                   class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
                   placeholder="显示名称"
                   value={userDisplayName()}
                   onInput={(event) => setUserDisplayName(event.currentTarget.value)}
                 />
+                <input
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  placeholder="手机号"
+                  value={userPhone()}
+                  onInput={(event) => setUserPhone(event.currentTarget.value)}
+                />
+                <Show when={userPhone()}>
+                  <div class={`md:col-span-3 text-12-regular ${userPhoneIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+                    {userPhoneIssue() || "手机号格式正确"}
+                  </div>
+                </Show>
+                <Show when={!userPhone()}>
+                  <div class="md:col-span-3 text-12-regular text-text-weak">{phoneRule}</div>
+                </Show>
                 <select
                   class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
                   value={userType()}
@@ -631,7 +659,18 @@ export default function AccountAdmin() {
                   value={userRoleCodes()}
                   onInput={(event) => setUserRoleCodes(event.currentTarget.value)}
                 />
-                <Button type="submit" disabled={state.pending || !userUsername().trim() || !userPassword() || !userOrgID()}>
+                <Button
+                  type="submit"
+                  disabled={
+                    state.pending ||
+                    !userUsername().trim() ||
+                    !userPassword() ||
+                    !!userPasswordIssue() ||
+                    !userPhone().trim() ||
+                    !!userPhoneIssue() ||
+                    !userOrgID()
+                  }
+                >
                   创建
                 </Button>
               </form>

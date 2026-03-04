@@ -109,8 +109,7 @@ export const AccountRoutes = lazy(() =>
           password: z.string().min(8),
           display_name: z.string().optional(),
           email: z.string().optional(),
-          phone: z.string().optional(),
-          invite_code: z.string().optional(),
+          phone: z.string().min(1),
         }),
       ),
       async (c) => {
@@ -428,7 +427,27 @@ export const AccountRoutes = lazy(() =>
         })
       },
     )
-    .get("/admin/roles", UserRbac.require("role:manage"), async (c) => c.json(await UserService.listRoles()))
+    .get(
+      "/admin/roles",
+      UserRbac.require("role:manage"),
+      validator(
+        "query",
+        z.object({
+          page: z.coerce.number().int().min(1).optional(),
+          page_size: z.coerce.number().int().min(1).max(100).optional(),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        if (!query.page && !query.page_size) return c.json(await UserService.listRoles())
+        return c.json(
+          await UserService.listRolesPaged({
+            page: query.page ?? 1,
+            page_size: query.page_size ?? 15,
+          }),
+        )
+      },
+    )
     .get(
       "/admin/settings/project-scan-root",
       UserRbac.require("role:manage"),
@@ -783,10 +802,23 @@ export const AccountRoutes = lazy(() =>
           org_id: z.string().optional(),
           department_id: z.string().optional(),
           keyword: z.string().optional(),
+          page: z.coerce.number().int().min(1).optional(),
+          page_size: z.coerce.number().int().min(1).max(100).optional(),
         }),
       ),
       async (c) => {
         const query = c.req.valid("query")
+        if (query.page || query.page_size) {
+          return c.json(
+            await UserService.listUsersPaged({
+              org_id: query.org_id,
+              department_id: query.department_id,
+              keyword: query.keyword,
+              page: query.page ?? 1,
+              page_size: query.page_size ?? 15,
+            }),
+          )
+        }
         return c.json(
           await UserService.listUsers({
             org_id: query.org_id,
@@ -806,7 +838,7 @@ export const AccountRoutes = lazy(() =>
           password: z.string().min(8),
           display_name: z.string().optional(),
           email: z.string().optional(),
-          phone: z.string().optional(),
+          phone: z.string().min(1),
           account_type: z.enum(["internal", "hospital", "partner"]),
           org_id: z.string(),
           department_id: z.string().optional(),

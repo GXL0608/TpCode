@@ -2,6 +2,7 @@ import { Button } from "@opencode-ai/ui/button"
 import { A, useNavigate } from "@solidjs/router"
 import { Show, createMemo, createSignal } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
+import { passwordError, passwordRule } from "@/utils/account-rule"
 
 export default function AccountPasswordChange() {
   const auth = useAccountAuth()
@@ -20,6 +21,7 @@ export default function AccountPasswordChange() {
   const [pending, setPending] = createSignal(false)
   const [error, setError] = createSignal("")
   const [ok, setOk] = createSignal(false)
+  const newPasswordIssue = createMemo(() => passwordError(newPassword()))
 
   const submit = async (event: SubmitEvent) => {
     event.preventDefault()
@@ -37,7 +39,7 @@ export default function AccountPasswordChange() {
         return
       }
       if (result.code === "new_password_invalid") {
-        setError("新密码至少需要 8 位")
+        setError(passwordRule)
         return
       }
       setError("修改密码失败")
@@ -66,12 +68,15 @@ export default function AccountPasswordChange() {
           value={newPassword()}
           onInput={(event) => setNewPassword(event.currentTarget.value)}
         />
-        <div class="text-12-regular text-text-weak">
-          密码规则：至少 8 位。
-        </div>
+        <div class="text-12-regular text-text-weak">{passwordRule}</div>
+        <Show when={newPassword()}>
+          <div class={`text-12-regular ${newPasswordIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+            {newPasswordIssue() || "密码格式正确"}
+          </div>
+        </Show>
         {error() && <div class="text-12-regular text-icon-critical-base">{error()}</div>}
         {ok() && <div class="text-12-regular text-icon-success-base">密码修改成功</div>}
-        <Button type="submit" disabled={pending() || !currentPassword() || !newPassword()}>
+        <Button type="submit" disabled={pending() || !currentPassword() || !newPassword() || !!newPasswordIssue()}>
           {pending() ? "保存中..." : "确认修改"}
         </Button>
         <div class="flex items-center justify-between text-12-regular text-text-weak">
