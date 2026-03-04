@@ -246,8 +246,7 @@ export function SessionHeader() {
   const hotkey = createMemo(() => command.keybind("file.open"))
 
   const currentSession = createMemo(() => sync.data.session.find((s) => s.id === params.id))
-  const shareEnabled = createMemo(() => sync.data.config.share !== "disabled")
-  const showShare = createMemo(() => shareEnabled() && !!currentSession())
+  const showShare = createMemo(() => false)
   const canBrowse = createMemo(() => auth.has("file:browse"))
   const os = createMemo(() => detectOS(platform))
 

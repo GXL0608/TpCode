@@ -418,19 +418,7 @@ export namespace Session {
 
   export const share = fn(Identifier.schema("session"), async (id) => {
     await assertWritable(id)
-    const cfg = await Config.get()
-    if (cfg.share === "disabled") {
-      throw new Error("Sharing is disabled in configuration")
-    }
-    const { ShareNext } = await import("@/share/share-next")
-    const share = await ShareNext.create(id)
-    await Database.use(async (db) => {
-      const row = await db.update(SessionTable).set({ share_url: share.url }).where(eq(SessionTable.id, id)).returning().get()
-      if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
-      const info = fromRow(row)
-      Database.effect(() => Bus.publish(Event.Updated, { info }))
-    })
-    return share
+    throw new Error("Session sharing is disabled")
   })
 
   export const unshare = fn(Identifier.schema("session"), async (id) => {

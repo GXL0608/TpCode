@@ -565,10 +565,13 @@ export const SessionRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        const sessionID = c.req.valid("param").sessionID
-        await Session.share(sessionID)
-        const session = await Session.get(sessionID)
-        return c.json(session)
+        return c.json(
+          {
+            error: "forbidden",
+            message: "Session sharing is disabled",
+          },
+          403,
+        )
       },
     )
     .get(
