@@ -4,7 +4,7 @@ import { create } from "../storybook/scaffold"
 import { diff } from "../storybook/fixtures"
 
 const docs = `### Overview
-Render a code diff with OpenCode styling using the Pierre diff engine.
+Render a code diff with TpCode styling using the Pierre diff engine.
 
 Pair with \`DiffChanges\` for summary counts.
 Use \`LineComment\` or external UI for annotation workflows.

@@ -20,13 +20,13 @@ export const parseDeepLink = (input: string) => {
 export const collectOpenProjectDeepLinks = (urls: string[]) =>
   urls.map(parseDeepLink).filter((directory): directory is string => !!directory)
 
-type OpenCodeWindow = Window & {
+type TpCodeWindow = Window & {
   __OPENCODE__?: {
     deepLinks?: string[]
   }
 }
 
-export const drainPendingDeepLinks = (target: OpenCodeWindow) => {
+export const drainPendingDeepLinks = (target: TpCodeWindow) => {
   const pending = target.__OPENCODE__?.deepLinks ?? []
   if (pending.length === 0) return []
   if (target.__OPENCODE__) target.__OPENCODE__.deepLinks = []
