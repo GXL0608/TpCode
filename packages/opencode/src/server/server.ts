@@ -46,7 +46,7 @@ import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
 import { AccountCurrent } from "@/user/current"
-import { eventVisibleToUser } from "./event-visibility"
+import { eventSessionID, eventVisibleToUser } from "./event-visibility"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -290,19 +290,24 @@ export namespace Server {
         })
         .use(async (c, next) => {
           const skipLogging = c.req.path === "/log"
-          if (!skipLogging) {
-            log.info("request", {
+          const start = Date.now()
+          if (!skipLogging && Flag.TPCODE_ACCOUNT_AUTH_DEBUG) {
+            log.debug("request", {
               method: c.req.method,
               path: c.req.path,
             })
           }
-          const timer = log.time("request", {
-            method: c.req.method,
-            path: c.req.path,
-          })
           await next()
           if (!skipLogging) {
-            timer.stop()
+            const duration = Date.now() - start
+            if (duration >= 1000 || c.res.status >= 500) {
+              log.warn("request slow", {
+                method: c.req.method,
+                path: c.req.path,
+                status: c.res.status,
+                duration,
+              })
+            }
           }
         })
         .route("/global", GlobalRoutes())
@@ -715,6 +720,7 @@ export namespace Server {
             const accountUserID =
               Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_user_id" as never) as string | undefined) : undefined
             return streamSSE(c, async (stream) => {
+              const visibilityCache = new Map<string, boolean>()
               stream.writeSSE({
                 data: JSON.stringify({
                   type: "server.connected",
@@ -722,7 +728,11 @@ export namespace Server {
                 }),
               })
               const unsub = Bus.subscribeAll(async (event) => {
-                if (!(await eventVisibleToUser({ event, userID: accountUserID }))) return
+                const sessionID = eventSessionID(event)
+                if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
+                  visibilityCache.delete(sessionID)
+                }
+                if (!(await eventVisibleToUser({ event, userID: accountUserID, cache: visibilityCache }))) return
                 await stream.writeSSE({
                   data: JSON.stringify(event),
                 })

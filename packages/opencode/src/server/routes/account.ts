@@ -83,7 +83,7 @@ export const AccountRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        await UserService.ensureSeed()
+        await UserService.ensureSeedOnce()
         const body = c.req.valid("json")
         const result = await UserService.register({
           ...body,
@@ -120,7 +120,7 @@ export const AccountRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        await UserService.ensureSeed()
+        await UserService.ensureSeedOnce()
         const body = c.req.valid("json")
         const result = await UserService.login({
           ...body,

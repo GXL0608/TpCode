@@ -46,7 +46,7 @@ export namespace Bus {
       type: def.type,
       properties,
     }
-    log.info("publishing", {
+    log.debug("publishing", {
       type: def.type,
     })
     const pending = []
@@ -87,14 +87,14 @@ export namespace Bus {
   }
 
   function raw(type: string, callback: (event: any) => void) {
-    log.info("subscribing", { type })
+    log.debug("subscribing", { type })
     const subscriptions = state().subscriptions
     let match = subscriptions.get(type) ?? []
     match.push(callback)
     subscriptions.set(type, match)
 
     return () => {
-      log.info("unsubscribing", { type })
+      log.debug("unsubscribing", { type })
       const match = subscriptions.get(type)
       if (!match) return
       const index = match.indexOf(callback)
