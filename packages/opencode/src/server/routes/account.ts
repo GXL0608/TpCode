@@ -4,6 +4,9 @@ import z from "zod"
 import { lazy } from "@/util/lazy"
 import { UserService } from "@/user/service"
 import { UserRbac } from "@/user/rbac"
+import { AccountContextService } from "@/user/context"
+import { AccountProjectCatalogService } from "@/user/project-catalog"
+import { AccountSystemSettingService } from "@/user/system-setting"
 import { errors } from "../error"
 import { Flag } from "@/flag/flag"
 import { Auth } from "@/auth"
@@ -22,6 +25,7 @@ const LoginResult = z
       org_id: z.string(),
       department_id: z.string().optional(),
       force_password_reset: z.boolean(),
+      context_project_id: z.string().optional(),
       roles: z.array(z.string()),
       permissions: z.array(z.string()),
     }),
@@ -37,11 +41,38 @@ function requireLogin(c: Context) {
 function requireProviderConfig(c: Context) {
   const permissions = c.get("account_permissions" as never) as string[] | undefined
   if (!permissions) return
-  if (permissions.includes("provider:config_own") || permissions.includes("provider:config_global")) return
+  if (permissions.includes("provider:config_global")) return
   return c.json(
     {
       error: "forbidden",
-      permission: "provider:config_own",
+      permission: "provider:config_global",
+    },
+    403,
+  )
+}
+
+function requireUserProviderConfig(c: Context) {
+  const permissions = c.get("account_permissions" as never) as string[] | undefined
+  if (!permissions) return
+  if (!permissions.includes("provider:config_user")) {
+    return c.json(
+      {
+        error: "forbidden",
+        permission: "provider:config_user",
+      },
+      403,
+    )
+  }
+}
+
+function requireUserList(c: Context) {
+  const permissions = c.get("account_permissions" as never) as string[] | undefined
+  if (!permissions) return
+  if (permissions.includes("user:manage") || permissions.includes("role:manage")) return
+  return c.json(
+    {
+      error: "forbidden",
+      permission: "user:manage|role:manage",
     },
     403,
   )
@@ -257,9 +288,88 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
-        const me = await UserService.me(user_id)
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        const me = await UserService.me({ user_id, context_project_id })
         if (!me) return c.json({ error: "unauthorized" }, 401)
         return c.json(me)
+      },
+    )
+    .get(
+      "/me/vho-bind",
+      validator("query", z.object({}).optional()),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const info = await UserService.meVho(user_id)
+        if (!info) return c.json({ error: "unauthorized" }, 401)
+        return c.json(info)
+      },
+    )
+    .post(
+      "/me/vho-bind",
+      validator(
+        "json",
+        z.object({
+          phone: z.string().min(1),
+        }),
+      ),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const body = c.req.valid("json")
+        const result = await UserService.bindMyPhone({
+          user_id,
+          phone: body.phone,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        if (!result.ok) return c.json(result, 400)
+        const info = await UserService.meVho(user_id)
+        return c.json({
+          ...result,
+          phone: info?.phone,
+          phone_bound: info?.phone_bound,
+          vho_bound: info?.vho_bound,
+          bound: info?.bound,
+        })
+      },
+    )
+    .get(
+      "/context/projects",
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        return c.json(await AccountContextService.listProjects({ user_id, context_project_id }))
+      },
+    )
+    .get(
+      "/context/current",
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        return c.json({
+          context_project_id,
+          last_project_id: await AccountContextService.lastProject(user_id),
+        })
+      },
+    )
+    .post(
+      "/context/select",
+      validator("json", z.object({ project_id: z.string().min(1) })),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const body = c.req.valid("json")
+        const result = await UserService.selectContext({
+          user_id,
+          project_id: body.project_id,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        if (!result.ok) return c.json(result, 400)
+        return c.json(result)
       },
     )
     .get(
@@ -276,7 +386,9 @@ export const AccountRoutes = lazy(() =>
                 schema: resolver(
                   z.object({
                     provider_id: z.string(),
-                    auth: Auth.Info.nullable(),
+                    configured: z.boolean(),
+                    source: z.enum(["none", "user", "global"]),
+                    auth_type: z.string().optional(),
                   }),
                 ),
               },
@@ -289,36 +401,139 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
-        const permissions = c.get("account_permissions" as never) as string[] | undefined
-        if (
-          permissions &&
-          !permissions.includes("provider:config_own") &&
-          !permissions.includes("provider:config_global")
-        ) {
-          return c.json(
-            {
-              error: "forbidden",
-              permission: "provider:config_own",
-            },
-            403,
-          )
-        }
         const param = c.req.valid("param")
-        const all = await Auth.userAll()
+        const own = await Auth.userAllByID(user_id)
+        if (own[param.provider_id]) {
+          return c.json({
+            provider_id: param.provider_id,
+            configured: true,
+            source: "user" as const,
+            auth_type: own[param.provider_id].type,
+          })
+        }
+        const visible = await Auth.all()
+        if (visible[param.provider_id]) {
+          return c.json({
+            provider_id: param.provider_id,
+            configured: true,
+            source: "global" as const,
+            auth_type: visible[param.provider_id].type,
+          })
+        }
         return c.json({
           provider_id: param.provider_id,
-          auth: all[param.provider_id] ?? null,
+          configured: false,
+          source: "none" as const,
         })
       },
     )
     .get("/admin/roles", UserRbac.require("role:manage"), async (c) => c.json(await UserService.listRoles()))
-    .get("/admin/permissions", UserRbac.require("role:manage"), async (c) => c.json(await UserService.listPermissions()))
+    .get(
+      "/admin/settings/project-scan-root",
+      UserRbac.require("role:manage"),
+      async (c) => c.json(await AccountSystemSettingService.projectScanRoot()),
+    )
+    .put(
+      "/admin/settings/project-scan-root",
+      UserRbac.require("role:manage"),
+      validator(
+        "json",
+        z.object({
+          project_scan_root: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const body = c.req.valid("json")
+        const result = await AccountSystemSettingService.setProjectScanRoot({
+          project_scan_root: body.project_scan_root,
+        })
+        await UserService.audit({
+          actor_user_id,
+          action: "account.system.project_scan_root.set",
+          target_type: "system",
+          target_id: "project_scan_root",
+          result: "success",
+          detail_json: {
+            project_scan_root: result.project_scan_root ?? "",
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .get(
+      "/admin/permissions",
+      UserRbac.require("role:manage"),
+      async (c) => {
+        await UserService.ensureSeed()
+        return c.json(await UserService.listPermissions())
+      },
+    )
+    .get(
+      "/admin/projects/catalog",
+      UserRbac.require("role:manage"),
+      validator(
+        "query",
+        z.object({
+          source: z.enum(["all", "registered", "scanned"]).optional(),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        return c.json(await AccountProjectCatalogService.list({ source: query.source }))
+      },
+    )
+    .get(
+      "/admin/roles/:role_code/projects",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ role_code: z.string() })),
+      async (c) => {
+        const param = c.req.valid("param")
+        const result = await AccountContextService.roleProjects(param.role_code)
+        if (!result.ok) return c.json(result, 400)
+        return c.json(result)
+      },
+    )
+    .put(
+      "/admin/roles/:role_code/projects",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ role_code: z.string() })),
+      validator("json", z.object({ project_ids: z.array(z.string()) })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const result = await AccountContextService.setRoleProjects({
+          role_code: param.role_code,
+          project_ids: body.project_ids,
+        })
+        if (!result.ok) return c.json(result, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.role.projects.update",
+          target_type: "tp_role",
+          target_id: param.role_code,
+          result: "success",
+          detail_json: {
+            project_ids: body.project_ids,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
     .post(
       "/admin/roles/:role_code/permissions",
       UserRbac.require("role:manage"),
       validator("param", z.object({ role_code: z.string() })),
       validator("json", z.object({ permission_codes: z.array(z.string()) })),
       async (c) => {
+        await UserService.ensureSeed()
         const actor_user_id = requireLogin(c)
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
@@ -380,6 +595,159 @@ export const AccountRoutes = lazy(() =>
       },
     )
     .get(
+      "/admin/project-access/role",
+      UserRbac.require("role:manage"),
+      validator("query", z.object({ project_id: z.string().optional() })),
+      async (c) => {
+        const query = c.req.valid("query")
+        return c.json(await AccountContextService.listRoleAccess({ project_id: query.project_id }))
+      },
+    )
+    .post(
+      "/admin/project-access/role",
+      UserRbac.require("role:manage"),
+      validator(
+        "json",
+        z.object({
+          project_id: z.string(),
+          role_codes: z.array(z.string()),
+        }),
+      ),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const body = c.req.valid("json")
+        const result = await AccountContextService.setRoleAccess({
+          project_id: body.project_id,
+          role_codes: body.role_codes,
+        })
+        if (!result.ok) return c.json(result, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.project_access.role.set",
+          target_type: "project",
+          target_id: body.project_id,
+          result: "success",
+          detail_json: {
+            role_codes: body.role_codes,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .get(
+      "/admin/project-access/user",
+      UserRbac.require("user:manage"),
+      validator(
+        "query",
+        z.object({
+          project_id: z.string().optional(),
+          user_id: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        return c.json(
+          await AccountContextService.listUserAccess({
+            project_id: query.project_id,
+            user_id: query.user_id,
+          }),
+        )
+      },
+    )
+    .post(
+      "/admin/project-access/user",
+      UserRbac.require("user:manage"),
+      validator(
+        "json",
+        z.object({
+          project_id: z.string(),
+          user_id: z.string(),
+          mode: z.enum(["allow", "deny", "remove"]),
+        }),
+      ),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const body = c.req.valid("json")
+        const result = await AccountContextService.setUserAccess({
+          project_id: body.project_id,
+          user_id: body.user_id,
+          mode: body.mode,
+        })
+        if (!result.ok) return c.json(result, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.project_access.user.set",
+          target_type: "project",
+          target_id: body.project_id,
+          result: "success",
+          detail_json: {
+            user_id: body.user_id,
+            mode: body.mode,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .get(
+      "/admin/vho-bind",
+      UserRbac.require("user:manage"),
+      validator(
+        "query",
+        z.object({
+          keyword: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        const users = await UserService.listUsers({
+          keyword: query.keyword,
+        })
+        return c.json(
+          users.map((item) => ({
+            user_id: item.id,
+            username: item.username,
+            display_name: item.display_name,
+            phone: item.phone,
+            vho_user_id: item.vho_user_id,
+            bound: !!item.vho_user_id,
+          })),
+        )
+      },
+    )
+    .post(
+      "/admin/vho-bind",
+      UserRbac.require("user:manage"),
+      validator(
+        "json",
+        z.object({
+          user_id: z.string(),
+          vho_user_id: z.string().optional(),
+          phone: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const body = c.req.valid("json")
+        const result = await UserService.bindVho({
+          user_id: body.user_id,
+          vho_user_id: body.vho_user_id,
+          phone: body.phone,
+          actor_user_id,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        if (!result.ok) return c.json(result, 400)
+        return c.json(result)
+      },
+    )
+    .get(
       "/admin/audit",
       UserRbac.require("audit:view"),
       validator(
@@ -403,7 +771,11 @@ export const AccountRoutes = lazy(() =>
     )
     .get(
       "/admin/users",
-      UserRbac.require("user:manage"),
+      async (c, next) => {
+        const denied = requireUserList(c)
+        if (denied) return denied
+        return next()
+      },
       validator(
         "query",
         z.object({
@@ -483,6 +855,98 @@ export const AccountRoutes = lazy(() =>
         })
         if (!result.ok) return c.json(result, 400)
         return c.json(result)
+      },
+    )
+    .post(
+      "/admin/users/:user_id/password/reset",
+      UserRbac.require("user:manage"),
+      validator("param", z.object({ user_id: z.string() })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const result = await UserService.resetUserPassword({
+          user_id: param.user_id,
+          actor_user_id,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        if (!result.ok) return c.json(result, 400)
+        return c.json(result)
+      },
+    )
+    .get(
+      "/admin/users/:user_id/providers",
+      validator("param", z.object({ user_id: z.string() })),
+      async (c) => {
+        const denied = requireUserProviderConfig(c)
+        if (denied) return denied
+        const param = c.req.valid("param")
+        const user = await UserService.userByID(param.user_id)
+        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
+        const rows = await Auth.userAllByID(param.user_id)
+        return c.json(
+          Object.entries(rows).map(([provider_id, info]) => ({
+            provider_id,
+            configured: true,
+            auth_type: info.type,
+          })),
+        )
+      },
+    )
+    .put(
+      "/admin/users/:user_id/providers/:provider_id",
+      validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
+      validator("json", Auth.Info),
+      async (c) => {
+        const denied = requireUserProviderConfig(c)
+        if (denied) return denied
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const user = await UserService.userByID(param.user_id)
+        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
+        await Auth.setUser(param.user_id, param.provider_id, body)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.user.provider.set",
+          target_type: "tp_user",
+          target_id: param.user_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+            auth_type: body.type,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(true)
+      },
+    )
+    .delete(
+      "/admin/users/:user_id/providers/:provider_id",
+      validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
+      async (c) => {
+        const denied = requireUserProviderConfig(c)
+        if (denied) return denied
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        await Auth.removeUser(param.user_id, param.provider_id)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.user.provider.remove",
+          target_type: "tp_user",
+          target_id: param.user_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(true)
       },
     )
     .post(

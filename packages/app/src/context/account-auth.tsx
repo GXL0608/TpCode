@@ -13,8 +13,18 @@ type User = {
   org_id: string
   department_id?: string
   force_password_reset: boolean
+  context_project_id?: string
   roles: string[]
   permissions: string[]
+}
+
+type ContextProject = {
+  id: string
+  name?: string
+  worktree: string
+  vcs?: string
+  selected: boolean
+  last_selected: boolean
 }
 
 type LoginResult = {
@@ -170,6 +180,7 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
       ready: createMemo(() => state.ready),
       enabled: createMemo(() => state.enabled),
       authenticated: createMemo(() => !!state.user),
+      needsProjectContext: createMemo(() => state.enabled && !!state.user && !state.user.context_project_id),
       user: createMemo(() => state.user),
       lastError: createMemo(() => state.last_error),
       has(permission: string) {
@@ -287,6 +298,33 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         }).catch(() => undefined)
         clearSession()
         setState("last_error", undefined)
+      },
+      async contextProjects() {
+        const response = await request({
+          path: "/account/context/projects",
+          method: "GET",
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) return
+        const payload = json<{
+          current_project_id?: string
+          last_project_id?: string
+          projects: ContextProject[]
+        }>(await response.json().catch(() => undefined))
+        return payload
+      },
+      async selectContext(project_id: string) {
+        const response = await request({
+          path: "/account/context/select",
+          method: "POST",
+          body: { project_id },
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) return false
+        const result = json<LoginResult>(await response.json().catch(() => undefined))
+        if (!result?.access_token || !result.refresh_token || !result.user) return false
+        writeSession(result)
+        return true
       },
     }
   },

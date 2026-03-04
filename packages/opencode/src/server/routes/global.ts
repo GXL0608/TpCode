@@ -71,6 +71,8 @@ export const GlobalRoutes = lazy(() =>
         c.header("X-Accel-Buffering", "no")
         c.header("X-Content-Type-Options", "nosniff")
         const userID = Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_user_id" as never) as string | undefined) : undefined
+        const projectID =
+          Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_context_project_id" as never) as string | undefined) : undefined
         return streamSSE(c, async (stream) => {
           stream.writeSSE({
             data: JSON.stringify({
@@ -83,7 +85,7 @@ export const GlobalRoutes = lazy(() =>
           async function handler(event: any) {
             const payload = event?.payload
             if (!payload || typeof payload !== "object") return
-            if (!(await eventVisibleToUser({ event: payload, userID }))) return
+            if (!(await eventVisibleToUser({ event: payload, userID, projectID }))) return
             await stream.writeSSE({
               data: JSON.stringify(event),
             })

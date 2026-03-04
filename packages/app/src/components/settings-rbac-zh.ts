@@ -56,8 +56,14 @@ const permissionTextMap: Record<string, string> = {
   "prototype:view": "查看原型",
   "prototype:approve": "审批原型",
   "file:browse": "浏览文件",
+  "agent:use_docs": "使用 Docs 智能体",
+  "agent:use_build": "使用 Build 智能体",
+  "agent:use_plan": "使用 Plan 智能体",
   "provider:config_own": "配置个人模型密钥",
   "provider:config_global": "配置全局模型密钥",
+  "provider:config_user": "配置用户模型密钥",
+  "ui:settings.providers:view": "查看供应商设置页",
+  "ui:settings.models:view": "查看模型设置页",
   "audit:view": "查看审计日志",
 }
 

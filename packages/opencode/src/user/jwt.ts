@@ -6,6 +6,7 @@ const AccessPayload = z.object({
   sub: z.string(),
   typ: z.literal("access"),
   sid: z.string(),
+  pid: z.string().optional(),
   exp: z.number(),
   iat: z.number(),
 })
@@ -14,6 +15,7 @@ const RefreshPayload = z.object({
   sub: z.string(),
   typ: z.literal("refresh"),
   sid: z.string(),
+  pid: z.string().optional(),
   exp: z.number(),
   iat: z.number(),
 })
@@ -27,13 +29,14 @@ function now() {
 }
 
 export namespace UserJwt {
-  export async function issueAccess(input: { user_id: string; session_id: string; ttl?: number }) {
+  export async function issueAccess(input: { user_id: string; session_id: string; context_project_id?: string; ttl?: number }) {
     const iat = now()
     const exp = iat + (input.ttl ?? 2 * 60 * 60)
     const token = await sign(
       {
         sub: input.user_id,
         sid: input.session_id,
+        pid: input.context_project_id,
         typ: "access",
         iat,
         exp,
@@ -43,13 +46,14 @@ export namespace UserJwt {
     return { token, exp: exp * 1000 }
   }
 
-  export async function issueRefresh(input: { user_id: string; session_id: string; ttl?: number }) {
+  export async function issueRefresh(input: { user_id: string; session_id: string; context_project_id?: string; ttl?: number }) {
     const iat = now()
     const exp = iat + (input.ttl ?? 14 * 24 * 60 * 60)
     const token = await sign(
       {
         sub: input.user_id,
         sid: input.session_id,
+        pid: input.context_project_id,
         typ: "refresh",
         iat,
         exp,

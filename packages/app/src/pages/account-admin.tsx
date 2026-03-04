@@ -27,11 +27,20 @@ type User = {
   id: string
   username: string
   display_name: string
+  phone?: string
+  vho_user_id?: string
   account_type: string
   org_id: string
   department_id?: string
   status: string
   roles: string[]
+}
+
+type Project = {
+  id: string
+  name?: string
+  worktree: string
+  vcs?: string
 }
 
 type Role = {
@@ -53,6 +62,32 @@ type Audit = {
   action: string
   result: string
   time_created: number
+}
+
+type RoleAccess = {
+  project_id: string
+  role_id: string
+  role_code?: string
+  role_name?: string
+  time_created: number
+}
+
+type UserAccess = {
+  project_id: string
+  user_id: string
+  username?: string
+  display_name?: string
+  mode: "allow" | "deny"
+  time_created: number
+}
+
+type VhoBind = {
+  user_id: string
+  username: string
+  display_name: string
+  phone?: string
+  vho_user_id?: string
+  bound: boolean
 }
 
 function json<T>(input: unknown): T | undefined {
@@ -105,6 +140,10 @@ export default function AccountAdmin() {
     roles: [] as Role[],
     permissions: [] as Permission[],
     audits: [] as Audit[],
+    projects: [] as Project[],
+    roleAccess: [] as RoleAccess[],
+    userAccess: [] as UserAccess[],
+    vhoBinds: [] as VhoBind[],
     globalProviders: {} as Record<string, { type: string }>,
   })
 
@@ -127,6 +166,15 @@ export default function AccountAdmin() {
   const [targetPermissionCodes, setTargetPermissionCodes] = createSignal("")
   const [globalProviderID, setGlobalProviderID] = createSignal("openai")
   const [globalProviderKey, setGlobalProviderKey] = createSignal("")
+  const [roleAccessProjectID, setRoleAccessProjectID] = createSignal("")
+  const [roleAccessCodes, setRoleAccessCodes] = createSignal("")
+  const [userAccessProjectID, setUserAccessProjectID] = createSignal("")
+  const [userAccessUserID, setUserAccessUserID] = createSignal("")
+  const [userAccessMode, setUserAccessMode] = createSignal<"allow" | "deny" | "remove">("allow")
+  const [vhoKeyword, setVhoKeyword] = createSignal("")
+  const [vhoBindUserID, setVhoBindUserID] = createSignal("")
+  const [vhoBindPhone, setVhoBindPhone] = createSignal("")
+  const [vhoBindVhoUserID, setVhoBindVhoUserID] = createSignal("")
 
   const canOrg = createMemo(() => auth.has("org:manage"))
   const canUser = createMemo(() => auth.has("user:manage"))
@@ -135,6 +183,12 @@ export default function AccountAdmin() {
   const canProviderGlobal = createMemo(() => auth.has("provider:config_global"))
   const canAdmin = createMemo(
     () => canOrg() || canUser() || canRole() || canAudit() || canProviderGlobal(),
+  )
+  const roleAccessRows = createMemo(() =>
+    roleAccessProjectID() ? state.roleAccess.filter((item) => item.project_id === roleAccessProjectID()) : state.roleAccess,
+  )
+  const userAccessRows = createMemo(() =>
+    userAccessProjectID() ? state.userAccess.filter((item) => item.project_id === userAccessProjectID()) : state.userAccess,
   )
 
   const request = async (input: { path: string; method?: string; body?: Record<string, unknown> }) => {
@@ -195,6 +249,20 @@ export default function AccountAdmin() {
           setState("users", items ?? [])
         }),
       )
+      jobs.push(
+        request({ path: "/account/admin/project-access/user" }).then(async (response) => {
+          if (!response?.ok) return
+          const items = json<UserAccess[]>(await response.json().catch(() => undefined))
+          setState("userAccess", items ?? [])
+        }),
+      )
+      jobs.push(
+        request({ path: "/account/admin/vho-bind" }).then(async (response) => {
+          if (!response?.ok) return
+          const items = json<VhoBind[]>(await response.json().catch(() => undefined))
+          setState("vhoBinds", items ?? [])
+        }),
+      )
     }
     if (canRole()) {
       jobs.push(
@@ -209,6 +277,22 @@ export default function AccountAdmin() {
           if (!response?.ok) return
           const items = json<Permission[]>(await response.json().catch(() => undefined))
           setState("permissions", items ?? [])
+        }),
+      )
+      jobs.push(
+        request({ path: "/account/admin/project-access/role" }).then(async (response) => {
+          if (!response?.ok) return
+          const items = json<RoleAccess[]>(await response.json().catch(() => undefined))
+          setState("roleAccess", items ?? [])
+        }),
+      )
+    }
+    if (canRole()) {
+      jobs.push(
+        request({ path: "/account/admin/projects/catalog?source=scanned" }).then(async (response) => {
+          if (!response?.ok) return
+          const payload = json<Project[]>(await response.json().catch(() => undefined))
+          setState("projects", payload ?? [])
         }),
       )
     }
@@ -236,6 +320,15 @@ export default function AccountAdmin() {
     if (!departmentOrgID() && state.organizations[0]?.id) setDepartmentOrgID(state.organizations[0].id)
     if (!userOrgID() && state.organizations[0]?.id) setUserOrgID(state.organizations[0].id)
     if (!targetRoleCode() && state.roles[0]?.code) setTargetRoleCode(state.roles[0].code)
+    if (!roleAccessProjectID() && state.projects[0]?.id) setRoleAccessProjectID(state.projects[0].id)
+    if (!userAccessProjectID() && state.projects[0]?.id) setUserAccessProjectID(state.projects[0].id)
+    if (!userAccessUserID() && state.users[0]?.id) setUserAccessUserID(state.users[0].id)
+    if (!vhoBindUserID() && state.vhoBinds[0]?.user_id) {
+      const item = state.vhoBinds[0]
+      setVhoBindUserID(item.user_id)
+      setVhoBindPhone(item.phone ?? "")
+      setVhoBindVhoUserID(item.vho_user_id ?? "")
+    }
   }
 
   const done = (message: string) => {
@@ -263,7 +356,7 @@ export default function AccountAdmin() {
         <div class="rounded-xl bg-surface-raised-base p-4 flex items-center justify-between">
           <div>
             <div class="text-20-medium text-text-strong">tpCode 账号管理台</div>
-            <div class="text-12-regular text-text-weak">组织 / 部门 / 用户 / 角色权限 / 全局供应商密钥</div>
+            <div class="text-12-regular text-text-weak">组织 / 部门 / 用户 / 角色权限 / 项目分配 / VHO绑定 / 全局供应商密钥</div>
           </div>
           <div class="flex items-center gap-2 text-12-regular">
             <A href="/settings/security" class="hover:text-text-strong">
@@ -546,6 +639,8 @@ export default function AccountAdmin() {
                       <th class="text-left px-2 py-1">编号</th>
                       <th class="text-left px-2 py-1">用户名</th>
                       <th class="text-left px-2 py-1">显示名</th>
+                      <th class="text-left px-2 py-1">手机号</th>
+                      <th class="text-left px-2 py-1">VHO ID</th>
                       <th class="text-left px-2 py-1">账号类型</th>
                       <th class="text-left px-2 py-1">组织</th>
                       <th class="text-left px-2 py-1">角色</th>
@@ -558,6 +653,8 @@ export default function AccountAdmin() {
                           <td class="px-2 py-1">{item.id}</td>
                           <td class="px-2 py-1">{item.username}</td>
                           <td class="px-2 py-1">{item.display_name}</td>
+                          <td class="px-2 py-1">{item.phone ?? "-"}</td>
+                          <td class="px-2 py-1">{item.vho_user_id ?? "-"}</td>
                           <td class="px-2 py-1">{accountTypeText(item.account_type)}</td>
                           <td class="px-2 py-1">{item.org_id}</td>
                           <td class="px-2 py-1">{item.roles.join(", ")}</td>
@@ -664,6 +761,274 @@ export default function AccountAdmin() {
                         <tr class="border-t border-border-weak-base">
                           <td class="px-2 py-1">{item.code}</td>
                           <td class="px-2 py-1">{item.permissions.join(", ")}</td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </Show>
+
+          <Show when={canRole()}>
+            <section class="rounded-xl bg-surface-raised-base p-4 flex flex-col gap-3">
+              <div class="text-16-medium text-text-strong">项目分配管理（角色分配）</div>
+              <form
+                class="grid grid-cols-1 md:grid-cols-3 gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (state.pending) return
+                  setState("pending", true)
+                  void request({
+                    path: "/account/admin/project-access/role",
+                    method: "POST",
+                    body: {
+                      project_id: roleAccessProjectID(),
+                      role_codes: roleAccessCodes()
+                        .split(",")
+                        .map((item) => item.trim())
+                        .filter(Boolean),
+                    },
+                  }).then((response) => {
+                    if (!response?.ok) return fail("保存角色项目分配失败")
+                    done("角色项目分配已更新")
+                  })
+                }}
+              >
+                <select
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  value={roleAccessProjectID()}
+                  onChange={(event) => setRoleAccessProjectID(event.currentTarget.value)}
+                >
+                  <For each={state.projects}>
+                    {(item) => <option value={item.id}>{item.name ?? item.worktree}</option>}
+                  </For>
+                </select>
+                <input
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular md:col-span-2"
+                  placeholder="角色编码（逗号分隔）"
+                  value={roleAccessCodes()}
+                  onInput={(event) => setRoleAccessCodes(event.currentTarget.value)}
+                />
+                <Button type="submit" disabled={state.pending || !roleAccessProjectID()}>
+                  保存角色分配
+                </Button>
+              </form>
+              <div class="max-h-64 overflow-auto rounded-md border border-border-weak-base">
+                <table class="w-full text-12-regular">
+                  <thead class="bg-surface-panel">
+                    <tr>
+                      <th class="text-left px-2 py-1">项目</th>
+                      <th class="text-left px-2 py-1">角色编码</th>
+                      <th class="text-left px-2 py-1">角色名称</th>
+                      <th class="text-left px-2 py-1">时间</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <For each={roleAccessRows()}>
+                      {(item) => (
+                        <tr class="border-t border-border-weak-base">
+                          <td class="px-2 py-1">{item.project_id}</td>
+                          <td class="px-2 py-1">{item.role_code ?? item.role_id}</td>
+                          <td class="px-2 py-1">{item.role_name ?? "-"}</td>
+                          <td class="px-2 py-1">{new Date(item.time_created).toLocaleString()}</td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </Show>
+
+          <Show when={canUser()}>
+            <section class="rounded-xl bg-surface-raised-base p-4 flex flex-col gap-3">
+              <div class="text-16-medium text-text-strong">项目分配管理（用户覆盖）</div>
+              <form
+                class="grid grid-cols-1 md:grid-cols-4 gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (state.pending) return
+                  setState("pending", true)
+                  void request({
+                    path: "/account/admin/project-access/user",
+                    method: "POST",
+                    body: {
+                      project_id: userAccessProjectID(),
+                      user_id: userAccessUserID(),
+                      mode: userAccessMode(),
+                    },
+                  }).then((response) => {
+                    if (!response?.ok) return fail("保存用户项目覆盖失败")
+                    done("用户项目覆盖已更新")
+                  })
+                }}
+              >
+                <select
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  value={userAccessProjectID()}
+                  onChange={(event) => setUserAccessProjectID(event.currentTarget.value)}
+                >
+                  <For each={state.projects}>
+                    {(item) => <option value={item.id}>{item.name ?? item.worktree}</option>}
+                  </For>
+                </select>
+                <select
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  value={userAccessUserID()}
+                  onChange={(event) => setUserAccessUserID(event.currentTarget.value)}
+                >
+                  <For each={state.users}>
+                    {(item) => <option value={item.id}>{item.display_name} ({item.username})</option>}
+                  </For>
+                </select>
+                <select
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  value={userAccessMode()}
+                  onChange={(event) => setUserAccessMode(event.currentTarget.value as "allow" | "deny" | "remove")}
+                >
+                  <option value="allow">allow（允许）</option>
+                  <option value="deny">deny（拒绝）</option>
+                  <option value="remove">remove（删除覆盖）</option>
+                </select>
+                <Button type="submit" disabled={state.pending || !userAccessProjectID() || !userAccessUserID()}>
+                  保存用户覆盖
+                </Button>
+              </form>
+              <div class="max-h-64 overflow-auto rounded-md border border-border-weak-base">
+                <table class="w-full text-12-regular">
+                  <thead class="bg-surface-panel">
+                    <tr>
+                      <th class="text-left px-2 py-1">项目</th>
+                      <th class="text-left px-2 py-1">用户</th>
+                      <th class="text-left px-2 py-1">模式</th>
+                      <th class="text-left px-2 py-1">时间</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <For each={userAccessRows()}>
+                      {(item) => (
+                        <tr class="border-t border-border-weak-base">
+                          <td class="px-2 py-1">{item.project_id}</td>
+                          <td class="px-2 py-1">{item.display_name || item.username || item.user_id}</td>
+                          <td class="px-2 py-1">{item.mode}</td>
+                          <td class="px-2 py-1">{new Date(item.time_created).toLocaleString()}</td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </Show>
+
+          <Show when={canUser()}>
+            <section class="rounded-xl bg-surface-raised-base p-4 flex flex-col gap-3">
+              <div class="text-16-medium text-text-strong">VHO 绑定管理</div>
+              <form
+                class="grid grid-cols-1 md:grid-cols-3 gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (state.pending) return
+                  setState("pending", true)
+                  const query = vhoKeyword().trim()
+                  const path = query
+                    ? `/account/admin/vho-bind?keyword=${encodeURIComponent(query)}`
+                    : "/account/admin/vho-bind"
+                  void request({ path }).then(async (response) => {
+                    if (!response?.ok) return fail("查询 VHO 绑定失败")
+                    const items = json<VhoBind[]>(await response.json().catch(() => undefined))
+                    setState("pending", false)
+                    setState("error", "")
+                    setState("message", "VHO 绑定列表已刷新")
+                    setState("vhoBinds", items ?? [])
+                  })
+                }}
+              >
+                <input
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular md:col-span-2"
+                  placeholder="按用户名/显示名关键字过滤（可选）"
+                  value={vhoKeyword()}
+                  onInput={(event) => setVhoKeyword(event.currentTarget.value)}
+                />
+                <Button type="submit" disabled={state.pending}>
+                  查询绑定列表
+                </Button>
+              </form>
+
+              <form
+                class="grid grid-cols-1 md:grid-cols-4 gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (state.pending) return
+                  setState("pending", true)
+                  void request({
+                    path: "/account/admin/vho-bind",
+                    method: "POST",
+                    body: {
+                      user_id: vhoBindUserID(),
+                      phone: vhoBindPhone().trim() || undefined,
+                      vho_user_id: vhoBindVhoUserID().trim() || undefined,
+                    },
+                  }).then((response) => {
+                    if (!response?.ok) return fail("保存 VHO 绑定失败")
+                    done("VHO 绑定已更新")
+                  })
+                }}
+              >
+                <select
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  value={vhoBindUserID()}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value
+                    setVhoBindUserID(value)
+                    const item = state.vhoBinds.find((row) => row.user_id === value)
+                    setVhoBindPhone(item?.phone ?? "")
+                    setVhoBindVhoUserID(item?.vho_user_id ?? "")
+                  }}
+                >
+                  <For each={state.vhoBinds}>
+                    {(item) => (
+                      <option value={item.user_id}>
+                        {item.display_name} ({item.username})
+                      </option>
+                    )}
+                  </For>
+                </select>
+                <input
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  placeholder="手机号"
+                  value={vhoBindPhone()}
+                  onInput={(event) => setVhoBindPhone(event.currentTarget.value)}
+                />
+                <input
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  placeholder="vho_user_id（留空表示解绑）"
+                  value={vhoBindVhoUserID()}
+                  onInput={(event) => setVhoBindVhoUserID(event.currentTarget.value)}
+                />
+                <Button type="submit" disabled={state.pending || !vhoBindUserID()}>
+                  保存绑定
+                </Button>
+              </form>
+              <div class="max-h-64 overflow-auto rounded-md border border-border-weak-base">
+                <table class="w-full text-12-regular">
+                  <thead class="bg-surface-panel">
+                    <tr>
+                      <th class="text-left px-2 py-1">用户</th>
+                      <th class="text-left px-2 py-1">手机号</th>
+                      <th class="text-left px-2 py-1">VHO ID</th>
+                      <th class="text-left px-2 py-1">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <For each={state.vhoBinds}>
+                      {(item) => (
+                        <tr class="border-t border-border-weak-base">
+                          <td class="px-2 py-1">{item.display_name} ({item.username})</td>
+                          <td class="px-2 py-1">{item.phone ?? "-"}</td>
+                          <td class="px-2 py-1">{item.vho_user_id ?? "-"}</td>
+                          <td class="px-2 py-1">{item.bound ? "已绑定" : "未绑定"}</td>
                         </tr>
                       )}
                     </For>

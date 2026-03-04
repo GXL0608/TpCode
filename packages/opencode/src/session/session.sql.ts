@@ -18,6 +18,7 @@ export const SessionTable = table(
     project_id: text()
       .notNull()
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    context_project_id: text().references(() => ProjectTable.id, { onDelete: "set null" }),
     parent_id: text(),
     slug: text().notNull(),
     directory: text().notNull(),
@@ -42,6 +43,7 @@ export const SessionTable = table(
   },
   (table) => [
     index("session_project_idx").on(table.project_id),
+    index("session_context_project_idx").on(table.context_project_id),
     index("session_parent_idx").on(table.parent_id),
     index("session_user_idx").on(table.user_id),
     index("session_org_idx").on(table.org_id),

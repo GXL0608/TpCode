@@ -13,6 +13,7 @@ import { createHash, randomInt } from "crypto"
 import { ulid } from "ulid"
 import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
+import { AccountContextService } from "./context"
 
 type UserRow = typeof TpUserTable.$inferSelect
 const log = Log.create({ service: "user" })
@@ -57,8 +58,14 @@ function permissions() {
     { code: "prototype:view", name: "查看原型", group_name: "prototype" },
     { code: "prototype:approve", name: "审批原型", group_name: "prototype" },
     { code: "file:browse", name: "浏览文件", group_name: "file" },
+    { code: "agent:use_docs", name: "使用 Docs 智能体", group_name: "agent" },
+    { code: "agent:use_build", name: "使用 Build 智能体", group_name: "agent" },
+    { code: "agent:use_plan", name: "使用 Plan 智能体", group_name: "agent" },
     { code: "provider:config_own", name: "配置个人模型密钥", group_name: "provider" },
     { code: "provider:config_global", name: "配置全局模型密钥", group_name: "provider" },
+    { code: "provider:config_user", name: "配置用户模型密钥", group_name: "provider" },
+    { code: "ui:settings.providers:view", name: "查看供应商设置页", group_name: "ui" },
+    { code: "ui:settings.models:view", name: "查看模型设置页", group_name: "ui" },
     { code: "audit:view", name: "查看审计日志", group_name: "audit" },
   ]
 }
@@ -80,8 +87,13 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "file:browse",
-    "provider:config_own",
+    "agent:use_docs",
+    "agent:use_build",
+    "agent:use_plan",
     "provider:config_global",
+    "provider:config_user",
+    "ui:settings.providers:view",
+    "ui:settings.models:view",
     "audit:view",
   ],
   dev_lead: [
@@ -97,17 +109,10 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "file:browse",
-    "provider:config_own",
+    "agent:use_plan",
   ],
-  developer: [
-    "session:create",
-    "session:view_own",
-    "code:generate",
-    "prototype:view",
-    "file:browse",
-    "provider:config_own",
-  ],
-  ops: ["session:create", "session:view_own", "code:deploy", "prototype:view", "file:browse", "provider:config_own"],
+  developer: ["session:create", "session:view_own", "code:generate", "prototype:view", "file:browse", "agent:use_plan"],
+  ops: ["session:create", "session:view_own", "code:deploy", "prototype:view", "file:browse", "agent:use_plan"],
   pm: [
     "session:create",
     "session:view_own",
@@ -115,16 +120,16 @@ const rolePerm = {
     "session:view_all",
     "prototype:view",
     "prototype:approve",
-    "provider:config_own",
+    "agent:use_plan",
   ],
-  value_ops: ["session:create", "session:view_own", "session:view_all", "prototype:view", "provider:config_own"],
+  value_ops: ["session:create", "session:view_own", "session:view_all", "prototype:view", "agent:use_plan"],
   hospital_admin: [
     "session:create",
     "session:view_own",
     "session:view_dept",
     "session:view_org",
     "prototype:view",
-    "provider:config_own",
+    "agent:use_plan",
   ],
   dept_director: [
     "session:create",
@@ -132,16 +137,16 @@ const rolePerm = {
     "session:view_dept",
     "prototype:view",
     "prototype:approve",
-    "provider:config_own",
+    "agent:use_plan",
   ],
-  hospital_user: ["session:create", "session:view_own", "prototype:view", "provider:config_own"],
+  hospital_user: ["session:create", "session:view_own", "prototype:view", "agent:use_plan"],
   dean: [
     "session:view_own",
     "session:view_org",
     "session:view_all",
     "prototype:view",
     "prototype:approve",
-    "provider:config_own",
+    "agent:use_plan",
   ],
 } as const
 
@@ -174,8 +179,14 @@ const permissionNameMap = {
   "prototype:view": "查看原型",
   "prototype:approve": "审批原型",
   "file:browse": "浏览文件",
+  "agent:use_docs": "使用 Docs 智能体",
+  "agent:use_build": "使用 Build 智能体",
+  "agent:use_plan": "使用 Plan 智能体",
   "provider:config_own": "配置个人模型密钥",
   "provider:config_global": "配置全局模型密钥",
+  "provider:config_user": "配置用户模型密钥",
+  "ui:settings.providers:view": "查看供应商设置页",
+  "ui:settings.models:view": "查看模型设置页",
   "audit:view": "查看审计日志",
 } as const
 
@@ -187,7 +198,7 @@ function permissionName(code: string) {
   return permissionNameMap[code as keyof typeof permissionNameMap] ?? code
 }
 
-function profile(input: { user: UserRow; roles: string[]; permissions: string[] }) {
+function profile(input: { user: UserRow; roles: string[]; permissions: string[]; context_project_id?: string }) {
   return {
     id: input.user.id,
     username: input.user.username,
@@ -196,6 +207,7 @@ function profile(input: { user: UserRow; roles: string[]; permissions: string[] 
     org_id: input.user.org_id,
     department_id: input.user.department_id ?? undefined,
     force_password_reset: input.user.force_password_reset,
+    context_project_id: input.context_project_id,
     roles: input.roles,
     permissions: input.permissions,
   }
@@ -442,11 +454,24 @@ export namespace UserService {
     return { ok: true as const }
   }
 
-  async function issueTokens(input: { user_id: string; ip?: string; user_agent?: string }) {
+  async function issueTokens(input: {
+    user_id: string
+    context_project_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
     const access_id = ulid()
     const refresh_id = ulid()
-    const access = await UserJwt.issueAccess({ user_id: input.user_id, session_id: access_id })
-    const refresh = await UserJwt.issueRefresh({ user_id: input.user_id, session_id: refresh_id })
+    const access = await UserJwt.issueAccess({
+      user_id: input.user_id,
+      session_id: access_id,
+      context_project_id: input.context_project_id,
+    })
+    const refresh = await UserJwt.issueRefresh({
+      user_id: input.user_id,
+      session_id: refresh_id,
+      context_project_id: input.context_project_id,
+    })
     await Database.use(async (db) => {
       await db.insert(TpSessionTokenTable)
         .values([
@@ -455,6 +480,7 @@ export namespace UserService {
             user_id: input.user_id,
             token_hash: tokenHash(access.token),
             token_type: "access",
+            context_project_id: input.context_project_id,
             expires_at: access.exp,
             ip: input.ip,
             user_agent: input.user_agent,
@@ -464,6 +490,7 @@ export namespace UserService {
             user_id: input.user_id,
             token_hash: tokenHash(refresh.token),
             token_type: "refresh",
+            context_project_id: input.context_project_id,
             expires_at: refresh.exp,
             ip: input.ip,
             user_agent: input.user_agent,
@@ -511,7 +538,11 @@ export namespace UserService {
     }
     const roles = await rolesByUser(user.id)
     const permissions = await permissionsByUser(user.id)
-    const token = await issueTokens({ user_id: user.id, ip: input.ip, user_agent: input.user_agent })
+    const token = await issueTokens({
+      user_id: user.id,
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
     await Database.use(async (db) => {
       await db.update(TpUserTable)
         .set({
@@ -571,11 +602,22 @@ export namespace UserService {
         .where(eq(TpSessionTokenTable.id, row.id))
         .run(),
     )
-    const token = await issueTokens({ user_id: user.id, ip: input.ip, user_agent: input.user_agent })
+    const context_project_id = row.context_project_id ?? parsed.pid
+    const token = await issueTokens({
+      user_id: user.id,
+      context_project_id: context_project_id ?? undefined,
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
     return {
       ok: true as const,
       ...token,
-      user: profile({ user, roles, permissions }),
+      user: profile({
+        user,
+        roles,
+        permissions,
+        context_project_id: context_project_id ?? undefined,
+      }),
     }
   }
 
@@ -605,6 +647,43 @@ export namespace UserService {
     auditLater({
       actor_user_id: input.user_id,
       action: "account.password.change",
+      target_type: "tp_user",
+      target_id: input.user_id,
+      result: "success",
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  export async function resetUserPassword(input: {
+    user_id: string
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const user = await userByID(input.user_id)
+    if (!user) return { ok: false as const, code: "user_missing" }
+    const password_hash = await UserPassword.hash("TpCode@2026")
+    await Database.use(async (db) => {
+      await db.update(TpUserTable)
+        .set({
+          password_hash,
+          force_password_reset: false,
+          failed_login_count: 0,
+          locked_until: null,
+          time_updated: Date.now(),
+        })
+        .where(eq(TpUserTable.id, input.user_id))
+        .run()
+      await db.update(TpSessionTokenTable)
+        .set({ revoked_at: Date.now() })
+        .where(and(eq(TpSessionTokenTable.user_id, input.user_id), isNull(TpSessionTokenTable.revoked_at)))
+        .run()
+    })
+    auditLater({
+      actor_user_id: input.actor_user_id,
+      action: "account.user.password.reset",
       target_type: "tp_user",
       target_id: input.user_id,
       result: "success",
@@ -685,7 +764,12 @@ export namespace UserService {
     const permissions = await permissionsByUser(user.id)
     return {
       ok: true,
-      user: profile({ user, roles, permissions }),
+      user: profile({
+        user,
+        roles,
+        permissions,
+        context_project_id: row.context_project_id ?? parsed.pid,
+      }),
       sid: parsed.sid,
       sub: parsed.sub,
     }
@@ -697,12 +781,141 @@ export namespace UserService {
     return result.user
   }
 
-  export async function me(user_id: string) {
+  export async function me(input: { user_id: string; context_project_id?: string }) {
+    const user_id = input.user_id
     const user = await userByID(user_id)
     if (!user) return
     const roles = await rolesByUser(user.id)
     const permissions = await permissionsByUser(user.id)
-    return profile({ user, roles, permissions })
+    return profile({
+      user,
+      roles,
+      permissions,
+      context_project_id: input.context_project_id,
+    })
+  }
+
+  export async function selectContext(input: { user_id: string; project_id: string; ip?: string; user_agent?: string }) {
+    const user = await userByID(input.user_id)
+    if (!user || user.status !== "active") return { ok: false as const, code: "user_invalid" }
+    const allowed = await AccountContextService.canAccessProject({ user_id: input.user_id, project_id: input.project_id })
+    if (!allowed) return { ok: false as const, code: "project_forbidden" }
+    await revokeAll({ user_id: input.user_id })
+    await AccountContextService.remember({ user_id: input.user_id, project_id: input.project_id })
+    const roles = await rolesByUser(input.user_id)
+    const permissions = await permissionsByUser(input.user_id)
+    const token = await issueTokens({
+      user_id: input.user_id,
+      context_project_id: input.project_id,
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    auditLater({
+      actor_user_id: input.user_id,
+      action: "account.context.select",
+      target_type: "project",
+      target_id: input.project_id,
+      result: "success",
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return {
+      ok: true as const,
+      ...token,
+      user: profile({
+        user,
+        roles,
+        permissions,
+        context_project_id: input.project_id,
+      }),
+    }
+  }
+
+  export async function meVho(user_id: string) {
+    const user = await userByID(user_id)
+    if (!user) return
+    const phone = user.phone?.trim() ?? ""
+    const vho_user_id = user.vho_user_id?.trim() ?? ""
+    return {
+      user_id: user.id,
+      phone: phone || undefined,
+      vho_user_id: vho_user_id || undefined,
+      phone_bound: !!phone,
+      vho_bound: !!vho_user_id,
+      bound: !!vho_user_id,
+    }
+  }
+
+  export async function bindVho(input: {
+    user_id: string
+    vho_user_id?: string
+    phone?: string
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const user = await userByID(input.user_id)
+    if (!user) return { ok: false as const, code: "user_missing" }
+    const vho_user_id = input.vho_user_id?.trim() || null
+    const phone = input.phone === undefined ? user.phone : input.phone.trim() || null
+    await Database.use((db) =>
+      db
+        .update(TpUserTable)
+        .set({
+          vho_user_id,
+          phone,
+          time_updated: Date.now(),
+        })
+        .where(eq(TpUserTable.id, input.user_id))
+        .run(),
+    )
+    auditLater({
+      actor_user_id: input.actor_user_id,
+      action: "account.user.vho.bind",
+      target_type: "tp_user",
+      target_id: input.user_id,
+      result: "success",
+      detail_json: {
+        vho_user_id,
+        phone,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  export async function bindMyPhone(input: {
+    user_id: string
+    phone: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const user = await userByID(input.user_id)
+    if (!user) return { ok: false as const, code: "user_missing" }
+    const phone = input.phone.trim()
+    if (!phone) return { ok: false as const, code: "phone_invalid" }
+    await Database.use((db) =>
+      db
+        .update(TpUserTable)
+        .set({
+          phone,
+          time_updated: Date.now(),
+        })
+        .where(eq(TpUserTable.id, input.user_id))
+        .run(),
+    )
+    auditLater({
+      actor_user_id: input.user_id,
+      action: "account.me.phone.bind",
+      target_type: "tp_user",
+      target_id: input.user_id,
+      result: "success",
+      detail_json: { phone },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
   }
 
   export async function resetRequest(input: { username: string; ip?: string; user_agent?: string }) {
@@ -911,7 +1124,7 @@ export namespace UserService {
     if (input?.department_id) conditions.push(eq(TpUserTable.department_id, input.department_id))
     if (input?.keyword) {
       const word = `%${input.keyword}%`
-      const match = or(like(TpUserTable.username, word), like(TpUserTable.display_name, word))
+      const match = or(like(TpUserTable.username, word), like(TpUserTable.display_name, word), like(TpUserTable.phone, word))
       if (match) conditions.push(match)
     }
     const rows = await Database.use((db) => {
@@ -929,13 +1142,90 @@ export namespace UserService {
         .orderBy(desc(TpUserTable.time_created), desc(TpUserTable.id))
         .all()
     })
-    return await Promise.all(
-      rows.map(async (item) => ({
+    if (rows.length === 0) return []
+
+    const user_ids = rows.map((item) => item.id)
+    const userRoles = await Database.use((db) =>
+      db
+        .select()
+        .from(TpUserRoleTable)
+        .where(inArray(TpUserRoleTable.user_id, user_ids))
+        .all(),
+    )
+
+    const role_ids = [...new Set(userRoles.map((item) => item.role_id))]
+    const roles =
+      role_ids.length === 0
+        ? []
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpRoleTable)
+              .where(inArray(TpRoleTable.id, role_ids))
+              .all(),
+          )
+    const roleCode = new Map(roles.map((item) => [item.id, item.code]))
+
+    const rolePermLinks =
+      role_ids.length === 0
+        ? []
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpRolePermissionTable)
+              .where(inArray(TpRolePermissionTable.role_id, role_ids))
+              .all(),
+          )
+    const perm_ids = [...new Set(rolePermLinks.map((item) => item.permission_id))]
+    const perms =
+      perm_ids.length === 0
+        ? []
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpPermissionTable)
+              .where(inArray(TpPermissionTable.id, perm_ids))
+              .all(),
+          )
+    const permCode = new Map(perms.map((item) => [item.id, item.code]))
+
+    const rolePerm = rolePermLinks.reduce(
+      (acc, item) => {
+        const code = permCode.get(item.permission_id)
+        if (!code) return acc
+        const list = acc.get(item.role_id)
+        if (list) list.push(code)
+        if (!list) acc.set(item.role_id, [code])
+        return acc
+      },
+      new Map<string, string[]>(),
+    )
+
+    const userRole = userRoles.reduce(
+      (acc, item) => {
+        const list = acc.get(item.user_id)
+        if (list) list.push(item.role_id)
+        if (!list) acc.set(item.user_id, [item.role_id])
+        return acc
+      },
+      new Map<string, string[]>(),
+    )
+
+    return rows.map((item) => {
+      const ids = userRole.get(item.id) ?? []
+      const role_codes = [...new Set(ids.map((id) => roleCode.get(id)).filter((x): x is string => !!x))]
+      const permission_codes = [
+        ...new Set(
+          ids.flatMap((id) => rolePerm.get(id) ?? []),
+        ),
+      ]
+      return {
         id: item.id,
         username: item.username,
         display_name: item.display_name,
         email: item.email,
         phone: item.phone,
+        vho_user_id: item.vho_user_id ?? undefined,
         status: item.status,
         account_type: item.account_type,
         org_id: item.org_id,
@@ -943,10 +1233,10 @@ export namespace UserService {
         force_password_reset: item.force_password_reset,
         last_login_at: item.last_login_at ?? undefined,
         last_login_ip: item.last_login_ip ?? undefined,
-        roles: await rolesByUser(item.id),
-        permissions: await permissionsByUser(item.id),
-      })),
-    )
+        roles: role_codes,
+        permissions: permission_codes,
+      }
+    })
   }
 
   export async function createOrganization(input: {

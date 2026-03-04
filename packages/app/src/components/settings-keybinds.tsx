@@ -13,6 +13,13 @@ import { useSettings } from "@/context/settings"
 const IS_MAC = typeof navigator === "object" && /(Mac|iPod|iPhone|iPad)/.test(navigator.platform)
 const PALETTE_ID = "command.palette"
 const DEFAULT_PALETTE_KEYBIND = "mod+shift+p"
+const HIDDEN = new Set([
+  "terminal.toggle",
+  "review.toggle",
+  "fileTree.toggle",
+  "prompt.mode.shell",
+  "prompt.mode.normal",
+])
 
 type KeybindGroup = "General" | "Session" | "Navigation" | "Model and agent" | "Terminal" | "Prompt"
 
@@ -121,16 +128,19 @@ function listFor(command: CommandContext, map: KeybindMap, palette: string) {
 
   for (const opt of command.catalog) {
     if (opt.id.startsWith("suggested.")) continue
+    if (HIDDEN.has(opt.id)) continue
     out.set(opt.id, { title: opt.title, group: groupFor(opt.id) })
   }
 
   for (const opt of command.options) {
     if (opt.id.startsWith("suggested.")) continue
+    if (HIDDEN.has(opt.id)) continue
     out.set(opt.id, { title: opt.title, group: groupFor(opt.id) })
   }
 
   for (const [id, value] of Object.entries(map)) {
     if (typeof value !== "string") continue
+    if (HIDDEN.has(id)) continue
     if (out.has(id)) continue
     out.set(id, { title: id, group: groupFor(id) })
   }

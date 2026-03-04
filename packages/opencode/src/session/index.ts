@@ -57,14 +57,18 @@ export namespace Session {
     const a = actor()
     if (!a) return true
     if (!row.user_id) return false
-    return row.user_id === a.user_id
+    if (row.user_id !== a.user_id) return false
+    if (!a.context_project_id) return false
+    return (row.context_project_id ?? row.project_id) === a.context_project_id
   }
 
   function canWrite(row: SessionRow) {
     const a = actor()
     if (!a) return true
     if (!row.user_id) return false
-    return row.user_id === a.user_id
+    if (row.user_id !== a.user_id) return false
+    if (!a.context_project_id) return false
+    return (row.context_project_id ?? row.project_id) === a.context_project_id
   }
 
   async function assertWritable(sessionID: string) {
@@ -326,6 +330,9 @@ export namespace Session {
     visibility?: "private" | "department" | "org" | "public"
   }) {
     const a = actor()
+    if (a && !a.context_project_id) {
+      throw new Error("project_context_required")
+    }
     const visibility = a ? "private" : (input.visibility ?? "public")
     const result: Info = {
       id: Identifier.descending("session", input.id),
@@ -347,6 +354,7 @@ export namespace Session {
       await db.insert(SessionTable)
         .values({
           ...toRow(result),
+          context_project_id: a?.context_project_id,
           user_id: a?.user_id,
           org_id: a?.org_id,
           department_id: a?.department_id,
@@ -627,6 +635,16 @@ export namespace Session {
     if (input?.search) {
       conditions.push(like(SessionTable.title, `%${input.search}%`))
     }
+    const a = actor()
+    if (a?.context_project_id) {
+      const scope = or(
+        eq(SessionTable.context_project_id, a.context_project_id),
+        and(isNull(SessionTable.context_project_id), eq(SessionTable.project_id, a.context_project_id)),
+      )
+      if (scope) {
+        conditions.push(scope)
+      }
+    }
 
     const limit = input?.limit ?? 100
 
@@ -672,6 +690,16 @@ export namespace Session {
     }
     if (!input?.archived) {
       conditions.push(isNull(SessionTable.time_archived))
+    }
+    const a = actor()
+    if (a?.context_project_id) {
+      const scope = or(
+        eq(SessionTable.context_project_id, a.context_project_id),
+        and(isNull(SessionTable.context_project_id), eq(SessionTable.project_id, a.context_project_id)),
+      )
+      if (scope) {
+        conditions.push(scope)
+      }
     }
 
     const limit = input?.limit ?? 100

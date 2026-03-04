@@ -5,6 +5,20 @@ import { useAccountAuth } from "@/context/account-auth"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { type AccountPermission, type AccountRole, type AccountUser, permissionZh, roleZh } from "./settings-rbac-zh"
 
+type RoleProjectsResponse = {
+  ok: boolean
+  role_code: string
+  project_ids: string[]
+}
+
+type ProjectCatalogItem = {
+  id: string
+  name?: string
+  worktree: string
+  vcs?: string
+  sources: string[]
+}
+
 function list<T>(input: unknown) {
   return Array.isArray(input) ? (input as T[]) : []
 }
@@ -17,149 +31,126 @@ function sameSet(a: string[], b: string[]) {
   return left.every((item, index) => item === right[index])
 }
 
-function groupZh(code: string) {
-  if (code === "system") return "系统管理"
-  if (code === "session") return "会话管理"
-  if (code === "code") return "代码生成"
-  if (code === "prototype") return "原型流程"
-  if (code === "file") return "文件操作"
-  if (code === "provider") return "模型配置"
-  if (code === "audit") return "审计日志"
-  return code
-}
-
 export const SettingsRoles = () => {
   const auth = useAccountAuth()
   const request = useAccountRequest()
   const canRole = createMemo(() => auth.has("role:manage"))
-  const canUser = createMemo(() => auth.has("user:manage"))
+  const canMember = createMemo(() => canRole())
 
   const [state, setState] = createStore({
     loading: false,
-    permissionSaving: false,
-    userSaving: false,
+    pending: false,
     error: "",
     message: "",
     roles: [] as AccountRole[],
     permissions: [] as AccountPermission[],
     users: [] as AccountUser[],
-    currentRole: "",
-    roleQuery: "",
-    permissionQuery: "",
-    userQuery: "",
-    permissionCodes: [] as string[],
-    permissionBase: [] as string[],
-    userIDs: [] as string[],
-    userBase: [] as string[],
+    roleProjects: {} as Record<string, string[]>,
+    permOpen: false,
+    permRoleCode: "",
+    permCodes: [] as string[],
+    permBase: [] as string[],
+    permQuery: "",
+    memberOpen: false,
+    memberRoleCode: "",
+    memberUserIDs: [] as string[],
+    memberBase: [] as string[],
+    projectOpen: false,
+    projectRoleCode: "",
+    projectIDs: [] as string[],
+    projectBase: [] as string[],
+    projectCatalog: [] as ProjectCatalogItem[],
+    projectCatalogLoading: false,
+    projectQuery: "",
+    scanRoot: "",
+    scanRootSource: "default" as "env" | "setting" | "default",
+    scanRootSaving: false,
   })
 
-  const selectedRole = createMemo(() => state.roles.find((item) => item.code === state.currentRole))
-  const roleCount = createMemo(() => {
-    const out = new Map<string, number>()
-    for (const role of state.roles) out.set(role.code, 0)
-    for (const user of state.users) {
-      for (const role of user.roles) out.set(role, (out.get(role) ?? 0) + 1)
-    }
-    return out
-  })
-
-  const roleList = createMemo(() => {
-    const query = state.roleQuery.trim().toLowerCase()
-    if (!query) return state.roles
-    return state.roles.filter((item) => {
-      const name = roleZh(item.code).toLowerCase()
+  const permissionQuickCodes = [
+    "ui:settings.providers:view",
+    "ui:settings.models:view",
+    "provider:config_user",
+    "agent:use_docs",
+    "agent:use_build",
+  ] as const
+  const permissionQuickSet = new Set<string>(permissionQuickCodes)
+  const quickPermissions = createMemo(() =>
+    permissionQuickCodes.map((code) => {
+      const found = state.permissions.find((item) => item.code === code)
+      if (found) return found
+      return {
+        id: code,
+        code,
+        name: permissionZh(code),
+        group_name: code.startsWith("agent:") ? "agent" : code.startsWith("provider:") ? "provider" : "ui",
+      }
+    }),
+  )
+  const filteredPermissions = createMemo(() => {
+    const query = state.permQuery.trim().toLowerCase()
+    const rows = state.permissions.filter((item) => !permissionQuickSet.has(item.code))
+    if (!query) return rows
+    return rows.filter((item) => {
+      const name = permissionZh(item.code).toLowerCase()
       return item.code.toLowerCase().includes(query) || name.includes(query)
     })
   })
 
-  const permissionGroups = createMemo(() => {
-    const query = state.permissionQuery.trim().toLowerCase()
-    const filtered = state.permissions.filter((item) => {
-      if (!query) return true
-      return (
-        item.code.toLowerCase().includes(query) ||
-        item.name.toLowerCase().includes(query) ||
-        permissionZh(item.code).toLowerCase().includes(query)
-      )
-    })
-    const out = new Map<string, AccountPermission[]>()
-    for (const item of filtered) {
-      const group = item.group_name || "other"
-      const current = out.get(group)
-      if (current) {
-        current.push(item)
-        continue
-      }
-      out.set(group, [item])
-    }
-    return [...out.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([group, items]) => ({
-        group,
-        items: items.sort((a, b) => a.code.localeCompare(b.code)),
-      }))
-  })
-
-  const visiblePermissionCodes = createMemo(() =>
-    permissionGroups().flatMap((group) => group.items.map((item) => item.code)),
-  )
-
-  const userList = createMemo(() => {
-    const query = state.userQuery.trim().toLowerCase()
-    if (!query) return state.users
-    return state.users.filter((item) => {
-      const username = item.username.toLowerCase()
-      const display = (item.display_name ?? "").toLowerCase()
-      return username.includes(query) || display.includes(query)
+  const projectCatalogFiltered = createMemo(() => {
+    const query = state.projectQuery.trim().toLowerCase()
+    if (!query) return state.projectCatalog
+    return state.projectCatalog.filter((item) => {
+      const name = (item.name ?? "").toLowerCase()
+      const tree = item.worktree.toLowerCase()
+      return item.id.toLowerCase().includes(query) || name.includes(query) || tree.includes(query)
     })
   })
 
-  const permissionDirty = createMemo(() => !sameSet(state.permissionCodes, state.permissionBase))
-  const userDirty = createMemo(() => !sameSet(state.userIDs, state.userBase))
+  const roleMembersCount = (roleCode: string) => state.users.filter((item) => item.roles.includes(roleCode)).length
+  const roleProjectCount = (roleCode: string) => (state.roleProjects[roleCode] ?? []).length
 
-  const syncSelection = (code?: string, roles = state.roles, users = state.users) => {
-    const role = roles.find((item) => item.code === (code ?? state.currentRole)) ?? roles[0]
-    if (!role) {
-      setState("currentRole", "")
-      setState("permissionCodes", [])
-      setState("permissionBase", [])
-      setState("userIDs", [])
-      setState("userBase", [])
+  const togglePerm = (code: string) => {
+    if (state.permCodes.includes(code)) {
+      setState("permCodes", (current) => current.filter((item) => item !== code))
       return
     }
-    const userIDs = users.filter((item) => item.roles.includes(role.code)).map((item) => item.id)
-    const permissionCodes = role.permissions.slice()
-    setState("currentRole", role.code)
-    setState("permissionCodes", permissionCodes)
-    setState("permissionBase", permissionCodes)
-    setState("userIDs", userIDs)
-    setState("userBase", userIDs)
+    setState("permCodes", (current) => [...current, code])
   }
 
-  const togglePermission = (code: string) => {
-    if (state.permissionCodes.includes(code)) {
-      setState("permissionCodes", (current) => current.filter((item) => item !== code))
+  const toggleMember = (userID: string) => {
+    if (state.memberUserIDs.includes(userID)) {
+      setState("memberUserIDs", (current) => current.filter((item) => item !== userID))
       return
     }
-    setState("permissionCodes", (current) => [...current, code])
+    setState("memberUserIDs", (current) => [...current, userID])
   }
 
-  const toggleUser = (id: string) => {
-    if (state.userIDs.includes(id)) {
-      setState("userIDs", (current) => current.filter((item) => item !== id))
+  const toggleProject = (projectID: string) => {
+    if (state.projectIDs.includes(projectID)) {
+      setState("projectIDs", (current) => current.filter((item) => item !== projectID))
       return
     }
-    setState("userIDs", (current) => [...current, id])
+    setState("projectIDs", (current) => [...current, projectID])
   }
 
-  const selectVisiblePermissions = () => {
-    const visible = visiblePermissionCodes()
-    setState("permissionCodes", (current) => [...new Set([...current, ...visible])])
-  }
-
-  const clearVisiblePermissions = () => {
-    const visible = new Set(visiblePermissionCodes())
-    setState("permissionCodes", (current) => current.filter((item) => !visible.has(item)))
+  const loadRoleProjects = async (roles: AccountRole[]) => {
+    const rows = await Promise.all(
+      roles.map(async (item) => {
+        const response = await request({ path: `/account/admin/roles/${encodeURIComponent(item.code)}/projects` }).catch(() => undefined)
+        if (!response?.ok) return [item.code, [] as string[]] as const
+        const body = (await response.json().catch(() => undefined)) as RoleProjectsResponse | undefined
+        return [item.code, body?.project_ids ?? []] as const
+      }),
+    )
+    const next = rows.reduce(
+      (acc, [code, projectIDs]) => {
+        acc[code] = projectIDs
+        return acc
+      },
+      {} as Record<string, string[]>,
+    )
+    setState("roleProjects", next)
   }
 
   const load = async () => {
@@ -169,7 +160,8 @@ export const SettingsRoles = () => {
 
     const rolesResponse = await request({ path: "/account/admin/roles" }).catch(() => undefined)
     const permissionsResponse = await request({ path: "/account/admin/permissions" }).catch(() => undefined)
-    const usersResponse = canUser() ? await request({ path: "/account/admin/users" }).catch(() => undefined) : undefined
+    const scanRootResponse = await request({ path: "/account/admin/settings/project-scan-root" }).catch(() => undefined)
+    const usersResponse = canMember() ? await request({ path: "/account/admin/users" }).catch(() => undefined) : undefined
 
     if (!rolesResponse?.ok) {
       setState("loading", false)
@@ -184,68 +176,164 @@ export const SettingsRoles = () => {
 
     const roles = list<AccountRole>(await rolesResponse.json().catch(() => undefined))
     const permissions = list<AccountPermission>(await permissionsResponse.json().catch(() => undefined))
+    const scanRoot = scanRootResponse?.ok
+      ? ((await scanRootResponse.json().catch(() => undefined)) as { project_scan_root?: string; source?: "env" | "setting" | "default" } | undefined)
+      : undefined
     const users = usersResponse?.ok ? list<AccountUser>(await usersResponse.json().catch(() => undefined)) : []
 
     setState("roles", roles)
     setState("permissions", permissions)
+    setState("scanRoot", scanRoot?.project_scan_root ?? "")
+    setState("scanRootSource", scanRoot?.source ?? "default")
     setState("users", users)
-    syncSelection(state.currentRole, roles, users)
+    await loadRoleProjects(roles)
     setState("loading", false)
   }
 
-  const savePermissions = async () => {
-    if (!canRole()) return
-    if (!state.currentRole) return
-    if (!permissionDirty()) return
-
-    setState("permissionSaving", true)
-    setState("message", "")
+  const saveScanRoot = async (event: SubmitEvent) => {
+    event.preventDefault()
+    setState("scanRootSaving", true)
     setState("error", "")
-
+    setState("message", "")
     const response = await request({
-      method: "POST",
-      path: `/account/admin/roles/${encodeURIComponent(state.currentRole)}/permissions`,
-      body: { permission_codes: state.permissionCodes },
+      method: "PUT",
+      path: "/account/admin/settings/project-scan-root",
+      body: {
+        project_scan_root: state.scanRoot.trim() || undefined,
+      },
     }).catch(() => undefined)
-
-    setState("permissionSaving", false)
+    setState("scanRootSaving", false)
     if (!response?.ok) {
       setState("error", await parseAccountError(response))
       return
     }
-
-    setState("message", "角色权限已更新")
+    setState("message", "项目扫描根目录已保存")
     await load()
   }
 
-  const saveRoleUsers = async () => {
-    if (!canRole() || !canUser()) return
-    if (!state.currentRole) return
-    if (!userDirty()) return
+  const loadCatalog = async () => {
+    setState("projectCatalogLoading", true)
+    const response = await request({ path: "/account/admin/projects/catalog?source=scanned" }).catch(() => undefined)
+    setState("projectCatalogLoading", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    const rows = list<ProjectCatalogItem>(await response.json().catch(() => undefined))
+    setState("projectCatalog", rows)
+  }
+
+  const openPerm = (role: AccountRole) => {
+    setState("permOpen", true)
+    setState("permRoleCode", role.code)
+    setState("permCodes", role.permissions.slice())
+    setState("permBase", role.permissions.slice())
+    setState("permQuery", "")
+  }
+
+  const openMember = (role: AccountRole) => {
+    if (!canMember()) return
+    const selected = state.users.filter((item) => item.roles.includes(role.code)).map((item) => item.id)
+    setState("memberOpen", true)
+    setState("memberRoleCode", role.code)
+    setState("memberUserIDs", selected)
+    setState("memberBase", selected)
+  }
+
+  const openProject = async (role: AccountRole) => {
+    setState("projectOpen", true)
+    setState("projectRoleCode", role.code)
+    setState("projectQuery", "")
+    await loadCatalog()
+    const response = await request({ path: `/account/admin/roles/${encodeURIComponent(role.code)}/projects` }).catch(() => undefined)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      setState("projectOpen", false)
+      return
+    }
+    const body = (await response.json().catch(() => undefined)) as RoleProjectsResponse | undefined
+    const ids = body?.project_ids ?? []
+    setState("projectIDs", ids)
+    setState("projectBase", ids)
+  }
+
+  const closePerm = () => {
+    if (state.pending) return
+    setState("permOpen", false)
+    setState("permRoleCode", "")
+    setState("permCodes", [])
+    setState("permBase", [])
+    setState("permQuery", "")
+  }
+
+  const closeMember = () => {
+    if (state.pending) return
+    setState("memberOpen", false)
+    setState("memberRoleCode", "")
+    setState("memberUserIDs", [])
+    setState("memberBase", [])
+  }
+
+  const closeProject = () => {
+    if (state.pending) return
+    setState("projectOpen", false)
+    setState("projectRoleCode", "")
+    setState("projectIDs", [])
+    setState("projectBase", [])
+    setState("projectQuery", "")
+  }
+
+  const savePerm = async (event: SubmitEvent) => {
+    event.preventDefault()
+    if (!state.permRoleCode) return
+    if (sameSet(state.permCodes, state.permBase)) {
+      closePerm()
+      return
+    }
+    setState("pending", true)
+    setState("message", "")
+    setState("error", "")
+    const response = await request({
+      method: "POST",
+      path: `/account/admin/roles/${encodeURIComponent(state.permRoleCode)}/permissions`,
+      body: { permission_codes: state.permCodes },
+    }).catch(() => undefined)
+    setState("pending", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    setState("message", "角色权限已更新")
+    closePerm()
+    await load()
+    await auth.reload()
+  }
+
+  const saveMember = async (event: SubmitEvent) => {
+    event.preventDefault()
+    if (!state.memberRoleCode) return
+    if (sameSet(state.memberUserIDs, state.memberBase)) {
+      closeMember()
+      return
+    }
 
     const updates = state.users
       .map((item) => {
-        const before = item.roles.includes(state.currentRole)
-        const after = state.userIDs.includes(item.id)
+        const before = item.roles.includes(state.memberRoleCode)
+        const after = state.memberUserIDs.includes(item.id)
         if (before === after) return
         return {
           id: item.id,
           role_codes: after
-            ? [...new Set([...item.roles, state.currentRole])]
-            : item.roles.filter((code) => code !== state.currentRole),
+            ? [...new Set([...item.roles, state.memberRoleCode])]
+            : item.roles.filter((code) => code !== state.memberRoleCode),
         }
       })
       .filter((item): item is { id: string; role_codes: string[] } => !!item)
 
-    if (updates.length === 0) {
-      setState("message", "角色成员没有变化")
-      return
-    }
-
-    setState("userSaving", true)
+    setState("pending", true)
     setState("message", "")
     setState("error", "")
-
     const responses = await Promise.all(
       updates.map((item) =>
         request({
@@ -255,16 +343,39 @@ export const SettingsRoles = () => {
         }).catch(() => undefined),
       ),
     )
-
+    setState("pending", false)
     const failed = responses.find((item) => !item?.ok)
-    setState("userSaving", false)
-
     if (failed) {
       setState("error", await parseAccountError(failed))
       return
     }
-
     setState("message", "角色成员已更新")
+    closeMember()
+    await load()
+  }
+
+  const saveProject = async (event: SubmitEvent) => {
+    event.preventDefault()
+    if (!state.projectRoleCode) return
+    if (sameSet(state.projectIDs, state.projectBase)) {
+      closeProject()
+      return
+    }
+    setState("pending", true)
+    setState("message", "")
+    setState("error", "")
+    const response = await request({
+      method: "PUT",
+      path: `/account/admin/roles/${encodeURIComponent(state.projectRoleCode)}/projects`,
+      body: { project_ids: state.projectIDs },
+    }).catch(() => undefined)
+    setState("pending", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    setState("message", "角色项目分配已更新")
+    closeProject()
     await load()
   }
 
@@ -272,18 +383,6 @@ export const SettingsRoles = () => {
     if (!auth.ready()) return
     if (!auth.authenticated()) return
     void load()
-  })
-
-  createEffect(() => {
-    if (!state.currentRole) return
-    const role = state.roles.find((item) => item.code === state.currentRole)
-    if (!role) return
-    const permissionCodes = role.permissions.slice()
-    const userIDs = state.users.filter((item) => item.roles.includes(role.code)).map((item) => item.id)
-    setState("permissionCodes", permissionCodes)
-    setState("permissionBase", permissionCodes)
-    setState("userIDs", userIDs)
-    setState("userBase", userIDs)
   })
 
   return (
@@ -297,19 +396,35 @@ export const SettingsRoles = () => {
         }
       >
         <section class="rounded-2xl border border-border-weak-base bg-surface-raised-base p-5 flex flex-col gap-4">
+          <form class="rounded-xl border border-border-weak-base bg-surface-base p-3 flex flex-col gap-2" onSubmit={saveScanRoot}>
+            <div class="flex items-center justify-between">
+              <div class="text-13-medium text-text-strong">项目扫描根目录（TPCODE_PROJECT_SCAN_ROOT）</div>
+              <div class="text-11-regular text-text-weak">来源：{state.scanRootSource}</div>
+            </div>
+            <input
+              class="h-10 rounded-md border border-border-weak-base bg-background-base px-3 text-14-regular"
+              placeholder="可填多个目录，逗号分隔；留空使用默认扫描路径"
+              value={state.scanRoot}
+              onInput={(event) => setState("scanRoot", event.currentTarget.value)}
+            />
+            <div class="text-11-regular text-text-weak">
+              示例：`/data/repos,/srv/hospital-projects`。仅扫描一级子目录且目录内需包含 `.git`。
+            </div>
+            <div class="flex justify-end">
+              <Button type="submit" size="small" variant="secondary" disabled={state.scanRootSaving}>
+                {state.scanRootSaving ? "保存中..." : "保存扫描目录"}
+              </Button>
+            </div>
+          </form>
+
           <div class="flex items-center justify-between">
             <div>
               <div class="text-18-medium text-text-strong">角色管理</div>
-              <div class="text-12-regular text-text-weak mt-1">RBAC：管理角色权限并分配角色成员</div>
+              <div class="text-12-regular text-text-weak mt-1">单表格管理角色权限、成员与项目分配</div>
             </div>
-            <div class="flex items-center gap-2">
-              <Show when={state.loading}>
-                <span class="rounded-full bg-surface-panel px-3 py-1 text-11-medium text-text-weak">加载中...</span>
-              </Show>
-              <Button type="button" variant="secondary" onClick={() => void load()} disabled={state.loading}>
-                刷新
-              </Button>
-            </div>
+            <Button type="button" variant="secondary" onClick={() => void load()} disabled={state.loading}>
+              刷新
+            </Button>
           </div>
 
           <Show when={state.message}>
@@ -319,185 +434,178 @@ export const SettingsRoles = () => {
             <div class="rounded-md bg-icon-critical-base/10 px-3 py-2 text-12-regular text-icon-critical-base">{state.error}</div>
           </Show>
 
-          <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
-            <div class="rounded-xl border border-border-weak-base bg-surface-base p-3 flex flex-col gap-2 max-h-[560px] overflow-auto">
-              <div class="text-12-medium text-text-weak px-1">角色列表</div>
-              <input
-                class="h-9 rounded-md border border-border-weak-base bg-background-base px-3 text-13-regular"
-                placeholder="搜索角色"
-                value={state.roleQuery}
-                onInput={(event) => setState("roleQuery", event.currentTarget.value)}
-              />
-              <For each={roleList()}>
-                {(item) => (
-                  <button
-                    type="button"
-                    class="w-full text-left rounded-lg border px-3 py-2 transition-colors"
-                    classList={{
-                      "border-border-strong-base bg-surface-panel": state.currentRole === item.code,
-                      "border-border-weak-base bg-surface-base hover:bg-surface-panel/45": state.currentRole !== item.code,
-                    }}
-                    onClick={() => setState("currentRole", item.code)}
-                  >
-                    <div class="text-13-medium text-text-strong">{roleZh(item.code)}</div>
-                    <div class="text-11-regular text-text-weak mt-1">
-                      {item.permissions.length} 项权限 · {roleCount().get(item.code) ?? 0} 名成员
-                    </div>
-                  </button>
-                )}
-              </For>
-            </div>
-
-            <div class="xl:col-span-2 flex flex-col gap-4">
-              <Show
-                when={selectedRole()}
-                fallback={
-                  <div class="rounded-xl border border-border-weak-base bg-surface-base p-4 text-13-regular text-text-weak">
-                    暂无角色数据
-                  </div>
-                }
-              >
-                <section class="rounded-xl border border-border-weak-base bg-surface-base p-4 flex flex-col gap-3">
-                  <div class="flex items-center justify-between gap-3 flex-wrap">
-                    <div>
-                      <div class="text-14-medium text-text-strong">角色权限</div>
-                      <div class="text-12-regular text-text-weak mt-1">当前角色：{roleZh(selectedRole()?.code)}</div>
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <Show when={permissionDirty()}>
-                        <span class="rounded-full border border-border-weak-base bg-surface-panel px-3 py-1 text-11-medium text-text-weak">
-                          有未保存变更
-                        </span>
-                      </Show>
-                      <Button type="button" onClick={savePermissions} disabled={state.permissionSaving || !permissionDirty()}>
-                        {state.permissionSaving ? "保存中..." : "保存权限"}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div class="rounded-md border border-border-weak-base bg-surface-panel p-3 flex flex-col gap-2">
-                    <div class="flex items-center gap-2">
-                      <input
-                        class="h-9 flex-1 rounded-md border border-border-weak-base bg-background-base px-3 text-13-regular"
-                        placeholder="搜索权限"
-                        value={state.permissionQuery}
-                        onInput={(event) => setState("permissionQuery", event.currentTarget.value)}
-                      />
-                      <Button type="button" variant="secondary" size="small" onClick={selectVisiblePermissions}>
-                        全选可见
-                      </Button>
-                      <Button type="button" variant="secondary" size="small" onClick={clearVisiblePermissions}>
-                        清空可见
-                      </Button>
-                    </div>
-
-                    <div class="flex flex-col gap-3 max-h-[300px] overflow-auto">
-                      <For each={permissionGroups()}>
-                        {(group) => (
-                          <div class="rounded-md border border-border-weak-base bg-surface-base p-3">
-                            <div class="text-12-medium text-text-weak mb-2">{groupZh(group.group)}</div>
-                            <div class="flex flex-wrap gap-2">
-                              <For each={group.items}>
-                                {(permission) => (
-                                  <label class="inline-flex items-center gap-2 rounded-full border border-border-weak-base bg-surface-panel px-3 py-1.5 text-12-regular">
-                                    <input
-                                      type="checkbox"
-                                      checked={state.permissionCodes.includes(permission.code)}
-                                      onChange={() => togglePermission(permission.code)}
-                                    />
-                                    <span>{permissionZh(permission.code)}</span>
-                                  </label>
-                                )}
-                              </For>
-                            </div>
-                          </div>
-                        )}
-                      </For>
-                    </div>
-                  </div>
-                </section>
-
-                <section class="rounded-xl border border-border-weak-base bg-surface-base p-4 flex flex-col gap-3">
-                  <div class="flex items-center justify-between gap-3 flex-wrap">
-                    <div>
-                      <div class="text-14-medium text-text-strong">角色成员</div>
-                      <div class="text-12-regular text-text-weak mt-1">为当前角色分配用户</div>
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <Show when={userDirty()}>
-                        <span class="rounded-full border border-border-weak-base bg-surface-panel px-3 py-1 text-11-medium text-text-weak">
-                          有未保存变更
-                        </span>
-                      </Show>
-                      <Button type="button" onClick={saveRoleUsers} disabled={state.userSaving || !canUser() || !userDirty()}>
-                        {state.userSaving ? "保存中..." : "保存成员"}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <Show
-                    when={canUser()}
-                    fallback={<div class="text-12-regular text-text-weak">当前账号没有用户读取权限，无法分配角色成员</div>}
-                  >
-                    <input
-                      class="h-9 rounded-md border border-border-weak-base bg-background-base px-3 text-13-regular"
-                      placeholder="搜索用户"
-                      value={state.userQuery}
-                      onInput={(event) => setState("userQuery", event.currentTarget.value)}
-                    />
-                    <div class="rounded-md border border-border-weak-base bg-surface-panel p-3 flex flex-col gap-2 max-h-[260px] overflow-auto">
-                      <For each={userList()}>
-                        {(item) => (
-                          <label class="flex items-center justify-between gap-3 rounded-lg border border-border-weak-base bg-surface-base px-3 py-2">
-                            <div>
-                              <div class="text-13-medium text-text-strong">{item.display_name || item.username}</div>
-                              <div class="text-11-regular text-text-weak mt-0.5">{item.username}</div>
-                            </div>
-                            <input type="checkbox" checked={state.userIDs.includes(item.id)} onChange={() => toggleUser(item.id)} />
-                          </label>
-                        )}
-                      </For>
-                    </div>
-                  </Show>
-                </section>
+          <div class="rounded-xl border border-border-weak-base bg-surface-base overflow-hidden">
+            <div class="px-4 py-3 border-b border-border-weak-base text-13-medium text-text-strong flex items-center justify-between">
+              <span>角色列表</span>
+              <Show when={state.loading}>
+                <span class="text-12-regular text-text-weak">加载中...</span>
               </Show>
             </div>
-          </div>
-
-          <section class="rounded-xl border border-border-weak-base bg-surface-base overflow-hidden">
-            <div class="px-4 py-3 border-b border-border-weak-base text-13-medium text-text-strong">角色权限总览</div>
-            <div class="max-h-[320px] overflow-auto">
+            <div class="max-h-[560px] overflow-auto">
               <table class="w-full text-12-regular">
                 <thead class="bg-surface-panel">
                   <tr>
-                    <th class="text-left px-3 py-2">角色</th>
-                    <th class="text-left px-3 py-2">权限</th>
+                    <th class="text-left px-3 py-2">角色编码</th>
+                    <th class="text-left px-3 py-2">角色名称</th>
+                    <th class="text-left px-3 py-2">权限数</th>
+                    <th class="text-left px-3 py-2">成员数</th>
+                    <th class="text-left px-3 py-2">项目数</th>
+                    <th class="text-left px-3 py-2">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   <For each={state.roles}>
-                    {(role) => (
-                      <tr class="border-t border-border-weak-base">
-                        <td class="px-3 py-2">{roleZh(role.code)}</td>
+                    {(item) => (
+                      <tr class="border-t border-border-weak-base hover:bg-surface-panel/45 transition-colors">
+                        <td class="px-3 py-2">{item.code}</td>
+                        <td class="px-3 py-2">{roleZh(item.code)}</td>
+                        <td class="px-3 py-2">{item.permissions.length}</td>
+                        <td class="px-3 py-2">{roleMembersCount(item.code)}</td>
+                        <td class="px-3 py-2">{roleProjectCount(item.code)}</td>
                         <td class="px-3 py-2">
                           <div class="flex flex-wrap gap-1.5">
-                            <For each={role.permissions.length > 0 ? role.permissions : ["-"]}>
-                              {(permission) => (
-                                <span class="rounded-full border border-border-weak-base bg-surface-panel px-2.5 py-0.5 text-11-medium text-text-weak">
-                                  {permissionZh(permission)}
-                                </span>
-                              )}
-                            </For>
+                            <Button type="button" size="small" variant="secondary" onClick={() => openPerm(item)}>
+                              权限设置
+                            </Button>
+                            <Show when={canMember()}>
+                              <Button type="button" size="small" variant="secondary" onClick={() => openMember(item)}>
+                                成员管理
+                              </Button>
+                            </Show>
+                            <Button type="button" size="small" variant="secondary" onClick={() => void openProject(item)}>
+                              分配项目
+                            </Button>
                           </div>
                         </td>
                       </tr>
                     )}
                   </For>
+                  <Show when={state.roles.length === 0}>
+                    <tr class="border-t border-border-weak-base">
+                      <td class="px-3 py-6 text-center text-text-weak" colSpan={6}>
+                        暂无角色数据
+                      </td>
+                    </tr>
+                  </Show>
                 </tbody>
               </table>
             </div>
-          </section>
+          </div>
         </section>
+      </Show>
+
+      <Show when={state.permOpen}>
+        <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
+          <form class="w-full max-w-2xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={savePerm}>
+            <div class="text-16-medium text-text-strong">权限设置 · {roleZh(state.permRoleCode)}</div>
+            <div class="rounded-md border border-border-weak-base bg-surface-panel p-3 flex flex-col gap-2">
+              <div class="text-12-medium text-text-strong">设置页可见性、用户供应商与智能体可用性</div>
+              <For each={quickPermissions()}>
+                {(item) => (
+                  <label class="flex items-center gap-2 px-1 py-1 rounded hover:bg-surface-base/80">
+                    <input type="checkbox" checked={state.permCodes.includes(item.code)} onChange={() => togglePerm(item.code)} />
+                    <span class="text-12-regular text-text-strong">{permissionZh(item.code)}</span>
+                    <span class="text-11-regular text-text-weak">{item.code}</span>
+                  </label>
+                )}
+              </For>
+            </div>
+            <input
+              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+              placeholder="搜索权限编码或名称"
+              value={state.permQuery}
+              onInput={(event) => setState("permQuery", event.currentTarget.value)}
+            />
+            <div class="max-h-80 overflow-auto rounded-md border border-border-weak-base bg-surface-base p-2 flex flex-col gap-1">
+              <For each={filteredPermissions()}>
+                {(item) => (
+                  <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-panel/50">
+                    <input type="checkbox" checked={state.permCodes.includes(item.code)} onChange={() => togglePerm(item.code)} />
+                    <span class="text-12-regular text-text-strong">{permissionZh(item.code)}</span>
+                    <span class="text-11-regular text-text-weak">{item.code}</span>
+                  </label>
+                )}
+              </For>
+            </div>
+            <div class="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={closePerm} disabled={state.pending}>
+                取消
+              </Button>
+              <Button type="submit" disabled={state.pending}>
+                {state.pending ? "保存中..." : "保存"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      </Show>
+
+      <Show when={state.memberOpen}>
+        <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
+          <form class="w-full max-w-2xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={saveMember}>
+            <div class="text-16-medium text-text-strong">成员管理 · {roleZh(state.memberRoleCode)}</div>
+            <div class="max-h-80 overflow-auto rounded-md border border-border-weak-base bg-surface-base p-2 flex flex-col gap-1">
+              <For each={state.users}>
+                {(item) => (
+                  <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-panel/50">
+                    <input type="checkbox" checked={state.memberUserIDs.includes(item.id)} onChange={() => toggleMember(item.id)} />
+                    <span class="text-12-regular text-text-strong">{item.display_name}</span>
+                    <span class="text-11-regular text-text-weak">({item.username})</span>
+                  </label>
+                )}
+              </For>
+            </div>
+            <div class="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={closeMember} disabled={state.pending}>
+                取消
+              </Button>
+              <Button type="submit" disabled={state.pending}>
+                {state.pending ? "保存中..." : "保存"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      </Show>
+
+      <Show when={state.projectOpen}>
+        <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
+          <form class="w-full max-w-3xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={saveProject}>
+            <div class="text-16-medium text-text-strong">分配项目 · {roleZh(state.projectRoleCode)}</div>
+            <input
+              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+              placeholder="搜索项目名称/路径"
+              value={state.projectQuery}
+              onInput={(event) => setState("projectQuery", event.currentTarget.value)}
+            />
+            <div class="max-h-80 overflow-auto rounded-md border border-border-weak-base bg-surface-base p-2 flex flex-col gap-1">
+              <Show when={!state.projectCatalogLoading} fallback={<div class="px-2 py-3 text-12-regular text-text-weak">加载项目中...</div>}>
+                <For each={projectCatalogFiltered()}>
+                  {(item) => (
+                    <label class="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-surface-panel/50">
+                      <input type="checkbox" checked={state.projectIDs.includes(item.id)} onChange={() => toggleProject(item.id)} />
+                      <div class="min-w-0">
+                        <div class="text-12-medium text-text-strong">{item.name ?? item.worktree}</div>
+                        <div class="text-11-regular text-text-weak break-all">{item.worktree}</div>
+                      </div>
+                    </label>
+                  )}
+                </For>
+                <Show when={projectCatalogFiltered().length === 0}>
+                  <div class="px-2 py-3 text-12-regular text-text-weak">
+                    未扫描到可分配项目，请检查 `TPCODE_PROJECT_SCAN_ROOT`（支持逗号分隔多个根目录）或确认目录为一级 Git 仓库。
+                  </div>
+                </Show>
+              </Show>
+            </div>
+            <div class="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={closeProject} disabled={state.pending}>
+                取消
+              </Button>
+              <Button type="submit" disabled={state.pending}>
+                {state.pending ? "保存中..." : "保存"}
+              </Button>
+            </div>
+          </form>
+        </div>
       </Show>
     </div>
   )

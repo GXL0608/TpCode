@@ -104,24 +104,31 @@ export namespace Auth {
   export async function all(): Promise<Record<string, Info>> {
     const uid = userID()
     if (!uid) return globalAll()
-
-    const personal = await fromDb(uid)
+    if (Flag.TPCODE_ACCOUNT_ENABLED) {
+      const personal = await fromDb(uid)
+      if (!canReadSharedInStrictMode()) return personal
+      const shared = await globalAll()
+      return { ...shared, ...personal }
+    }
+    const shared = await globalAll()
     if (!Flag.TPCODE_PROVIDER_STRICT_ACCOUNT) {
-      const shared = await globalAll()
+      const personal = await fromDb(uid)
       return { ...shared, ...personal }
     }
-
     if (canReadSharedInStrictMode()) {
-      const shared = await globalAll()
+      const personal = await fromDb(uid)
       return { ...shared, ...personal }
     }
-
-    return personal
+    return fromDb(uid)
   }
 
   export async function userAll() {
     const uid = userID()
     if (!uid) return {} as Record<string, Info>
+    return fromDb(uid)
+  }
+
+  export async function userAllByID(uid: string) {
     return fromDb(uid)
   }
 
@@ -140,32 +147,44 @@ export namespace Auth {
     await Filesystem.writeJson(filepath, data, 0o600)
   }
 
-  export async function set(key: string, info: Info) {
-    const uid = userID()
-    if (uid) {
-      await Database.use(async (db) => {
-        await db.insert(TpUserProviderTable)
-          .values({
-            id: crypto.randomUUID(),
-            user_id: uid,
-            provider_id: key,
+  export async function setUser(user_id: string, key: string, info: Info) {
+    await Database.use(async (db) => {
+      await db.insert(TpUserProviderTable)
+        .values({
+          id: crypto.randomUUID(),
+          user_id,
+          provider_id: key,
+          auth_type: info.type,
+          secret_cipher: UserCipher.encrypt(JSON.stringify(info)),
+          meta_json: {},
+          is_active: true,
+        })
+        .onConflictDoUpdate({
+          target: [TpUserProviderTable.user_id, TpUserProviderTable.provider_id],
+          set: {
             auth_type: info.type,
             secret_cipher: UserCipher.encrypt(JSON.stringify(info)),
             meta_json: {},
             is_active: true,
-          })
-          .onConflictDoUpdate({
-            target: [TpUserProviderTable.user_id, TpUserProviderTable.provider_id],
-            set: {
-              auth_type: info.type,
-              secret_cipher: UserCipher.encrypt(JSON.stringify(info)),
-              meta_json: {},
-              is_active: true,
-              time_updated: Date.now(),
-            },
-          })
-          .run()
-      })
+            time_updated: Date.now(),
+          },
+        })
+        .run()
+    })
+  }
+
+  export async function removeUser(user_id: string, key: string) {
+    await Database.use(async (db) => {
+      await db.delete(TpUserProviderTable)
+        .where(and(eq(TpUserProviderTable.user_id, user_id), eq(TpUserProviderTable.provider_id, key)))
+        .run()
+    })
+  }
+
+  export async function set(key: string, info: Info) {
+    const uid = userID()
+    if (uid) {
+      await setUser(uid, key, info)
       return
     }
     await setGlobal(key, info)
@@ -174,11 +193,7 @@ export namespace Auth {
   export async function remove(key: string) {
     const uid = userID()
     if (uid) {
-      await Database.use(async (db) => {
-        await db.delete(TpUserProviderTable)
-          .where(and(eq(TpUserProviderTable.user_id, uid), eq(TpUserProviderTable.provider_id, key)))
-          .run()
-      })
+      await removeUser(uid, key)
       return
     }
     await removeGlobal(key)
