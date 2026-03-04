@@ -17,6 +17,15 @@ const DEFAULT_SESSION_WIDTH = 600
 const DEFAULT_TERMINAL_HEIGHT = 280
 export type AvatarColorKey = (typeof AVATAR_COLOR_KEYS)[number]
 
+function flag(key: string, fallback = true) {
+  if (typeof window !== "object") return fallback
+  const value = window.localStorage.getItem(key)?.toLowerCase()
+  if (!value) return fallback
+  if (value === "1" || value === "true" || value === "on") return true
+  if (value === "0" || value === "false" || value === "off") return false
+  return fallback
+}
+
 export function getAvatarColors(key?: string) {
   if (key && AVATAR_COLOR_KEYS.includes(key as AvatarColorKey)) {
     return {
@@ -492,13 +501,66 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     })
 
     onMount(() => {
+      if (!flag("opencode.perf.layout.session_queue", true)) {
+        const allowed = allowedWorktrees()
+        Promise.all(
+          server.projects.list().map((project) => {
+            if (allowed && !allowed.has(project.worktree)) return
+            return globalSync.project.loadSessions(project.worktree)
+          }),
+        )
+        return
+      }
       const allowed = allowedWorktrees()
-      Promise.all(
-        server.projects.list().map((project) => {
-          if (allowed && !allowed.has(project.worktree)) return
-          return globalSync.project.loadSessions(project.worktree)
-        }),
-      )
+      const all = server.projects.list().filter((project) => {
+        if (!allowed) return true
+        return allowed.has(project.worktree)
+      })
+      if (all.length === 0) return
+
+      const last = server.projects.last()
+      const prioritized = [...all].sort((a, b) => {
+        if (a.worktree === last && b.worktree !== last) return -1
+        if (b.worktree === last && a.worktree !== last) return 1
+        if (a.expanded && !b.expanded) return -1
+        if (b.expanded && !a.expanded) return 1
+        return 0
+      })
+
+      const first = prioritized[0]
+      if (first) void globalSync.project.loadSessions(first.worktree)
+      const queue = prioritized.slice(1)
+      if (queue.length === 0) return
+
+      let idle: number | undefined
+      let stop = false
+      const run = () => {
+        if (stop) return
+        const project = queue.shift()
+        if (!project) return
+        void globalSync.project.loadSessions(project.worktree).finally(() => {
+          if (stop) return
+          schedule()
+        })
+      }
+      const schedule = () => {
+        if (typeof window.requestIdleCallback === "function") {
+          idle = window.requestIdleCallback(run, { timeout: 1000 })
+          return
+        }
+        idle = window.setTimeout(run, 200)
+      }
+
+      schedule()
+      onCleanup(() => {
+        stop = true
+        if (idle === undefined) return
+        if (typeof window.cancelIdleCallback === "function") {
+          window.cancelIdleCallback(idle)
+          return
+        }
+        clearTimeout(idle)
+      })
     })
 
     return {

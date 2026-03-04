@@ -11,7 +11,12 @@ import { lazy } from "../../util/lazy"
 import { Config } from "../../config/config"
 import { errors } from "../error"
 import { Flag } from "../../flag/flag"
-import { eventSessionID, eventVisibleToUser } from "../event-visibility"
+import {
+  createEventVisibilityCache,
+  eventSessionID,
+  eventVisibleToUser,
+  warmEventVisibilityCache,
+} from "../event-visibility"
 
 const log = Log.create({ service: "server" })
 
@@ -74,7 +79,49 @@ export const GlobalRoutes = lazy(() =>
         const projectID =
           Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_context_project_id" as never) as string | undefined) : undefined
         return streamSSE(c, async (stream) => {
-          const visibilityCache = new Map<string, boolean>()
+          const visibilityCache = Flag.TPCODE_EVENT_VISIBILITY_CACHE ? createEventVisibilityCache() : undefined
+          const pending: Array<{ directory: string; payload: { type: string; properties: Record<string, unknown> } }> = []
+          let timer: ReturnType<typeof setTimeout> | undefined
+          let draining = false
+
+          const flush = async () => {
+            if (draining) return
+            draining = true
+            while (pending.length > 0) {
+              const batch = pending.splice(0, 32)
+              if (visibilityCache) {
+                await warmEventVisibilityCache({
+                  events: batch.map((item) => item.payload),
+                  userID,
+                  projectID,
+                  cache: visibilityCache,
+                })
+              }
+              for (const event of batch) {
+                const payload = event.payload
+                const sessionID = eventSessionID(payload)
+                if ((payload.type === "session.updated" || payload.type === "session.deleted") && sessionID) {
+                  visibilityCache?.delete(sessionID)
+                }
+                const visible = await eventVisibleToUser({ event: payload, userID, projectID, cache: visibilityCache })
+                if (!visible) continue
+                await stream.writeSSE({
+                  data: JSON.stringify(event),
+                })
+              }
+            }
+            draining = false
+          }
+
+          const queue = (event: { directory: string; payload: { type: string; properties: Record<string, unknown> } }) => {
+            pending.push(event)
+            if (timer) return
+            timer = setTimeout(() => {
+              timer = undefined
+              void flush()
+            }, 20)
+          }
+
           stream.writeSSE({
             data: JSON.stringify({
               payload: {
@@ -86,14 +133,8 @@ export const GlobalRoutes = lazy(() =>
           async function handler(event: any) {
             const payload = event?.payload
             if (!payload || typeof payload !== "object") return
-            const sessionID = eventSessionID(payload)
-            if ((payload.type === "session.updated" || payload.type === "session.deleted") && sessionID) {
-              visibilityCache.delete(sessionID)
-            }
-            if (!(await eventVisibleToUser({ event: payload, userID, projectID, cache: visibilityCache }))) return
-            await stream.writeSSE({
-              data: JSON.stringify(event),
-            })
+            if (typeof event?.directory !== "string") return
+            queue(event as { directory: string; payload: { type: string; properties: Record<string, unknown> } })
           }
           GlobalBus.on("event", handler)
 
@@ -111,6 +152,7 @@ export const GlobalRoutes = lazy(() =>
 
           await new Promise<void>((resolve) => {
             stream.onAbort(() => {
+              if (timer) clearTimeout(timer)
               clearInterval(heartbeat)
               GlobalBus.off("event", handler)
               resolve()

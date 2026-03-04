@@ -1650,6 +1650,7 @@ export namespace UserService {
       }
     })
     invalidateByUserID(input.user_id)
+    AccountContextService.invalidateProjectAccess({ user_id: input.user_id })
     auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.user.roles.update",

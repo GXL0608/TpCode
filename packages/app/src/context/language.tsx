@@ -4,39 +4,7 @@ import { createStore } from "solid-js/store"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { Persist, persisted } from "@/utils/persist"
 import { dict as en } from "@/i18n/en"
-import { dict as zh } from "@/i18n/zh"
-import { dict as zht } from "@/i18n/zht"
-import { dict as ko } from "@/i18n/ko"
-import { dict as de } from "@/i18n/de"
-import { dict as es } from "@/i18n/es"
-import { dict as fr } from "@/i18n/fr"
-import { dict as da } from "@/i18n/da"
-import { dict as ja } from "@/i18n/ja"
-import { dict as pl } from "@/i18n/pl"
-import { dict as ru } from "@/i18n/ru"
-import { dict as ar } from "@/i18n/ar"
-import { dict as no } from "@/i18n/no"
-import { dict as br } from "@/i18n/br"
-import { dict as th } from "@/i18n/th"
-import { dict as bs } from "@/i18n/bs"
-import { dict as tr } from "@/i18n/tr"
 import { dict as uiEn } from "@opencode-ai/ui/i18n/en"
-import { dict as uiZh } from "@opencode-ai/ui/i18n/zh"
-import { dict as uiZht } from "@opencode-ai/ui/i18n/zht"
-import { dict as uiKo } from "@opencode-ai/ui/i18n/ko"
-import { dict as uiDe } from "@opencode-ai/ui/i18n/de"
-import { dict as uiEs } from "@opencode-ai/ui/i18n/es"
-import { dict as uiFr } from "@opencode-ai/ui/i18n/fr"
-import { dict as uiDa } from "@opencode-ai/ui/i18n/da"
-import { dict as uiJa } from "@opencode-ai/ui/i18n/ja"
-import { dict as uiPl } from "@opencode-ai/ui/i18n/pl"
-import { dict as uiRu } from "@opencode-ai/ui/i18n/ru"
-import { dict as uiAr } from "@opencode-ai/ui/i18n/ar"
-import { dict as uiNo } from "@opencode-ai/ui/i18n/no"
-import { dict as uiBr } from "@opencode-ai/ui/i18n/br"
-import { dict as uiTh } from "@opencode-ai/ui/i18n/th"
-import { dict as uiBs } from "@opencode-ai/ui/i18n/bs"
-import { dict as uiTr } from "@opencode-ai/ui/i18n/tr"
 
 export type Locale =
   | "en"
@@ -105,24 +73,40 @@ const LABEL_KEY: Record<Locale, keyof Dictionary> = {
 }
 
 const base = i18n.flatten({ ...en, ...uiEn })
-const DICT: Record<Locale, Dictionary> = {
-  en: base,
-  zh: { ...base, ...i18n.flatten({ ...zh, ...uiZh }) },
-  zht: { ...base, ...i18n.flatten({ ...zht, ...uiZht }) },
-  ko: { ...base, ...i18n.flatten({ ...ko, ...uiKo }) },
-  de: { ...base, ...i18n.flatten({ ...de, ...uiDe }) },
-  es: { ...base, ...i18n.flatten({ ...es, ...uiEs }) },
-  fr: { ...base, ...i18n.flatten({ ...fr, ...uiFr }) },
-  da: { ...base, ...i18n.flatten({ ...da, ...uiDa }) },
-  ja: { ...base, ...i18n.flatten({ ...ja, ...uiJa }) },
-  pl: { ...base, ...i18n.flatten({ ...pl, ...uiPl }) },
-  ru: { ...base, ...i18n.flatten({ ...ru, ...uiRu }) },
-  ar: { ...base, ...i18n.flatten({ ...ar, ...uiAr }) },
-  no: { ...base, ...i18n.flatten({ ...no, ...uiNo }) },
-  br: { ...base, ...i18n.flatten({ ...br, ...uiBr }) },
-  th: { ...base, ...i18n.flatten({ ...th, ...uiTh }) },
-  bs: { ...base, ...i18n.flatten({ ...bs, ...uiBs }) },
-  tr: { ...base, ...i18n.flatten({ ...tr, ...uiTr }) },
+type DictModule = { dict: Record<string, unknown> }
+
+function merge(app: DictModule, ui: DictModule): Dictionary {
+  return {
+    ...base,
+    ...i18n.flatten({
+      ...app.dict,
+      ...ui.dict,
+    }),
+  }
+}
+
+const loaders: Record<Exclude<Locale, "en">, () => Promise<Dictionary>> = {
+  zh: () => Promise.all([import("@/i18n/zh"), import("@opencode-ai/ui/i18n/zh")]).then(([app, ui]) => merge(app, ui)),
+  zht: () => Promise.all([import("@/i18n/zht"), import("@opencode-ai/ui/i18n/zht")]).then(([app, ui]) => merge(app, ui)),
+  ko: () => Promise.all([import("@/i18n/ko"), import("@opencode-ai/ui/i18n/ko")]).then(([app, ui]) => merge(app, ui)),
+  de: () => Promise.all([import("@/i18n/de"), import("@opencode-ai/ui/i18n/de")]).then(([app, ui]) => merge(app, ui)),
+  es: () => Promise.all([import("@/i18n/es"), import("@opencode-ai/ui/i18n/es")]).then(([app, ui]) => merge(app, ui)),
+  fr: () => Promise.all([import("@/i18n/fr"), import("@opencode-ai/ui/i18n/fr")]).then(([app, ui]) => merge(app, ui)),
+  da: () => Promise.all([import("@/i18n/da"), import("@opencode-ai/ui/i18n/da")]).then(([app, ui]) => merge(app, ui)),
+  ja: () => Promise.all([import("@/i18n/ja"), import("@opencode-ai/ui/i18n/ja")]).then(([app, ui]) => merge(app, ui)),
+  pl: () => Promise.all([import("@/i18n/pl"), import("@opencode-ai/ui/i18n/pl")]).then(([app, ui]) => merge(app, ui)),
+  ru: () => Promise.all([import("@/i18n/ru"), import("@opencode-ai/ui/i18n/ru")]).then(([app, ui]) => merge(app, ui)),
+  ar: () => Promise.all([import("@/i18n/ar"), import("@opencode-ai/ui/i18n/ar")]).then(([app, ui]) => merge(app, ui)),
+  no: () => Promise.all([import("@/i18n/no"), import("@opencode-ai/ui/i18n/no")]).then(([app, ui]) => merge(app, ui)),
+  br: () => Promise.all([import("@/i18n/br"), import("@opencode-ai/ui/i18n/br")]).then(([app, ui]) => merge(app, ui)),
+  th: () => Promise.all([import("@/i18n/th"), import("@opencode-ai/ui/i18n/th")]).then(([app, ui]) => merge(app, ui)),
+  bs: () => Promise.all([import("@/i18n/bs"), import("@opencode-ai/ui/i18n/bs")]).then(([app, ui]) => merge(app, ui)),
+  tr: () => Promise.all([import("@/i18n/tr"), import("@opencode-ai/ui/i18n/tr")]).then(([app, ui]) => merge(app, ui)),
+}
+
+function load(locale: Locale) {
+  if (locale === "en") return Promise.resolve(base)
+  return loaders[locale]()
 }
 
 const localeMatchers: Array<{ locale: Locale; match: (language: string) => boolean }> = [
@@ -148,24 +132,7 @@ const localeMatchers: Array<{ locale: Locale; match: (language: string) => boole
 ]
 
 type ParityKey = "command.session.previous.unseen" | "command.session.next.unseen"
-const PARITY_CHECK: Record<Exclude<Locale, "en">, Record<ParityKey, string>> = {
-  zh,
-  zht,
-  ko,
-  de,
-  es,
-  fr,
-  da,
-  ja,
-  pl,
-  ru,
-  ar,
-  no,
-  br,
-  th,
-  bs,
-  tr,
-}
+const PARITY_CHECK: Record<Exclude<Locale, "en">, Record<ParityKey, string>> | undefined = undefined
 void PARITY_CHECK
 
 function detectLocale(): Locale {
@@ -198,7 +165,33 @@ export const { use: useLanguage, provider: LanguageProvider } = createSimpleCont
 
     const locale = createMemo<Locale>(() => normalizeLocale(store.locale))
 
-    const dict = createMemo<Dictionary>(() => DICT[locale()])
+    const [cache, setCache] = createStore<Partial<Record<Locale, Dictionary>>>({
+      en: base,
+    })
+    const pending = new Map<Locale, Promise<void>>()
+
+    const ensure = (target: Locale) => {
+      if (cache[target]) return Promise.resolve()
+      const queued = pending.get(target)
+      if (queued) return queued
+      const task = load(target)
+        .then((dict) => {
+          setCache(target, dict)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          pending.delete(target)
+        })
+      pending.set(target, task)
+      return task
+    }
+
+    createEffect(() => {
+      const target = locale()
+      void ensure(target)
+    })
+
+    const dict = createMemo<Dictionary>(() => cache[locale()] ?? cache.en ?? base)
 
     const t = i18n.translator(dict, i18n.resolveTemplate)
 
@@ -217,7 +210,11 @@ export const { use: useLanguage, provider: LanguageProvider } = createSimpleCont
       label,
       t,
       setLocale(next: Locale) {
-        setStore("locale", normalizeLocale(next))
+        const target = normalizeLocale(next)
+        if (target === locale()) return
+        void ensure(target).finally(() => {
+          setStore("locale", target)
+        })
       },
     }
   },

@@ -118,6 +118,11 @@ export namespace Flag {
   export declare const TPCODE_PROVIDER_STRICT_ACCOUNT: boolean
   export declare const TPCODE_ACCOUNT_AUTH_DEBUG: boolean
   export declare const TPCODE_PROJECT_SCAN_ROOT: string | undefined
+  export declare const TPCODE_LIGHT_INSTANCE_ROUTES: boolean
+  export declare const TPCODE_CONTEXT_CACHE: boolean
+  export declare const TPCODE_EVENT_VISIBILITY_CACHE: boolean
+  export declare const TPCODE_SESSION_SEARCH_INFO_LOG: boolean
+  export declare const OPENCODE_WEB_ALLOW_REMOTE_PROXY: boolean
   export const OPENCODE_ENABLE_QUESTION_TOOL = truthy("OPENCODE_ENABLE_QUESTION_TOOL")
 
   // Experimental
@@ -264,6 +269,54 @@ Object.defineProperty(Flag, "TPCODE_ACCOUNT_AUTH_DEBUG", {
 Object.defineProperty(Flag, "TPCODE_PROJECT_SCAN_ROOT", {
   get() {
     return process.env["TPCODE_PROJECT_SCAN_ROOT"]
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_LIGHT_INSTANCE_ROUTES", {
+  get() {
+    const value = process.env["TPCODE_LIGHT_INSTANCE_ROUTES"]?.toLowerCase()
+    if (value === undefined) return true
+    return value === "true" || value === "1"
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_CONTEXT_CACHE", {
+  get() {
+    const value = process.env["TPCODE_CONTEXT_CACHE"]?.toLowerCase()
+    if (value === undefined) return true
+    return value === "true" || value === "1"
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_EVENT_VISIBILITY_CACHE", {
+  get() {
+    const value = process.env["TPCODE_EVENT_VISIBILITY_CACHE"]?.toLowerCase()
+    if (value === undefined) return true
+    return value === "true" || value === "1"
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_SESSION_SEARCH_INFO_LOG", {
+  get() {
+    return truthy("TPCODE_SESSION_SEARCH_INFO_LOG")
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "OPENCODE_WEB_ALLOW_REMOTE_PROXY", {
+  get() {
+    const value = process.env["OPENCODE_WEB_ALLOW_REMOTE_PROXY"]?.toLowerCase()
+    if (value === undefined) return true
+    return value === "true" || value === "1"
   },
   enumerable: true,
   configurable: false,
