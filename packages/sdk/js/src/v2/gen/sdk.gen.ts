@@ -576,7 +576,7 @@ export class Account extends HeyApiClient {
   /**
    * Register account
    *
-   * Register a new account for tpCode account system.
+   * Register a new account for TpCode account system.
    */
   public register<ThrowOnError extends boolean = false>(
     parameters?: {

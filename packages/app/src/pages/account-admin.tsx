@@ -362,7 +362,7 @@ export default function AccountAdmin() {
       <div class="mx-auto w-full max-w-6xl flex flex-col gap-4">
         <div class="rounded-xl bg-surface-raised-base p-4 flex items-center justify-between">
           <div>
-            <div class="text-20-medium text-text-strong">tpCode 账号管理台</div>
+            <div class="text-20-medium text-text-strong">TpCode 账号管理台</div>
             <div class="text-12-regular text-text-weak">组织 / 部门 / 用户 / 角色权限 / 项目分配 / VHO绑定 / 全局供应商密钥</div>
           </div>
           <div class="flex items-center gap-2 text-12-regular">

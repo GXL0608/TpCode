@@ -340,7 +340,7 @@ export default function ApprovalWorkflow() {
       <div class="mx-auto w-full max-w-7xl flex flex-col gap-4">
         <div class="rounded-xl bg-surface-raised-base p-4 flex items-center justify-between">
           <div>
-            <div class="text-20-medium text-text-strong">tpCode 审批流</div>
+            <div class="text-20-medium text-text-strong">TpCode 审批流</div>
             <div class="text-12-regular text-text-weak">
               {"提示词 -> 计划 -> 原型 -> 确认 -> 审批 -> 执行 -> 完成"}
             </div>
