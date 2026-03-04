@@ -10,6 +10,9 @@ import { AccountSystemSettingService } from "@/user/system-setting"
 import { errors } from "../error"
 import { Flag } from "@/flag/flag"
 import { Auth } from "@/auth"
+import { Filesystem } from "@/util/filesystem"
+import path from "path"
+import { readdir } from "fs/promises"
 
 const LoginResult = z
   .object({
@@ -76,6 +79,28 @@ function requireUserList(c: Context) {
     },
     403,
   )
+}
+
+async function roots() {
+  if (process.platform !== "win32") return ["/"] as string[]
+  const drives = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")
+  const rows = await Promise.all(
+    drives.map(async (letter) => {
+      const drive = `${letter}:\\`
+      if (!(await Filesystem.isDir(drive))) return
+      return drive
+    }),
+  )
+  return rows.filter((item): item is string => !!item)
+}
+
+function parent(input: string) {
+  const current = path.resolve(input)
+  const root = path.parse(current).root
+  if (current === root) return
+  const value = path.dirname(current)
+  if (value === current) return
+  return value
 }
 
 export const AccountRoutes = lazy(() =>
@@ -452,6 +477,46 @@ export const AccountRoutes = lazy(() =>
       "/admin/settings/project-scan-root",
       UserRbac.require("role:manage"),
       async (c) => c.json(await AccountSystemSettingService.projectScanRoot()),
+    )
+    .get(
+      "/admin/fs/directories",
+      UserRbac.require("role:manage"),
+      validator(
+        "query",
+        z.object({
+          path: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        const current = query.path?.trim()
+        if (!current) {
+          const directories = (await roots()).map((item) => ({ path: item, name: item }))
+          return c.json({
+            ok: true as const,
+            current: "",
+            directories,
+          })
+        }
+        if (!(await Filesystem.isDir(current))) {
+          return c.json({ ok: false as const, code: "directory_missing" }, 400)
+        }
+        const full = path.resolve(current)
+        const entries = await readdir(full, { withFileTypes: true }).catch(() => [] as Awaited<ReturnType<typeof readdir>>)
+        const directories = entries
+          .filter((item) => item.isDirectory())
+          .map((item) => ({
+            path: path.join(full, item.name),
+            name: item.name,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        return c.json({
+          ok: true as const,
+          current: full,
+          parent: parent(full),
+          directories,
+        })
+      },
     )
     .put(
       "/admin/settings/project-scan-root",

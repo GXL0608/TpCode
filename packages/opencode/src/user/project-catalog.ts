@@ -38,7 +38,6 @@ async function scan() {
   const dirs = [...new Set(rootEntries.flatMap((item: string[]) => item))]
   const results = await Promise.all(
     dirs.map(async (dir: string) => {
-      if (!(await Filesystem.exists(path.join(dir, ".git")))) return
       return Project.fromDirectory(dir).then((item) => item.project).catch(() => undefined)
     }),
   )

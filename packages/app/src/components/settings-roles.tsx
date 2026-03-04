@@ -19,6 +19,11 @@ type ProjectCatalogItem = {
   sources: string[]
 }
 
+type ScanDirEntry = {
+  path: string
+  name: string
+}
+
 function list<T>(input: unknown) {
   return Array.isArray(input) ? (input as T[]) : []
 }
@@ -46,6 +51,13 @@ function sameSet(a: string[], b: string[]) {
   const right = [...new Set(b)].sort()
   if (left.length !== right.length) return false
   return left.every((item, index) => item === right[index])
+}
+
+function firstScanRoot(input: string) {
+  return input
+    .split(/[,;\n]/g)
+    .map((item) => item.trim())
+    .find((item): item is string => !!item)
 }
 
 export const SettingsRoles = () => {
@@ -86,6 +98,11 @@ export const SettingsRoles = () => {
     scanRoot: "",
     scanRootSource: "default" as "env" | "setting" | "default",
     scanRootSaving: false,
+    scanDirOpen: false,
+    scanDirLoading: false,
+    scanDirCurrent: "",
+    scanDirParent: "",
+    scanDirEntries: [] as ScanDirEntry[],
   })
 
   const permissionQuickCodes = [
@@ -228,8 +245,7 @@ export const SettingsRoles = () => {
     setState("loading", false)
   }
 
-  const saveScanRoot = async (event: SubmitEvent) => {
-    event.preventDefault()
+  const saveScanRoot = async (value?: string) => {
     setState("scanRootSaving", true)
     setState("error", "")
     setState("message", "")
@@ -237,16 +253,88 @@ export const SettingsRoles = () => {
       method: "PUT",
       path: "/account/admin/settings/project-scan-root",
       body: {
-        project_scan_root: state.scanRoot.trim() || undefined,
+        project_scan_root: value?.trim() || undefined,
       },
     }).catch(() => undefined)
     setState("scanRootSaving", false)
     if (!response?.ok) {
       setState("error", await parseAccountError(response))
-      return
+      return false
     }
     setState("message", "项目扫描根目录已保存")
     await load()
+    return true
+  }
+
+  const loadScanDirs = async (target?: string) => {
+    setState("scanDirLoading", true)
+    const query = new URLSearchParams()
+    const value = target?.trim()
+    if (value) query.set("path", value)
+    const response = await request({
+      path: query.size > 0 ? `/account/admin/fs/directories?${query.toString()}` : "/account/admin/fs/directories",
+    }).catch(() => undefined)
+    setState("scanDirLoading", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    const body = (await response.json().catch(() => undefined)) as
+      | {
+          ok?: boolean
+          current?: string
+          parent?: string
+          directories?: ScanDirEntry[]
+        }
+      | undefined
+    setState("scanDirCurrent", body?.current ?? "")
+    setState("scanDirParent", body?.parent ?? "")
+    setState("scanDirEntries", list<ScanDirEntry>(body?.directories))
+  }
+
+  const chooseScanRoot = async () => {
+    setState("scanDirOpen", true)
+    setState("error", "")
+    await loadScanDirs(firstScanRoot(state.scanRoot))
+  }
+
+  const closeScanDir = () => {
+    if (state.scanDirLoading || state.scanRootSaving) return
+    setState("scanDirOpen", false)
+    setState("scanDirCurrent", "")
+    setState("scanDirParent", "")
+    setState("scanDirEntries", [])
+  }
+
+  const confirmScanDir = async () => {
+    const current = state.scanDirCurrent.trim()
+    if (!current) return
+    setState("scanRoot", current)
+    const ok = await saveScanRoot(current)
+    if (!ok) return
+    closeScanDir()
+  }
+
+  const enterScanDir = async (target: string) => {
+    await loadScanDirs(target)
+  }
+
+  const openScanRoots = async () => {
+    await loadScanDirs(undefined)
+  }
+
+  const enterScanParent = async () => {
+    const parent = state.scanDirParent.trim()
+    if (!parent) {
+      await openScanRoots()
+      return
+    }
+    await loadScanDirs(parent)
+  }
+
+  const clearScanRoot = async () => {
+    setState("scanRoot", "")
+    await saveScanRoot(undefined)
   }
 
   const loadCatalog = async () => {
@@ -451,26 +539,29 @@ export const SettingsRoles = () => {
         }
       >
         <section class="rounded-2xl border border-border-weak-base bg-surface-raised-base p-5 flex flex-col gap-4">
-          <form class="rounded-xl border border-border-weak-base bg-surface-base p-3 flex flex-col gap-2" onSubmit={saveScanRoot}>
+          <div class="rounded-xl border border-border-weak-base bg-surface-base p-3 flex flex-col gap-2">
             <div class="flex items-center justify-between">
               <div class="text-13-medium text-text-strong">项目扫描根目录（TPCODE_PROJECT_SCAN_ROOT）</div>
               <div class="text-11-regular text-text-weak">来源：{state.scanRootSource}</div>
             </div>
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-background-base px-3 text-14-regular"
-              placeholder="可填多个目录，逗号分隔；留空使用默认扫描路径"
-              value={state.scanRoot}
-              onInput={(event) => setState("scanRoot", event.currentTarget.value)}
-            />
-            <div class="text-11-regular text-text-weak">
-              示例：`/data/repos,/srv/hospital-projects`。仅扫描一级子目录且目录内需包含 `.git`。
-            </div>
-            <div class="flex justify-end">
-              <Button type="submit" size="small" variant="secondary" disabled={state.scanRootSaving}>
-                {state.scanRootSaving ? "保存中..." : "保存扫描目录"}
+            <div class="flex gap-2">
+              <input
+                class="h-10 flex-1 min-w-0 rounded-md border border-border-weak-base bg-background-base px-3 text-14-regular"
+                placeholder="请选择项目扫描根目录"
+                value={state.scanRoot}
+                readOnly
+              />
+              <Button type="button" size="small" variant="secondary" disabled={state.scanRootSaving} onClick={() => void chooseScanRoot()}>
+                {state.scanRootSaving ? "保存中..." : "选择目录"}
+              </Button>
+              <Button type="button" size="small" variant="secondary" disabled={!state.scanRoot || state.scanRootSaving} onClick={() => void clearScanRoot()}>
+                清空
               </Button>
             </div>
-          </form>
+            <div class="text-11-regular text-text-weak">
+              点击“选择目录”可在服务端目录选择器中逐级进入任意层级目录；确认后自动保存。项目分配时仅扫描所选目录下的一级子目录。
+            </div>
+          </div>
 
           <div class="flex items-center justify-between">
             <div>
@@ -572,6 +663,52 @@ export const SettingsRoles = () => {
             </div>
           </div>
         </section>
+      </Show>
+
+      <Show when={state.scanDirOpen}>
+        <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
+          <div class="w-full max-w-3xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3">
+            <div class="text-16-medium text-text-strong">选择项目扫描根目录</div>
+            <div class="flex items-center gap-2">
+              <Button type="button" size="small" variant="secondary" disabled={state.scanDirLoading} onClick={() => void openScanRoots()}>
+                根目录
+              </Button>
+              <Button type="button" size="small" variant="secondary" disabled={state.scanDirLoading} onClick={() => void enterScanParent()}>
+                上一级
+              </Button>
+              <div class="min-w-0 text-12-regular text-text-weak break-all">
+                {state.scanDirCurrent || "请选择目录根节点"}
+              </div>
+            </div>
+            <div class="max-h-80 overflow-auto rounded-md border border-border-weak-base bg-surface-base p-2 flex flex-col gap-1">
+              <Show when={!state.scanDirLoading} fallback={<div class="px-2 py-3 text-12-regular text-text-weak">加载目录中...</div>}>
+                <For each={state.scanDirEntries}>
+                  {(item) => (
+                    <button
+                      type="button"
+                      class="w-full text-left rounded px-2 py-1.5 hover:bg-surface-panel/50"
+                      onClick={() => void enterScanDir(item.path)}
+                    >
+                      <div class="text-12-medium text-text-strong">{item.name}</div>
+                      <div class="text-11-regular text-text-weak break-all">{item.path}</div>
+                    </button>
+                  )}
+                </For>
+                <Show when={state.scanDirEntries.length === 0}>
+                  <div class="px-2 py-3 text-12-regular text-text-weak">当前目录没有子目录</div>
+                </Show>
+              </Show>
+            </div>
+            <div class="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={closeScanDir} disabled={state.scanDirLoading || state.scanRootSaving}>
+                取消
+              </Button>
+              <Button type="button" disabled={!state.scanDirCurrent || state.scanDirLoading || state.scanRootSaving} onClick={() => void confirmScanDir()}>
+                {state.scanRootSaving ? "保存中..." : "选择当前目录并保存"}
+              </Button>
+            </div>
+          </div>
+        </div>
       </Show>
 
       <Show when={state.permOpen}>
@@ -676,7 +813,7 @@ export const SettingsRoles = () => {
                 </For>
                 <Show when={projectCatalogFiltered().length === 0}>
                   <div class="px-2 py-3 text-12-regular text-text-weak">
-                    未扫描到可分配项目，请检查 `TPCODE_PROJECT_SCAN_ROOT`（支持逗号分隔多个根目录）或确认目录为一级 Git 仓库。
+                    未扫描到可分配项目，请检查 `TPCODE_PROJECT_SCAN_ROOT` 是否已正确选择并确认目录下存在可访问的一级子目录。
                   </div>
                 </Show>
               </Show>
