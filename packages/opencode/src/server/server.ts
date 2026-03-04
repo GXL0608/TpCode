@@ -263,6 +263,7 @@ export namespace Server {
                 )
               }
               const user = detail.user
+              c.set("account_user" as never, user)
               c.set("account_user_id" as never, user.id)
               c.set("account_org_id" as never, user.org_id)
               c.set("account_department_id" as never, user.department_id)

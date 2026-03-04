@@ -11,7 +11,7 @@ import { lazy } from "../../util/lazy"
 import { Config } from "../../config/config"
 import { errors } from "../error"
 import { Flag } from "../../flag/flag"
-import { eventVisibleToUser } from "../event-visibility"
+import { eventSessionID, eventVisibleToUser } from "../event-visibility"
 
 const log = Log.create({ service: "server" })
 
@@ -72,6 +72,7 @@ export const GlobalRoutes = lazy(() =>
         c.header("X-Content-Type-Options", "nosniff")
         const userID = Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_user_id" as never) as string | undefined) : undefined
         return streamSSE(c, async (stream) => {
+          const visibilityCache = new Map<string, boolean>()
           stream.writeSSE({
             data: JSON.stringify({
               payload: {
@@ -83,7 +84,11 @@ export const GlobalRoutes = lazy(() =>
           async function handler(event: any) {
             const payload = event?.payload
             if (!payload || typeof payload !== "object") return
-            if (!(await eventVisibleToUser({ event: payload, userID }))) return
+            const sessionID = eventSessionID(payload)
+            if ((payload.type === "session.updated" || payload.type === "session.deleted") && sessionID) {
+              visibilityCache.delete(sessionID)
+            }
+            if (!(await eventVisibleToUser({ event: payload, userID, cache: visibilityCache }))) return
             await stream.writeSSE({
               data: JSON.stringify(event),
             })

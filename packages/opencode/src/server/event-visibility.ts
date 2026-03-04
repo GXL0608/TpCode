@@ -36,10 +36,12 @@ export function eventSessionID(event: Event) {
   return
 }
 
-export async function eventVisibleToUser(input: { event: Event; userID?: string }) {
+export async function eventVisibleToUser(input: { event: Event; userID?: string; cache?: Map<string, boolean> }) {
   if (!input.userID) return true
   const sessionID = eventSessionID(input.event)
   if (!sessionID) return true
+  const cached = input.cache?.get(sessionID)
+  if (cached !== undefined) return cached
   const row = await Database.use((db) =>
     db
       .select({
@@ -49,6 +51,7 @@ export async function eventVisibleToUser(input: { event: Event; userID?: string 
       .where(eq(SessionTable.id, sessionID))
       .get(),
   )
-  if (!row?.user_id) return false
-  return row.user_id === input.userID
+  const visible = !!row?.user_id && row.user_id === input.userID
+  input.cache?.set(sessionID, visible)
+  return visible
 }

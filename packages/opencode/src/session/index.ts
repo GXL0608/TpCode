@@ -614,7 +614,11 @@ export namespace Session {
     limit?: number
   }) {
     const project = Instance.project
-    const conditions = [eq(SessionTable.project_id, project.id)]
+    const conditions: SQL[] = [eq(SessionTable.project_id, project.id)]
+    const a = actor()
+    if (a) {
+      conditions.push(eq(SessionTable.user_id, a.user_id))
+    }
 
     if (input?.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
@@ -640,7 +644,7 @@ export namespace Session {
         .limit(limit)
         .all(),
     )
-    for (const row of rows.filter(canRead)) {
+    for (const row of rows) {
       yield fromRow(row)
     }
   }
@@ -655,6 +659,10 @@ export namespace Session {
     archived?: boolean
   }) {
     const conditions: SQL[] = []
+    const a = actor()
+    if (a) {
+      conditions.push(eq(SessionTable.user_id, a.user_id))
+    }
 
     if (input?.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
@@ -708,7 +716,7 @@ export namespace Session {
       }
     }
 
-    for (const row of rows.filter(canRead)) {
+    for (const row of rows) {
       const project = projects.get(row.project_id) ?? null
       yield { ...fromRow(row), project }
     }
@@ -716,14 +724,19 @@ export namespace Session {
 
   export const children = fn(Identifier.schema("session"), async (parentID) => {
     const project = Instance.project
+    const a = actor()
+    const conditions: SQL[] = [eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID)]
+    if (a) {
+      conditions.push(eq(SessionTable.user_id, a.user_id))
+    }
     const rows = await Database.use((db) =>
       db
         .select()
         .from(SessionTable)
-        .where(and(eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID)))
+        .where(and(...conditions))
         .all(),
     )
-    return rows.filter(canRead).map(fromRow)
+    return rows.map(fromRow)
   })
 
   export const remove = fn(Identifier.schema("session"), async (sessionID) => {
