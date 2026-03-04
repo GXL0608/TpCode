@@ -100,7 +100,7 @@ export namespace AccountContextService {
 
   export async function projectIDs(user_id: string) {
     const cached = cachedProjects(user_id)
-    if (cached) return cached
+    if (cached !== undefined) return cached
     const roles = await userRoles(user_id)
     const roleProjects =
       roles.ids.length === 0

@@ -14,10 +14,15 @@ export type EventVisibilityCache = {
   delete: (session_id: string) => void
 }
 
-function visibleToUser(user_id: string | undefined, owner_user_id: string | undefined) {
-  if (!owner_user_id) return false
-  if (!user_id) return false
-  return owner_user_id === user_id
+function visibleToUser(input: {
+  userID?: string
+  projectID?: string
+  ownerUserID?: string
+  sessionProjectID?: string
+}) {
+  if (input.ownerUserID) return !!input.userID && input.ownerUserID === input.userID
+  if (!input.projectID || !input.sessionProjectID) return false
+  return input.projectID === input.sessionProjectID
 }
 
 export function createEventVisibilityCache(limit = DEFAULT_VISIBILITY_CACHE_LIMIT): EventVisibilityCache {
@@ -111,15 +116,26 @@ export async function warmEventVisibilityCache(input: {
       .select({
         id: SessionTable.id,
         user_id: SessionTable.user_id,
+        project_id: SessionTable.project_id,
+        context_project_id: SessionTable.context_project_id,
       })
       .from(SessionTable)
       .where(inArray(SessionTable.id, pending))
       .all(),
   )
 
-  const ownerBySession = new Map(rows.map((item) => [item.id, item.user_id ?? undefined]))
+  const rowBySession = new Map(rows.map((item) => [item.id, item]))
   for (const session_id of pending) {
-    input.cache?.set(session_id, visibleToUser(input.userID, ownerBySession.get(session_id)))
+    const row = rowBySession.get(session_id)
+    input.cache?.set(
+      session_id,
+      visibleToUser({
+        userID: input.userID,
+        projectID: input.projectID,
+        ownerUserID: row?.user_id ?? undefined,
+        sessionProjectID: row ? (row.context_project_id ?? row.project_id ?? undefined) : undefined,
+      }),
+    )
   }
 }
 
@@ -138,12 +154,19 @@ export async function eventVisibleToUser(input: {
     db
       .select({
         user_id: SessionTable.user_id,
+        project_id: SessionTable.project_id,
+        context_project_id: SessionTable.context_project_id,
       })
       .from(SessionTable)
       .where(eq(SessionTable.id, sessionID))
       .get(),
   )
-  const visible = visibleToUser(input.userID, row?.user_id ?? undefined)
+  const visible = visibleToUser({
+    userID: input.userID,
+    projectID: input.projectID,
+    ownerUserID: row?.user_id ?? undefined,
+    sessionProjectID: row ? (row.context_project_id ?? row.project_id ?? undefined) : undefined,
+  })
   input.cache?.set(sessionID, visible)
   return visible
 }
