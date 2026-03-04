@@ -1,6 +1,7 @@
 import { Project } from "@/project/project"
 import { ProjectTable } from "@/project/project.sql"
 import { Database, and, eq, inArray } from "@/storage/db"
+import { Flag } from "@/flag/flag"
 import { TpRoleTable, TpUserRoleTable } from "./role.sql"
 import { TpProjectRoleAccessTable } from "./project-role-access.sql"
 import { TpProjectUserAccessTable } from "./project-user-access.sql"
@@ -9,6 +10,65 @@ import { TpUserTable } from "./user.sql"
 
 function unique(input: string[]) {
   return [...new Set(input)]
+}
+
+const CONTEXT_CACHE_TTL_MS = 300_000
+const projectCacheByUser = new Map<string, { expires_at: number; project_ids: string[] }>()
+const accessCache = new Map<string, { expires_at: number; allowed: boolean }>()
+
+function accessKey(user_id: string, project_id: string) {
+  return `${user_id}:${project_id}`
+}
+
+function cachedProjects(user_id: string) {
+  if (!Flag.TPCODE_CONTEXT_CACHE) return
+  const cached = projectCacheByUser.get(user_id)
+  if (!cached) return
+  if (cached.expires_at > Date.now()) return cached.project_ids
+  projectCacheByUser.delete(user_id)
+  return
+}
+
+function cacheProjects(user_id: string, project_ids: string[]) {
+  if (!Flag.TPCODE_CONTEXT_CACHE) return
+  projectCacheByUser.set(user_id, {
+    expires_at: Date.now() + CONTEXT_CACHE_TTL_MS,
+    project_ids,
+  })
+}
+
+function cachedAccess(user_id: string, project_id: string) {
+  if (!Flag.TPCODE_CONTEXT_CACHE) return
+  const key = accessKey(user_id, project_id)
+  const cached = accessCache.get(key)
+  if (!cached) return
+  if (cached.expires_at > Date.now()) return cached.allowed
+  accessCache.delete(key)
+  return
+}
+
+function cacheAccess(user_id: string, project_id: string, allowed: boolean) {
+  if (!Flag.TPCODE_CONTEXT_CACHE) return
+  accessCache.set(accessKey(user_id, project_id), {
+    expires_at: Date.now() + CONTEXT_CACHE_TTL_MS,
+    allowed,
+  })
+}
+
+function invalidateUser(user_id: string) {
+  projectCacheByUser.delete(user_id)
+  const prefix = `${user_id}:`
+  for (const key of accessCache.keys()) {
+    if (!key.startsWith(prefix)) continue
+    accessCache.delete(key)
+  }
+}
+
+function invalidateProject(project_id: string) {
+  for (const key of accessCache.keys()) {
+    if (!key.endsWith(`:${project_id}`)) continue
+    accessCache.delete(key)
+  }
 }
 
 async function userRoles(user_id: string) {
@@ -20,7 +80,27 @@ async function userRoles(user_id: string) {
 }
 
 export namespace AccountContextService {
+  export function invalidateProjectAccess(input?: { user_id?: string; project_id?: string }) {
+    if (!input?.user_id && !input?.project_id) {
+      projectCacheByUser.clear()
+      accessCache.clear()
+      return
+    }
+    if (input.user_id && input.project_id) {
+      invalidateUser(input.user_id)
+      accessCache.delete(accessKey(input.user_id, input.project_id))
+      return
+    }
+    if (input.user_id) invalidateUser(input.user_id)
+    if (input.project_id) {
+      projectCacheByUser.clear()
+      invalidateProject(input.project_id)
+    }
+  }
+
   export async function projectIDs(user_id: string) {
+    const cached = cachedProjects(user_id)
+    if (cached) return cached
     const roles = await userRoles(user_id)
     const roleProjects =
       roles.ids.length === 0
@@ -37,12 +117,18 @@ export namespace AccountContextService {
     )
     const deny = new Set(userProjects.filter((item) => item.mode === "deny").map((item) => item.project_id))
     const allow = userProjects.filter((item) => item.mode === "allow").map((item) => item.project_id)
-    return unique([...roleProjects.map((item) => item.project_id), ...allow]).filter((item) => !deny.has(item))
+    const ids = unique([...roleProjects.map((item) => item.project_id), ...allow]).filter((item) => !deny.has(item))
+    cacheProjects(user_id, ids)
+    return ids
   }
 
   export async function canAccessProject(input: { user_id: string; project_id: string }) {
+    const cached = cachedAccess(input.user_id, input.project_id)
+    if (cached !== undefined) return cached
     const ids = await projectIDs(input.user_id)
-    return ids.includes(input.project_id)
+    const allowed = ids.includes(input.project_id)
+    cacheAccess(input.user_id, input.project_id, allowed)
+    return allowed
   }
 
   export async function listProjects(input: { user_id: string; context_project_id?: string }) {
@@ -146,6 +232,7 @@ export namespace AccountContextService {
           .run()
       }
     })
+    invalidateProjectAccess({ project_id: input.project_id })
     return { ok: true as const }
   }
 
@@ -202,6 +289,7 @@ export namespace AccountContextService {
           .where(and(eq(TpProjectUserAccessTable.project_id, input.project_id), eq(TpProjectUserAccessTable.user_id, input.user_id)))
           .run(),
       )
+      invalidateProjectAccess({ user_id: input.user_id, project_id: input.project_id })
       return { ok: true as const }
     }
     await Database.use(async (db) => {
@@ -221,6 +309,7 @@ export namespace AccountContextService {
         })
         .run()
     })
+    invalidateProjectAccess({ user_id: input.user_id, project_id: input.project_id })
     return { ok: true as const }
   }
 
@@ -271,6 +360,7 @@ export namespace AccountContextService {
           .run()
       }
     })
+    invalidateProjectAccess()
     return { ok: true as const }
   }
 }

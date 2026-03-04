@@ -31,6 +31,15 @@ type GlobalStore = {
   reload: undefined | "pending" | "complete"
 }
 
+function flag(key: string, fallback = true) {
+  if (typeof window !== "object") return fallback
+  const value = window.localStorage.getItem(key)?.toLowerCase()
+  if (!value) return fallback
+  if (value === "1" || value === "true" || value === "on") return true
+  if (value === "0" || value === "false" || value === "off") return false
+  return fallback
+}
+
 export async function bootstrapGlobal(input: {
   globalSDK: OpencodeClient
   connectErrorTitle: string
@@ -41,6 +50,7 @@ export async function bootstrapGlobal(input: {
   formatMoreCount: (count: number) => string
   setGlobalStore: SetStoreFunction<GlobalStore>
 }) {
+  const deferredBootstrap = flag("opencode.perf.bootstrap.deferred", true)
   const health = await input.globalSDK.global
     .health()
     .then((x) => x.data)
@@ -55,17 +65,21 @@ export async function bootstrapGlobal(input: {
     return
   }
 
-  const tasks = [
-    retry(() =>
-      input.globalSDK.path.get().then((x) => {
-        input.setGlobalStore("path", x.data!)
-      }),
-    ),
-    retry(() =>
-      input.globalSDK.global.config.get().then((x) => {
-        input.setGlobalStore("config", x.data!)
-      }),
-    ),
+  const notifyErrors = (errors: unknown[]) => {
+    if (errors.length === 0) return
+    const message = formatServerError(errors[0], {
+      unknown: input.unknownError,
+      invalidConfiguration: input.invalidConfigurationError,
+    })
+    const more = errors.length > 1 ? input.formatMoreCount(errors.length - 1) : ""
+    showToast({
+      variant: "error",
+      title: input.requestFailedTitle,
+      description: message + more,
+    })
+  }
+
+  const coreTasks = [
     retry(() =>
       input.globalSDK.project.list().then((x) => {
         const projects = (x.data ?? [])
@@ -74,6 +88,25 @@ export async function bootstrapGlobal(input: {
           .slice()
           .sort((a, b) => cmp(a.id, b.id))
         input.setGlobalStore("project", projects)
+      }),
+    ),
+  ]
+
+  const coreResults = await Promise.allSettled(coreTasks)
+  const coreErrors = coreResults.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason)
+  notifyErrors(coreErrors)
+  input.setGlobalStore("ready", true)
+  if (!deferredBootstrap) return
+
+  const deferredTasks = [
+    retry(() =>
+      input.globalSDK.path.get().then((x) => {
+        input.setGlobalStore("path", x.data!)
+      }),
+    ),
+    retry(() =>
+      input.globalSDK.global.config.get().then((x) => {
+        input.setGlobalStore("config", x.data!)
       }),
     ),
     retry(() =>
@@ -87,22 +120,11 @@ export async function bootstrapGlobal(input: {
       }),
     ),
   ]
-
-  const results = await Promise.allSettled(tasks)
-  const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason)
-  if (errors.length) {
-    const message = formatServerError(errors[0], {
-      unknown: input.unknownError,
-      invalidConfiguration: input.invalidConfigurationError,
-    })
-    const more = errors.length > 1 ? input.formatMoreCount(errors.length - 1) : ""
-    showToast({
-      variant: "error",
-      title: input.requestFailedTitle,
-      description: message + more,
-    })
-  }
-  input.setGlobalStore("ready", true)
+  const deferredResults = await Promise.allSettled(deferredTasks)
+  const deferredErrors = deferredResults
+    .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+    .map((r) => r.reason)
+  notifyErrors(deferredErrors)
 }
 
 function groupBySession<T extends { id: string; sessionID: string }>(input: T[]) {

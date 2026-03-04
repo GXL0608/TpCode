@@ -23,6 +23,22 @@ export const NotFoundError = NamedError.create(
 const log = Log.create({ service: "db" })
 const seed = "postgres://opencode:opencode@182.92.74.187:9124/opencode"
 
+function dbSource() {
+  if (process.env.OPENCODE_DATABASE_URL) return "OPENCODE_DATABASE_URL"
+  if (process.env.OPENCODE_PG_URL) return "OPENCODE_PG_URL"
+  return "DEFAULT_SEED"
+}
+
+function dbLocation(value: string) {
+  try {
+    const host = new URL(value).hostname
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return "local"
+  } catch {
+    return "unknown"
+  }
+  return "remote"
+}
+
 export namespace Database {
   type Schema = typeof schema
   type RawClient = {
@@ -85,6 +101,10 @@ export namespace Database {
 
   export function url() {
     return process.env.OPENCODE_DATABASE_URL ?? process.env.OPENCODE_PG_URL ?? seed
+  }
+
+  export function source() {
+    return dbSource()
   }
 
   export function masked() {
@@ -175,7 +195,19 @@ export namespace Database {
 
   export const Client = lazy(async () => {
     const value = url()
-    log.info("opening database", { postgres: masked() })
+    const source = dbSource()
+    const location = dbLocation(value)
+    log.info("opening database", {
+      postgres: masked(),
+      source,
+      location,
+    })
+    if (source === "DEFAULT_SEED") {
+      log.error("database using default fallback url", {
+        action: "set OPENCODE_DATABASE_URL",
+        postgres: masked(),
+      })
+    }
 
     const db = drizzle(value, { schema }) as Client
     await migrate(db.$client)

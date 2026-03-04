@@ -80,6 +80,15 @@ import { workspaceOpenState } from "./layout/sidebar-workspace-helpers"
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
 
+function flag(key: string, fallback = true) {
+  if (typeof window !== "object") return fallback
+  const value = window.localStorage.getItem(key)?.toLowerCase()
+  if (!value) return fallback
+  if (value === "1" || value === "true" || value === "on") return true
+  if (value === "0" || value === "false" || value === "off") return false
+  return fallback
+}
+
 export default function Layout(props: ParentProps) {
   const [store, setStore, , ready] = persisted(
     Persist.global("layout.page", ["layout.page.v1"]),
@@ -624,7 +633,7 @@ export default function Layout(props: ParentProps) {
     running: number
   }
 
-  const prefetchChunk = 200
+  const prefetchChunk = flag("opencode.perf.session.prefetch_chunk_50", true) ? 50 : 200
   const prefetchConcurrency = 1
   const prefetchPendingLimit = 6
   const prefetchToken = { value: 0 }
@@ -779,15 +788,8 @@ export default function Layout(props: ParentProps) {
   createEffect(() => {
     const sessions = currentSessions()
     const id = params.id
-
-    if (!id) {
-      const first = sessions[0]
-      if (first) prefetchSession(first)
-
-      const second = sessions[1]
-      if (second) prefetchSession(second)
-      return
-    }
+    if (!id) return
+    if (!params.dir) return
 
     const index = sessions.findIndex((s) => s.id === id)
     if (index === -1) return

@@ -46,7 +46,12 @@ import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
 import { AccountCurrent } from "@/user/current"
-import { eventSessionID, eventVisibleToUser } from "./event-visibility"
+import {
+  createEventVisibilityCache,
+  eventSessionID,
+  eventVisibleToUser,
+  warmEventVisibilityCache,
+} from "./event-visibility"
 import { AccountContextService } from "@/user/context"
 import { Project } from "@/project/project"
 import { Filesystem } from "@/util/filesystem"
@@ -70,6 +75,58 @@ export namespace Server {
 
   const app = new Hono()
   let accountSeeded = false
+  const CONTEXT_CACHE_TTL_MS = 300_000
+  const contextProjectCache = new Map<
+    string,
+    {
+      expires_at: number
+      project: Project.Info | undefined
+      worktree_ready: boolean
+    }
+  >()
+
+  function clearContextProject(project_id?: string) {
+    if (!project_id) {
+      contextProjectCache.clear()
+      return
+    }
+    contextProjectCache.delete(project_id)
+  }
+
+  async function contextProject(project_id: string) {
+    if (Flag.TPCODE_CONTEXT_CACHE) {
+      const cached = contextProjectCache.get(project_id)
+      if (cached && cached.expires_at > Date.now()) return cached
+      if (cached) contextProjectCache.delete(project_id)
+    }
+    const project = await Project.get(project_id)
+    const worktree_ready = !!project && (await Filesystem.isDir(project.worktree))
+    const next = {
+      expires_at: Date.now() + CONTEXT_CACHE_TTL_MS,
+      project,
+      worktree_ready,
+    }
+    if (Flag.TPCODE_CONTEXT_CACHE) {
+      contextProjectCache.set(project_id, next)
+    }
+    return next
+  }
+
+  function decodeDirectory(input: string) {
+    try {
+      return decodeURIComponent(input)
+    } catch {
+      return input
+    }
+  }
+
+  function lightInstancePath(pathname: string) {
+    if (!Flag.TPCODE_LIGHT_INSTANCE_ROUTES) return false
+    if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
+    if (pathname === "/project" || pathname.startsWith("/project/")) return true
+    if (pathname === "/global" || pathname.startsWith("/global/")) return true
+    return false
+  }
 
   function webRoots() {
     const roots = [
@@ -90,7 +147,22 @@ export namespace Server {
       log.info("web ui using local assets", { root: _webRoot })
       return _webRoot
     }
-    log.info("web ui using remote proxy", { target: "https://app.opencode.ai" })
+    if (Flag.OPENCODE_WEB_ALLOW_REMOTE_PROXY) {
+      const payload = {
+        target: "https://app.opencode.ai",
+        roots: webRoots(),
+      }
+      if (process.env.NODE_ENV === "production") {
+        log.warn("web ui local dist missing; using remote proxy", payload)
+      } else {
+        log.info("web ui local dist missing; using remote proxy", payload)
+      }
+      return
+    }
+    log.error("web ui local dist missing and remote proxy disabled", {
+      roots: webRoots(),
+      env: "OPENCODE_WEB_ALLOW_REMOTE_PROXY=false",
+    })
     return
   }
 
@@ -214,7 +286,7 @@ export namespace Server {
             return (async () => {
               const debug = Flag.TPCODE_ACCOUNT_AUTH_DEBUG
               if (!accountSeeded) {
-                await UserService.ensureSeed()
+                await UserService.ensureSeedOnce()
                 accountSeeded = true
               }
               const auth = c.req.header("authorization")
@@ -269,13 +341,14 @@ export namespace Server {
               const user = await (async () => {
                 const context_project_id = detail.user.context_project_id
                 if (!context_project_id) return detail.user
-                const project = await Project.get(context_project_id)
-                if (!project || !(await Filesystem.isDir(project.worktree))) {
+                const context = await contextProject(context_project_id)
+                if (!context.project || !context.worktree_ready) {
+                  clearContextProject(context_project_id)
                   log.warn("invalid account context project; forcing reselect", {
                     user_id: detail.user.id,
                     context_project_id,
-                    project_found: !!project,
-                    worktree: project?.worktree,
+                    project_found: !!context.project,
+                    worktree: context.project?.worktree,
                   })
                   return {
                     ...detail.user,
@@ -287,11 +360,15 @@ export namespace Server {
                   project_id: context_project_id,
                 })
                 if (allowed) return detail.user
+                AccountContextService.invalidateProjectAccess({
+                  user_id: detail.user.id,
+                  project_id: context_project_id,
+                })
                 log.warn("invalid account context project; forcing reselect", {
                   user_id: detail.user.id,
                   context_project_id,
                   project_found: true,
-                  worktree: project?.worktree,
+                  worktree: context.project?.worktree,
                   reason: "project_not_assigned",
                 })
                 return {
@@ -460,20 +537,15 @@ export namespace Server {
         .use(async (c, next) => {
           if (c.req.path === "/log") return next()
           if (c.req.path.startsWith("/account")) return next()
+          if (lightInstancePath(c.req.path)) return next()
           const hinted = c.req.query("directory") || c.req.header("x-opencode-directory")
           const raw = hinted || process.cwd()
-          let directory = (() => {
-            try {
-              return decodeURIComponent(raw)
-            } catch {
-              return raw
-            }
-          })()
+          let directory = decodeDirectory(raw)
           if (Flag.TPCODE_ACCOUNT_ENABLED) {
             const context_project_id = c.get("account_context_project_id" as never) as string | undefined
             if (context_project_id) {
-              const project = await Project.get(context_project_id)
-              if (project) directory = project.worktree
+              const context = await contextProject(context_project_id)
+              if (context.project) directory = context.project.worktree
             }
           }
           return Instance.provide({
@@ -487,11 +559,6 @@ export namespace Server {
                   if (Instance.project.id !== context_project_id) {
                     return c.json({ error: "project_context_mismatch" }, 403)
                   }
-                  const allowed = await AccountContextService.canAccessProject({
-                    user_id,
-                    project_id: context_project_id,
-                  })
-                  if (!allowed) return c.json({ error: "project_forbidden" }, 403)
                 }
               }
               return next()
@@ -811,25 +878,66 @@ export namespace Server {
                 ? (c.get("account_context_project_id" as never) as string | undefined)
                 : undefined
             return streamSSE(c, async (stream) => {
-              const visibilityCache = new Map<string, boolean>()
+              const visibilityCache = Flag.TPCODE_EVENT_VISIBILITY_CACHE ? createEventVisibilityCache() : undefined
+              const pending: Array<{ type: string; properties: Record<string, unknown> }> = []
+              let timer: ReturnType<typeof setTimeout> | undefined
+              let draining = false
+
+              const flush = async () => {
+                if (draining) return
+                draining = true
+                while (pending.length > 0) {
+                  const batch = pending.splice(0, 32)
+                  if (visibilityCache) {
+                    await warmEventVisibilityCache({
+                      events: batch,
+                      userID: accountUserID,
+                      projectID: accountProjectID,
+                      cache: visibilityCache,
+                    })
+                  }
+                  for (const event of batch) {
+                    const sessionID = eventSessionID(event)
+                    if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
+                      visibilityCache?.delete(sessionID)
+                    }
+                    const visible = await eventVisibleToUser({
+                      event,
+                      userID: accountUserID,
+                      projectID: accountProjectID,
+                      cache: visibilityCache,
+                    })
+                    if (!visible) continue
+                    await stream.writeSSE({
+                      data: JSON.stringify(event),
+                    })
+                    if (event.type === Bus.InstanceDisposed.type) {
+                      stream.close()
+                      draining = false
+                      return
+                    }
+                  }
+                }
+                draining = false
+              }
+
+              const queue = (event: { type: string; properties: Record<string, unknown> }) => {
+                pending.push(event)
+                if (timer) return
+                timer = setTimeout(() => {
+                  timer = undefined
+                  void flush()
+                }, 20)
+              }
+
               stream.writeSSE({
                 data: JSON.stringify({
                   type: "server.connected",
                   properties: {},
                 }),
               })
-              const unsub = Bus.subscribeAll(async (event) => {
-                const sessionID = eventSessionID(event)
-                if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
-                  visibilityCache.delete(sessionID)
-                }
-                if (!(await eventVisibleToUser({ event, userID: accountUserID, projectID: accountProjectID, cache: visibilityCache }))) return
-                await stream.writeSSE({
-                  data: JSON.stringify(event),
-                })
-                if (event.type === Bus.InstanceDisposed.type) {
-                  stream.close()
-                }
+              const unsub = Bus.subscribeAll((event) => {
+                queue(event as { type: string; properties: Record<string, unknown> })
               })
 
               // Send heartbeat every 10s to prevent stalled proxy streams.
@@ -844,6 +952,7 @@ export namespace Server {
 
               await new Promise<void>((resolve) => {
                 stream.onAbort(() => {
+                  if (timer) clearTimeout(timer)
                   clearInterval(heartbeat)
                   unsub()
                   resolve()
@@ -859,6 +968,15 @@ export namespace Server {
           if (local) {
             local.headers.set("Content-Security-Policy", webCsp)
             return local
+          }
+          if (!Flag.OPENCODE_WEB_ALLOW_REMOTE_PROXY) {
+            return c.json(
+              {
+                error: "web_dist_missing",
+                message: "Local web dist not found and remote proxy is disabled",
+              },
+              503,
+            )
           }
           const response = await proxy(`https://app.opencode.ai${requestPath}`, {
             ...c.req,
@@ -895,6 +1013,7 @@ export namespace Server {
     cors?: string[]
   }) {
     _corsWhitelist = opts.cors ?? []
+    webRoot()
 
     const args = {
       hostname: opts.hostname,
