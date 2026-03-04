@@ -4,14 +4,11 @@ import { and, Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { TpUserProviderTable } from "../../src/user/user-provider.sql"
 import { UserCipher } from "../../src/user/cipher"
+import { Flag } from "../../src/flag/flag"
 
 const root = path.join(__dirname, "../..")
 Log.init({ print: false })
-
-const on = (() => {
-  const value = process.env.TPCODE_ACCOUNT_ENABLED?.toLowerCase()
-  return value === "1" || value === "true"
-})()
+const on = Flag.TPCODE_ACCOUNT_ENABLED
 
 const mem = {
   app: undefined as Awaited<ReturnType<typeof init>>["app"] | undefined,

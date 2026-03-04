@@ -41,7 +41,10 @@ export function createSdkForServer({
       baseUrl: server.url,
       fetcher: delegated,
     })
-    if (!refreshed) return response
+    if (!refreshed) {
+      AccountToken.handleUnauthorized()
+      return response
+    }
     const retry = requestHeaders(input, init)
     retry.set("authorization", `Bearer ${refreshed}`)
     return delegated(input, {

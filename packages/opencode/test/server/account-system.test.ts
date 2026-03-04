@@ -4,13 +4,11 @@ import { Log } from "../../src/util/log"
 import { and, Database, eq } from "../../src/storage/db"
 import { TpAuditLogTable } from "../../src/user/audit-log.sql"
 import { parseSSE } from "../../src/control-plane/sse"
+import { Flag } from "../../src/flag/flag"
 
 const projectRoot = path.join(__dirname, "../..")
 Log.init({ print: false })
-const accountEnabled = (() => {
-  const value = process.env.TPCODE_ACCOUNT_ENABLED?.toLowerCase()
-  return value === "1" || value === "true"
-})()
+const accountEnabled = Flag.TPCODE_ACCOUNT_ENABLED
 
 async function boot() {
   const [{ Server }, { UserService }] = await Promise.all([

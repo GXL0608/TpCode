@@ -165,7 +165,10 @@ export default function ApprovalWorkflow() {
       baseUrl: current.http.url,
       fetcher,
     })
-    if (!refreshed) return response
+    if (!refreshed) {
+      AccountToken.handleUnauthorized()
+      return response
+    }
     const retry = new Headers(headers)
     retry.set("authorization", `Bearer ${refreshed}`)
     return fetcher(endpoint, {

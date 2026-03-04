@@ -155,7 +155,10 @@ export default function AccountAdmin() {
       baseUrl: current.http.url,
       fetcher,
     })
-    if (!next) return response
+    if (!next) {
+      AccountToken.handleUnauthorized()
+      return response
+    }
     const retry = new Headers(headers)
     retry.set("authorization", `Bearer ${next}`)
     return fetcher(endpoint, {
