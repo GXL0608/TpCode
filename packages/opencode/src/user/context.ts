@@ -19,16 +19,9 @@ async function userRoles(user_id: string) {
   return { ids, codes: rows.map((item) => item.code) }
 }
 
-async function allProjectIDs() {
-  const rows = await Database.use((db) => db.select({ id: ProjectTable.id }).from(ProjectTable).all())
-  return rows.map((item) => item.id)
-}
-
 export namespace AccountContextService {
   export async function projectIDs(user_id: string) {
     const roles = await userRoles(user_id)
-    if (roles.codes.includes("super_admin")) return allProjectIDs()
-
     const roleProjects =
       roles.ids.length === 0
         ? []

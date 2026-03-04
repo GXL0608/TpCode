@@ -183,6 +183,7 @@ export namespace Server {
             ]
             const protectedPaths = [
               "/account",
+              "/agent",
               "/approval",
               "/auth",
               "/command",
@@ -269,12 +270,29 @@ export namespace Server {
                 const context_project_id = detail.user.context_project_id
                 if (!context_project_id) return detail.user
                 const project = await Project.get(context_project_id)
-                if (project && (await Filesystem.isDir(project.worktree))) return detail.user
+                if (!project || !(await Filesystem.isDir(project.worktree))) {
+                  log.warn("invalid account context project; forcing reselect", {
+                    user_id: detail.user.id,
+                    context_project_id,
+                    project_found: !!project,
+                    worktree: project?.worktree,
+                  })
+                  return {
+                    ...detail.user,
+                    context_project_id: undefined,
+                  }
+                }
+                const allowed = await AccountContextService.canAccessProject({
+                  user_id: detail.user.id,
+                  project_id: context_project_id,
+                })
+                if (allowed) return detail.user
                 log.warn("invalid account context project; forcing reselect", {
                   user_id: detail.user.id,
                   context_project_id,
-                  project_found: !!project,
+                  project_found: true,
                   worktree: project?.worktree,
+                  reason: "project_not_assigned",
                 })
                 return {
                   ...detail.user,
@@ -288,7 +306,12 @@ export namespace Server {
               c.set("account_context_project_id" as never, user.context_project_id)
               c.set("account_roles" as never, user.roles)
               c.set("account_permissions" as never, user.permissions)
-              if (!path.startsWith("/account") && path !== "/global/health" && !user.context_project_id) {
+              if (
+                !path.startsWith("/account") &&
+                path !== "/global/health" &&
+                path !== "/agent" &&
+                !user.context_project_id
+              ) {
                 return c.json(
                   {
                     error: "project_context_required",

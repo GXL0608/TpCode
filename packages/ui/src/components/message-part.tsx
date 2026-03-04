@@ -162,6 +162,55 @@ function getDirectory(path: string | undefined) {
   return relativizeProjectPath(_getDirectory(path), data.directory)
 }
 
+type DirectoryPicker = (opts?: { mode?: "readwrite" }) => Promise<{
+  getFileHandle: (
+    name: string,
+    opts: { create: true },
+  ) => Promise<{
+    createWritable: () => Promise<{
+      write: (value: string) => Promise<void>
+      close: () => Promise<void>
+    }>
+  }>
+}>
+
+function planFilename(id: string) {
+  return `plan-${id}.md`
+}
+
+async function exportPlanToDirectory(name: string, content: string) {
+  if (typeof window === "undefined") return "unsupported" as const
+  const picker = (window as Window & { showDirectoryPicker?: DirectoryPicker }).showDirectoryPicker
+  if (!picker) return "unsupported" as const
+  try {
+    const directory = await picker({ mode: "readwrite" })
+    const file = await directory.getFileHandle(name, { create: true })
+    const writable = await file.createWritable()
+    await writable.write(content)
+    await writable.close()
+    return "saved" as const
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") return "cancelled" as const
+    return "failed" as const
+  }
+}
+
+function downloadPlan(name: string, content: string) {
+  if (typeof document === "undefined") return
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = name
+  link.style.display = "none"
+  document.body.appendChild(link)
+  link.click()
+  requestAnimationFrame(() => {
+    link.remove()
+    URL.revokeObjectURL(url)
+  })
+}
+
 import type { IconProps } from "./icon"
 
 export type ToolInfo = {
@@ -1098,6 +1147,12 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
     return isLastTextPart()
   })
   const [copied, setCopied] = createSignal(false)
+  const [exported, setExported] = createSignal(false)
+  const [exporting, setExporting] = createSignal(false)
+  const canExport = createMemo(
+    () => showCopy() && props.message.role === "assistant" && (props.message as AssistantMessage).agent === "plan",
+  )
+  const exportLabel = createMemo(() => (exported() ? "Exported" : "Export plan"))
 
   const handleCopy = async () => {
     const content = displayText()
@@ -1105,6 +1160,29 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
     await navigator.clipboard.writeText(content)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleExport = async () => {
+    if (!canExport()) return
+    if (exporting()) return
+    const content = displayText()
+    if (!content) return
+    const name = planFilename(props.message.id)
+
+    setExporting(true)
+    const result = await exportPlanToDirectory(name, content)
+    setExporting(false)
+
+    if (result === "saved") {
+      setExported(true)
+      setTimeout(() => setExported(false), 2000)
+      return
+    }
+    if (result === "cancelled") return
+
+    downloadPlan(name, content)
+    setExported(true)
+    setTimeout(() => setExported(false), 2000)
   }
 
   return (
@@ -1115,6 +1193,19 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
         </div>
         <Show when={showCopy()}>
           <div data-slot="text-part-copy-wrapper" data-interrupted={interrupted() ? "" : undefined}>
+            <Show when={canExport()}>
+              <Tooltip value={exportLabel()} placement="top" gutter={4}>
+                <IconButton
+                  icon={exported() ? "check" : "download"}
+                  size="normal"
+                  variant="ghost"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => void handleExport()}
+                  aria-label={exportLabel()}
+                  disabled={exporting()}
+                />
+              </Tooltip>
+            </Show>
             <Tooltip
               value={copied() ? i18n.t("ui.message.copied") : i18n.t("ui.message.copyResponse")}
               placement="top"

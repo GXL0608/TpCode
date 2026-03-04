@@ -1,7 +1,6 @@
 import { createStore } from "solid-js/store"
 import { batch, createMemo } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import { useAccountAuth } from "./account-auth"
 import { useSDK } from "./sdk"
 import { useSync } from "./sync"
 import { base64Encode } from "@opencode-ai/util/encode"
@@ -16,7 +15,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   init: () => {
     const sdk = useSDK()
     const sync = useSync()
-    const auth = useAccountAuth()
     const providers = useProviders()
     const connected = createMemo(() => new Set(providers.connected().map((provider) => provider.id)))
 
@@ -40,8 +38,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         sync.data.agent.filter((x) => {
           if (x.mode === "subagent") return false
           if (x.name === "plan") return true
-          if (x.name === "docs") return auth.has("agent:use_docs")
-          if (x.name === "build") return auth.has("agent:use_build")
           if (x.hidden) return false
           return true
         }),
