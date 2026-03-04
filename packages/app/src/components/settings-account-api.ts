@@ -21,6 +21,8 @@ export async function parseAccountError(response?: Response) {
   if (code === "role_missing") return "角色不存在"
   if (code === "permission_missing") return "权限项不存在"
   if (code === "user_missing") return "用户不存在"
+  if (code === "project_missing") return "项目不存在"
+  if (code === "phone_invalid") return "手机号不能为空"
   if (code === "api_key_invalid") return "API 密钥不能为空"
   if (code === "api_key_not_found") return "未找到对应的 API 密钥"
   if (code === "invalid_credentials") return "账号或密码错误"

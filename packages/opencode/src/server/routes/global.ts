@@ -71,6 +71,8 @@ export const GlobalRoutes = lazy(() =>
         c.header("X-Accel-Buffering", "no")
         c.header("X-Content-Type-Options", "nosniff")
         const userID = Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_user_id" as never) as string | undefined) : undefined
+        const projectID =
+          Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_context_project_id" as never) as string | undefined) : undefined
         return streamSSE(c, async (stream) => {
           const visibilityCache = new Map<string, boolean>()
           stream.writeSSE({
@@ -88,7 +90,7 @@ export const GlobalRoutes = lazy(() =>
             if ((payload.type === "session.updated" || payload.type === "session.deleted") && sessionID) {
               visibilityCache.delete(sessionID)
             }
-            if (!(await eventVisibleToUser({ event: payload, userID, cache: visibilityCache }))) return
+            if (!(await eventVisibleToUser({ event: payload, userID, projectID, cache: visibilityCache }))) return
             await stream.writeSSE({
               data: JSON.stringify(event),
             })

@@ -53,9 +53,11 @@ import { useCommand, type CommandOption } from "@/context/command"
 import { ConstrainDragXAxis } from "@/utils/solid-dnd"
 import { DialogSelectDirectory } from "@/components/dialog-select-directory"
 import { DialogEditProject } from "@/components/dialog-edit-project"
+import { DialogSelectAssignedProject } from "@/components/dialog-select-assigned-project"
 import { Titlebar } from "@/components/titlebar"
 import { useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
+import { useAccountAuth } from "@/context/account-auth"
 import {
   childMapByParent,
   displayName,
@@ -104,6 +106,7 @@ export default function Layout(props: ParentProps) {
   const platform = usePlatform()
   const settings = useSettings()
   const server = useServer()
+  const auth = useAccountAuth()
   const notification = useNotification()
   const permission = usePermission()
   const navigate = useNavigate()
@@ -1215,6 +1218,39 @@ export default function Layout(props: ParentProps) {
   const showEditProjectDialog = (project: LocalProject) => dialog.show(() => <DialogEditProject project={project} />)
 
   async function chooseProject() {
+    if (auth.enabled()) {
+      const payload = await auth.contextProjects()
+      const projects = payload?.projects ?? []
+      if (projects.length === 0) {
+        showToast({
+          title: "无可用项目",
+          description: "当前账号未分配任何项目，请联系管理员。",
+        })
+        return
+      }
+      const projectID = await new Promise<string | null>((resolve) => {
+        dialog.show(
+          () => <DialogSelectAssignedProject projects={projects} onSelect={resolve} />,
+          () => resolve(null),
+        )
+      })
+      if (!projectID) return
+      const target = projects.find((item) => item.id === projectID)
+      if (!target) return
+      if (auth.user()?.context_project_id !== projectID) {
+        const ok = await auth.selectContext(projectID)
+        if (!ok) {
+          showToast({
+            title: "切换项目失败",
+            description: "请稍后重试",
+          })
+          return
+        }
+      }
+      openProject(target.worktree)
+      return
+    }
+
     function resolve(result: string | string[] | null) {
       if (Array.isArray(result)) {
         for (const directory of result) {

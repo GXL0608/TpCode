@@ -1,47 +1,49 @@
 import { Button } from "@opencode-ai/ui/button"
-import { createSignal, Show } from "solid-js"
+import { createEffect, createSignal, Show } from "solid-js"
 import { A } from "@solidjs/router"
 import { useAccountAuth } from "@/context/account-auth"
 import { usePlatform } from "@/context/platform"
 import { useServer } from "@/context/server"
 import { AccountToken } from "@/utils/account-auth"
 
+type Status = {
+  provider_id: string
+  configured: boolean
+  source: "none" | "user" | "global"
+  auth_type?: string
+}
+
+type Vho = {
+  user_id: string
+  phone?: string
+  phone_bound?: boolean
+  vho_user_id?: string
+  vho_bound?: boolean
+  bound: boolean
+}
+
 export default function AccountApiKeys() {
   const auth = useAccountAuth()
   const server = useServer()
   const platform = usePlatform()
   const [providerID, setProviderID] = createSignal("openai")
-  const [key, setKey] = createSignal("")
   const [pending, setPending] = createSignal(false)
-  const [message, setMessage] = createSignal("")
   const [error, setError] = createSignal("")
+  const [status, setStatus] = createSignal<Status | undefined>()
+  const [vho, setVho] = createSignal<Vho | undefined>()
 
   const fetcher = platform.fetch ?? globalThis.fetch
 
-  const parseError = async (response?: Response) => {
-    if (!response) return "请求失败"
-    const payload = await response
-      .json()
-      .catch(() => undefined)
-      .then((value) => (value && typeof value === "object" ? (value as Record<string, unknown>) : undefined))
-    const code = typeof payload?.code === "string" ? payload.code : undefined
-    if (code === "forbidden") return "无权限操作该供应商配置"
-    if (code) return `操作失败：${code}`
-    return "请求失败"
-  }
-
-  const request = async (input: { method: "PUT" | "DELETE"; path: string; body?: Record<string, unknown> }) => {
+  const request = async (path: string) => {
     const current = server.current
     if (!current) return
-    const endpoint = new URL(input.path, current.http.url).toString()
+    const endpoint = new URL(path, current.http.url).toString()
     const headers = new Headers()
     const token = AccountToken.access()
     if (token) headers.set("authorization", `Bearer ${token}`)
-    if (input.body) headers.set("content-type", "application/json")
     const response = await fetcher(endpoint, {
-      method: input.method,
+      method: "GET",
       headers,
-      body: input.body ? JSON.stringify(input.body) : undefined,
     })
     if (response.status !== 401 || !token) return response
     const refreshed = await AccountToken.refreshIfNeeded({
@@ -54,79 +56,92 @@ export default function AccountApiKeys() {
     }
     const retry = new Headers()
     retry.set("authorization", `Bearer ${refreshed}`)
-    if (input.body) retry.set("content-type", "application/json")
     return fetcher(endpoint, {
-      method: input.method,
+      method: "GET",
       headers: retry,
-      body: input.body ? JSON.stringify(input.body) : undefined,
     })
   }
 
-  const save = async (event: SubmitEvent) => {
+  const query = async (event: SubmitEvent) => {
     event.preventDefault()
     setPending(true)
-    setMessage("")
     setError("")
-    const response = await request({
-      method: "PUT",
-      path: `/auth/${encodeURIComponent(providerID().trim())}`,
-      body: { type: "api", key: key() },
-    }).catch(() => undefined)
+    const id = providerID().trim()
+    const response = await request(`/account/me/provider/${encodeURIComponent(id)}`).catch(() => undefined)
     setPending(false)
     if (!response?.ok) {
-      setError(await parseError(response))
+      setStatus(undefined)
+      setError("查询失败")
       return
     }
-    setMessage("已保存")
-    setKey("")
+    const body = await response
+      .json()
+      .catch(() => undefined)
+      .then((item) => (item && typeof item === "object" ? (item as Status) : undefined))
+    if (!body) {
+      setError("查询失败")
+      setStatus(undefined)
+      return
+    }
+    setStatus(body)
   }
 
-  const remove = async () => {
-    setPending(true)
-    setMessage("")
-    setError("")
-    const response = await request({
-      method: "DELETE",
-      path: `/auth/${encodeURIComponent(providerID().trim())}`,
-    }).catch(() => undefined)
-    setPending(false)
+  const loadVho = async () => {
+    const response = await request("/account/me/vho-bind").catch(() => undefined)
     if (!response?.ok) {
-      setError(await parseError(response))
+      setVho(undefined)
       return
     }
-    setMessage("已删除")
+    const body = await response
+      .json()
+      .catch(() => undefined)
+      .then((item) => (item && typeof item === "object" ? (item as Vho) : undefined))
+    setVho(body)
   }
+
+  createEffect(() => {
+    if (!auth.ready()) return
+    if (!auth.authenticated()) return
+    void loadVho()
+  })
 
   return (
     <div class="min-h-screen w-full flex items-center justify-center px-4">
-      <form class="w-full max-w-md flex flex-col gap-4 bg-surface-raised-base rounded-xl p-6" onSubmit={save}>
-        <div class="text-20-medium text-text-strong">我的接口密钥</div>
+      <form class="w-full max-w-md flex flex-col gap-4 bg-surface-raised-base rounded-xl p-6" onSubmit={query}>
+        <div class="text-20-medium text-text-strong">模型配置状态</div>
+        <div class="text-12-regular text-text-weak">当前账号仅可查看供应商配置状态，密钥由管理员统一维护。</div>
         <input
           class="h-11 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
           placeholder="供应商标识（如 openai / anthropic）"
           value={providerID()}
           onInput={(event) => setProviderID(event.currentTarget.value)}
         />
-        <input
-          class="h-11 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-          placeholder="接口密钥"
-          value={key()}
-          onInput={(event) => setKey(event.currentTarget.value)}
-        />
         <Show when={error()}>
           <div class="text-12-regular text-icon-critical-base">{error()}</div>
         </Show>
-        <Show when={message()}>
-          <div class="text-12-regular text-icon-success-base">{message()}</div>
+        <Show when={status()}>
+          {(item) => (
+            <div class="rounded-md border border-border-weak-base bg-surface-base px-3 py-2 text-12-regular text-text-weak">
+              <div>供应商: {item().provider_id}</div>
+              <div>是否配置: {item().configured ? "已配置" : "未配置"}</div>
+              <div>配置来源: {item().source === "global" ? "全局" : item().source === "user" ? "个人" : "无"}</div>
+              <div>认证类型: {item().auth_type ?? "-"}</div>
+            </div>
+          )}
         </Show>
-        <div class="flex gap-2">
-          <Button type="submit" disabled={pending() || !providerID().trim() || !key()}>
-            {pending() ? "保存中..." : "保存"}
-          </Button>
-          <Button type="button" variant="secondary" disabled={pending() || !providerID().trim()} onClick={remove}>
-            {pending() ? "处理中..." : "删除"}
-          </Button>
-        </div>
+        <Show when={vho()}>
+          {(item) => (
+            <div class="rounded-md border border-border-weak-base bg-surface-base px-3 py-2 text-12-regular text-text-weak">
+              <div>手机号绑定: {item().phone_bound || item().phone ? "已绑定" : "未绑定"}</div>
+              <div>VHO 绑定: {item().vho_bound || item().bound ? "已绑定" : "未绑定"}</div>
+              <div>手机号: {item().phone ?? "-"}</div>
+              <div>VHO 用户ID: {item().vho_user_id ?? "-"}</div>
+            </div>
+          )}
+        </Show>
+        <Button type="submit" disabled={pending() || !providerID().trim()}>
+          {pending() ? "查询中..." : "查询状态"}
+        </Button>
         <div class="flex items-center justify-between text-12-regular text-text-weak">
           <A href="/settings/security" class="hover:text-text-strong">
             账号安全

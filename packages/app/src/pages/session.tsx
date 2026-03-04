@@ -64,6 +64,16 @@ export default function Page() {
 
   createEffect(
     on(
+      () => `${params.dir ?? ""}/${params.id ?? ""}`,
+      () => {
+        view().reviewPanel.close()
+        layout.fileTree.close()
+      },
+    ),
+  )
+
+  createEffect(
+    on(
       () => params.id,
       (id, prev) => {
         if (!id) return

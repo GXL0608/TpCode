@@ -15,11 +15,11 @@ import { AccountCurrent } from "@/user/current"
 function requireProviderConfig(c: Context) {
   const permissions = c.get("account_permissions" as never) as string[] | undefined
   if (!permissions) return
-  if (permissions.includes("provider:config_own") || permissions.includes("provider:config_global")) return
+  if (permissions.includes("provider:config_global")) return
   return c.json(
     {
       error: "forbidden",
-      permission: "provider:config_own",
+      permission: "provider:config_global",
     },
     403,
   )
@@ -71,9 +71,9 @@ export const ProviderRoutes = lazy(() =>
         let connectedIDs = Object.keys(connected)
         if (Flag.TPCODE_ACCOUNT_ENABLED) {
           const current = AccountCurrent.optional()
-          const canReadShared = current?.permissions.includes("provider:config_global")
           if (current?.user_id) {
-            connectedIDs = canReadShared ? Object.keys(await Auth.all()) : Object.keys(await Auth.userAll())
+            const account = await Auth.all()
+            connectedIDs = Object.keys(account)
           }
         }
         return c.json({

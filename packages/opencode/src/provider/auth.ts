@@ -11,6 +11,21 @@ import { AccountCurrent } from "@/user/current"
 import { State } from "@/project/state"
 
 export namespace ProviderAuth {
+  function canWriteGlobal() {
+    if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
+    const permissions = AccountCurrent.optional()?.permissions ?? []
+    return permissions.includes("provider:config_global")
+  }
+
+  async function save(providerID: string, info: Auth.Info) {
+    if (Flag.TPCODE_ACCOUNT_ENABLED) {
+      if (!canWriteGlobal()) throw new Error("provider_config_forbidden")
+      await Auth.setGlobal(providerID, info)
+      return
+    }
+    await Auth.set(providerID, info)
+  }
+
   function stateKey() {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return Instance.directory
     const user = AccountCurrent.optional()?.user_id ?? "anonymous"
@@ -102,7 +117,7 @@ export namespace ProviderAuth {
 
       if (result?.type === "success") {
         if ("key" in result) {
-          await Auth.set(input.providerID, {
+          await save(input.providerID, {
             type: "api",
             key: result.key,
           })
@@ -117,7 +132,7 @@ export namespace ProviderAuth {
           if (result.accountId) {
             info.accountId = result.accountId
           }
-          await Auth.set(input.providerID, info)
+          await save(input.providerID, info)
         }
         return
       }
@@ -132,7 +147,7 @@ export namespace ProviderAuth {
       key: z.string(),
     }),
     async (input) => {
-      await Auth.set(input.providerID, {
+      await save(input.providerID, {
         type: "api",
         key: input.key,
       })

@@ -8,7 +8,7 @@ import { Popover } from "@opencode-ai/ui/popover"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { showToast } from "@opencode-ai/ui/toast"
-import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
+import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { getFilename } from "@opencode-ai/util/path"
 import { useParams } from "@solidjs/router"
 import { createEffect, createMemo, For, onCleanup, Show } from "solid-js"
@@ -248,8 +248,6 @@ export function SessionHeader() {
   const currentSession = createMemo(() => sync.data.session.find((s) => s.id === params.id))
   const shareEnabled = createMemo(() => sync.data.config.share !== "disabled")
   const showShare = createMemo(() => shareEnabled() && !!currentSession())
-  const sessionKey = createMemo(() => `${params.dir}${params.id ? "/" + params.id : ""}`)
-  const view = createMemo(() => layout.view(sessionKey))
   const canBrowse = createMemo(() => auth.has("file:browse"))
   const os = createMemo(() => detectOS(platform))
 
@@ -622,100 +620,6 @@ export function SessionHeader() {
                   </Show>
                 </div>
               </Show>
-              <div class="flex items-center gap-1">
-                <div class="hidden md:flex items-center gap-1 shrink-0">
-                  <TooltipKeybind
-                    title={language.t("command.terminal.toggle")}
-                    keybind={command.keybind("terminal.toggle")}
-                  >
-                    <Button
-                      variant="ghost"
-                      class="group/terminal-toggle titlebar-icon w-8 h-6 p-0 box-border"
-                      onClick={() => view().terminal.toggle()}
-                      aria-label={language.t("command.terminal.toggle")}
-                      aria-expanded={view().terminal.opened()}
-                      aria-controls="terminal-panel"
-                    >
-                      <div class="relative flex items-center justify-center size-4 [&>*]:absolute [&>*]:inset-0">
-                        <Icon
-                          size="small"
-                          name={view().terminal.opened() ? "layout-bottom-partial" : "layout-bottom"}
-                          class="group-hover/terminal-toggle:hidden"
-                        />
-                        <Icon
-                          size="small"
-                          name="layout-bottom-partial"
-                          class="hidden group-hover/terminal-toggle:inline-block"
-                        />
-                        <Icon
-                          size="small"
-                          name={view().terminal.opened() ? "layout-bottom" : "layout-bottom-partial"}
-                          class="hidden group-active/terminal-toggle:inline-block"
-                        />
-                      </div>
-                    </Button>
-                  </TooltipKeybind>
-
-                  <TooltipKeybind
-                    title={language.t("command.review.toggle")}
-                    keybind={command.keybind("review.toggle")}
-                  >
-                    <Button
-                      variant="ghost"
-                      class="group/review-toggle titlebar-icon w-8 h-6 p-0 box-border"
-                      onClick={() => view().reviewPanel.toggle()}
-                      aria-label={language.t("command.review.toggle")}
-                      aria-expanded={view().reviewPanel.opened()}
-                      aria-controls="review-panel"
-                    >
-                      <div class="relative flex items-center justify-center size-4 [&>*]:absolute [&>*]:inset-0">
-                        <Icon
-                          size="small"
-                          name={view().reviewPanel.opened() ? "layout-right-partial" : "layout-right"}
-                          class="group-hover/review-toggle:hidden"
-                        />
-                        <Icon
-                          size="small"
-                          name="layout-right-partial"
-                          class="hidden group-hover/review-toggle:inline-block"
-                        />
-                        <Icon
-                          size="small"
-                          name={view().reviewPanel.opened() ? "layout-right" : "layout-right-partial"}
-                          class="hidden group-active/review-toggle:inline-block"
-                        />
-                      </div>
-                    </Button>
-                  </TooltipKeybind>
-
-                  <Show when={canBrowse()}>
-                    <TooltipKeybind
-                      title={language.t("command.fileTree.toggle")}
-                      keybind={command.keybind("fileTree.toggle")}
-                    >
-                      <Button
-                        variant="ghost"
-                        class="titlebar-icon w-8 h-6 p-0 box-border"
-                        onClick={() => layout.fileTree.toggle()}
-                        aria-label={language.t("command.fileTree.toggle")}
-                        aria-expanded={layout.fileTree.opened()}
-                        aria-controls="file-tree-panel"
-                      >
-                        <div class="relative flex items-center justify-center size-4">
-                          <Icon
-                            size="small"
-                            name={layout.fileTree.opened() ? "file-tree-active" : "file-tree"}
-                            classList={{
-                              "text-icon-strong": layout.fileTree.opened(),
-                              "text-icon-weak": !layout.fileTree.opened(),
-                            }}
-                          />
-                        </div>
-                      </Button>
-                    </TooltipKeybind>
-                  </Show>
-                </div>
-              </div>
             </div>
           </Portal>
         )}

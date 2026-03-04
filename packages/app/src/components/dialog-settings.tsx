@@ -12,12 +12,17 @@ import { SettingsModels } from "./settings-models"
 import { SettingsAccount } from "./settings-account"
 import { SettingsUsers } from "./settings-users"
 import { SettingsRoles } from "./settings-roles"
+import { SettingsSystem } from "./settings-system"
 
 export const DialogSettings: Component = () => {
   const language = useLanguage()
   const platform = usePlatform()
   const auth = useAccountAuth()
-  const canManageAccount = createMemo(() => auth.has("user:manage") && auth.has("role:manage"))
+  const canManageUsers = createMemo(() => auth.has("user:manage"))
+  const canManageRoles = createMemo(() => auth.has("role:manage"))
+  const canManageSystem = createMemo(() => auth.has("role:manage"))
+  const canViewProviders = createMemo(() => auth.has("ui:settings.providers:view"))
+  const canViewModels = createMemo(() => auth.has("ui:settings.models:view"))
 
   return (
     <Dialog size="x-large" transition>
@@ -43,26 +48,38 @@ export const DialogSettings: Component = () => {
                 <div class="flex flex-col gap-1.5">
                   <Tabs.SectionTitle>{language.t("settings.section.server")}</Tabs.SectionTitle>
                   <div class="flex flex-col gap-1.5 w-full">
-                    <Tabs.Trigger value="providers">
-                      <Icon name="providers" />
-                      {language.t("settings.providers.title")}
-                    </Tabs.Trigger>
-                    <Tabs.Trigger value="models">
-                      <Icon name="models" />
-                      {language.t("settings.models.title")}
-                    </Tabs.Trigger>
+                    <Show when={canViewProviders()}>
+                      <Tabs.Trigger value="providers">
+                        <Icon name="providers" />
+                        {language.t("settings.providers.title")}
+                      </Tabs.Trigger>
+                    </Show>
+                    <Show when={canViewModels()}>
+                      <Tabs.Trigger value="models">
+                        <Icon name="models" />
+                        {language.t("settings.models.title")}
+                      </Tabs.Trigger>
+                    </Show>
                     <Tabs.Trigger value="my">
                       <Icon name="sliders" />
                       我的
                     </Tabs.Trigger>
-                    <Show when={canManageAccount()}>
+                    <Show when={canManageUsers()}>
                       <Tabs.Trigger value="users">
                         <Icon name="providers" />
                         用户管理
                       </Tabs.Trigger>
+                    </Show>
+                    <Show when={canManageRoles()}>
                       <Tabs.Trigger value="roles">
                         <Icon name="check" />
                         角色管理
+                      </Tabs.Trigger>
+                    </Show>
+                    <Show when={canManageSystem()}>
+                      <Tabs.Trigger value="system">
+                        <Icon name="sliders" />
+                        系统设置
                       </Tabs.Trigger>
                     </Show>
                   </div>
@@ -81,21 +98,32 @@ export const DialogSettings: Component = () => {
         <Tabs.Content value="shortcuts" class="no-scrollbar">
           <SettingsKeybinds />
         </Tabs.Content>
-        <Tabs.Content value="providers" class="no-scrollbar">
-          <SettingsProviders />
-        </Tabs.Content>
-        <Tabs.Content value="models" class="no-scrollbar">
-          <SettingsModels />
-        </Tabs.Content>
+        <Show when={canViewProviders()}>
+          <Tabs.Content value="providers" class="no-scrollbar">
+            <SettingsProviders />
+          </Tabs.Content>
+        </Show>
+        <Show when={canViewModels()}>
+          <Tabs.Content value="models" class="no-scrollbar">
+            <SettingsModels />
+          </Tabs.Content>
+        </Show>
         <Tabs.Content value="my" class="no-scrollbar">
           <SettingsAccount />
         </Tabs.Content>
-        <Show when={canManageAccount()}>
+        <Show when={canManageUsers()}>
           <Tabs.Content value="users" class="no-scrollbar">
             <SettingsUsers />
           </Tabs.Content>
+        </Show>
+        <Show when={canManageRoles()}>
           <Tabs.Content value="roles" class="no-scrollbar">
             <SettingsRoles />
+          </Tabs.Content>
+        </Show>
+        <Show when={canManageSystem()}>
+          <Tabs.Content value="system" class="no-scrollbar">
+            <SettingsSystem />
           </Tabs.Content>
         </Show>
       </Tabs>

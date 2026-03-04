@@ -15,7 +15,6 @@ import {
   getOwner,
   Match,
   onCleanup,
-  onMount,
   type ParentProps,
   Switch,
   untrack,
@@ -323,7 +322,12 @@ function createGlobalSync() {
     })
   }
 
-  onMount(() => {
+  createEffect(() => {
+    if (!auth.ready()) return
+    if (auth.enabled() && auth.needsProjectContext()) {
+      setGlobalStore("ready", true)
+      return
+    }
     void bootstrap()
   })
 

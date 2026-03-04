@@ -1,6 +1,7 @@
 import { createStore } from "solid-js/store"
 import { batch, createMemo } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
+import { useAccountAuth } from "./account-auth"
 import { useSDK } from "./sdk"
 import { useSync } from "./sync"
 import { base64Encode } from "@opencode-ai/util/encode"
@@ -15,6 +16,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   init: () => {
     const sdk = useSDK()
     const sync = useSync()
+    const auth = useAccountAuth()
     const providers = useProviders()
     const connected = createMemo(() => new Set(providers.connected().map((provider) => provider.id)))
 
@@ -34,18 +36,28 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     let setModel: (model: ModelKey | undefined, options?: { recent?: boolean }) => void = () => undefined
 
     const agent = (() => {
-      const list = createMemo(() => sync.data.agent.filter((x) => x.mode !== "subagent" && !x.hidden))
+      const list = createMemo(() =>
+        sync.data.agent.filter((x) => {
+          if (x.mode === "subagent") return false
+          if (x.name === "plan") return true
+          if (x.name === "docs") return auth.has("agent:use_docs")
+          if (x.name === "build") return auth.has("agent:use_build")
+          if (x.hidden) return false
+          return true
+        }),
+      )
+      const first = (items: ReturnType<typeof list>) => items.find((x) => x.name === "plan") ?? items[0]
       const [store, setStore] = createStore<{
         current?: string
       }>({
-        current: list()[0]?.name,
+        current: first(list())?.name,
       })
       return {
         list,
         current() {
           const available = list()
           if (available.length === 0) return undefined
-          return available.find((x) => x.name === store.current) ?? available[0]
+          return available.find((x) => x.name === store.current) ?? first(available)
         },
         set(name: string | undefined) {
           const available = list()
@@ -57,7 +69,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             setStore("current", name)
             return
           }
-          setStore("current", available[0].name)
+          setStore("current", first(available)?.name)
         },
         move(direction: 1 | -1) {
           const available = list()

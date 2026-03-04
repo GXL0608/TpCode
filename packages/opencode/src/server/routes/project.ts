@@ -1,11 +1,12 @@
 import { Hono } from "hono"
-import { describeRoute, validator } from "hono-openapi"
-import { resolver } from "hono-openapi"
+import { describeRoute, resolver, validator } from "hono-openapi"
+import z from "zod"
 import { Instance } from "../../project/instance"
 import { Project } from "../../project/project"
-import z from "zod"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
+import { Flag } from "@/flag/flag"
+import { AccountContextService } from "@/user/context"
 
 export const ProjectRoutes = lazy(() =>
   new Hono()
@@ -28,7 +29,11 @@ export const ProjectRoutes = lazy(() =>
       }),
       async (c) => {
         const projects = await Project.list()
-        return c.json(projects)
+        if (!Flag.TPCODE_ACCOUNT_ENABLED) return c.json(projects)
+        const user_id = c.get("account_user_id" as never) as string | undefined
+        if (!user_id) return c.json(projects)
+        const ids = await AccountContextService.projectIDs(user_id)
+        return c.json(projects.filter((item) => ids.includes(item.id)))
       },
     )
     .get(
@@ -49,7 +54,12 @@ export const ProjectRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        return c.json(Instance.project)
+        if (!Flag.TPCODE_ACCOUNT_ENABLED) return c.json(Instance.project)
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        if (!context_project_id) return c.json({ error: "project_context_required" }, 428)
+        const project = await Project.get(context_project_id)
+        if (!project) return c.json({ error: "project_missing" }, 404)
+        return c.json(project)
       },
     )
     .patch(
@@ -74,6 +84,11 @@ export const ProjectRoutes = lazy(() =>
       validator("json", Project.update.schema.omit({ projectID: true })),
       async (c) => {
         const projectID = c.req.valid("param").projectID
+        if (Flag.TPCODE_ACCOUNT_ENABLED) {
+          const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+          if (!context_project_id) return c.json({ error: "project_context_required" }, 428)
+          if (projectID !== context_project_id) return c.json({ error: "project_context_mismatch" }, 403)
+        }
         const body = c.req.valid("json")
         const project = await Project.update({ ...body, projectID })
         return c.json(project)

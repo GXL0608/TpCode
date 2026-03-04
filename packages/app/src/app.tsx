@@ -32,10 +32,15 @@ import { ErrorPage } from "./pages/error"
 
 const Home = lazy(() => import("@/pages/home"))
 const Session = lazy(() => import("@/pages/session"))
+const AccountProjectSelect = lazy(() => import("@/pages/account-project-select"))
 const AccountLogin = lazy(() => import("@/pages/account-login"))
 const AccountRegister = lazy(() => import("@/pages/account-register"))
 const AccountForgot = lazy(() => import("@/pages/account-forgot"))
 const AccountReset = lazy(() => import("@/pages/account-reset"))
+const AccountAdmin = lazy(() => import("@/pages/account-admin"))
+const AccountApiKeys = lazy(() => import("@/pages/account-apikeys"))
+const AccountPasswordChange = lazy(() => import("@/pages/account-password-change"))
+const ApprovalWorkflow = lazy(() => import("@/pages/approval-workflow"))
 const Loading = () => <div class="size-full" />
 
 const HomeRoute = () => (
@@ -78,6 +83,36 @@ const AccountResetRoute = () => (
   </Suspense>
 )
 
+const ProjectSelectRoute = () => (
+  <Suspense fallback={<Loading />}>
+    <AccountProjectSelect />
+  </Suspense>
+)
+
+const AccountAdminRoute = () => (
+  <Suspense fallback={<Loading />}>
+    <AccountAdmin />
+  </Suspense>
+)
+
+const AccountApiKeysRoute = () => (
+  <Suspense fallback={<Loading />}>
+    <AccountApiKeys />
+  </Suspense>
+)
+
+const AccountPasswordChangeRoute = () => (
+  <Suspense fallback={<Loading />}>
+    <AccountPasswordChange />
+  </Suspense>
+)
+
+const ApprovalWorkflowRoute = () => (
+  <Suspense fallback={<Loading />}>
+    <ApprovalWorkflow />
+  </Suspense>
+)
+
 function ProtectedRoute(props: ParentProps) {
   const auth = useAccountAuth()
   return (
@@ -94,6 +129,28 @@ function PublicAccountRoute(props: ParentProps) {
   return (
     <Show when={auth.ready()} fallback={<Loading />}>
       <Show when={auth.enabled() && !auth.authenticated()} fallback={<Navigate href="/" />}>
+        {props.children}
+      </Show>
+    </Show>
+  )
+}
+
+function ContextProtectedRoute(props: ParentProps) {
+  const auth = useAccountAuth()
+  return (
+    <Show when={auth.ready()} fallback={<Loading />}>
+      <Show when={!auth.enabled() || !auth.needsProjectContext()} fallback={<Navigate href="/project-select" />}>
+        {props.children}
+      </Show>
+    </Show>
+  )
+}
+
+function ContextSelectRoute(props: ParentProps) {
+  const auth = useAccountAuth()
+  return (
+    <Show when={auth.ready()} fallback={<Loading />}>
+      <Show when={!auth.enabled() || auth.needsProjectContext()} fallback={<Navigate href="/" />}>
         {props.children}
       </Show>
     </Show>
@@ -200,9 +257,25 @@ export function AppInterface(props: {
     <ProtectedRoute>
       <GlobalSDKProvider>
         <GlobalSyncProvider>
-          <RouterRoot appChildren={props.children}>{shellProps.children}</RouterRoot>
+          <ContextProtectedRoute>
+            <RouterRoot appChildren={props.children}>{shellProps.children}</RouterRoot>
+          </ContextProtectedRoute>
         </GlobalSyncProvider>
       </GlobalSDKProvider>
+    </ProtectedRoute>
+  )
+
+  const SelectShell = (shellProps: ParentProps) => (
+    <ProtectedRoute>
+      <ContextSelectRoute>
+        {shellProps.children}
+      </ContextSelectRoute>
+    </ProtectedRoute>
+  )
+
+  const AccountOnlyShell = (shellProps: ParentProps) => (
+    <ProtectedRoute>
+      {shellProps.children}
     </ProtectedRoute>
   )
 
@@ -252,6 +325,46 @@ export function AppInterface(props: {
               )}
             />
             <Route
+              path="/project-select"
+              component={() => (
+                <SelectShell>
+                  <ProjectSelectRoute />
+                </SelectShell>
+              )}
+            />
+            <Route
+              path="/settings/account-admin"
+              component={() => (
+                <AccountOnlyShell>
+                  <AccountAdminRoute />
+                </AccountOnlyShell>
+              )}
+            />
+            <Route
+              path="/settings/apikeys"
+              component={() => (
+                <AccountOnlyShell>
+                  <AccountApiKeysRoute />
+                </AccountOnlyShell>
+              )}
+            />
+            <Route
+              path="/settings/security"
+              component={() => (
+                <AccountOnlyShell>
+                  <AccountPasswordChangeRoute />
+                </AccountOnlyShell>
+              )}
+            />
+            <Route
+              path="/approval"
+              component={() => (
+                <AccountOnlyShell>
+                  <ApprovalWorkflowRoute />
+                </AccountOnlyShell>
+              )}
+            />
+            <Route
               path="/:dir"
               component={(routeProps) => (
                 <ProtectedShell>
@@ -259,8 +372,8 @@ export function AppInterface(props: {
                 </ProtectedShell>
               )}
             >
-              <Route path="/" component={SessionIndexRoute} />
-              <Route path="/session/:id?" component={SessionRoute} />
+              <Route path="" component={SessionIndexRoute} />
+              <Route path="session/:id?" component={SessionRoute} />
             </Route>
           </Router>
         </AccountAuthProvider>

@@ -36,8 +36,24 @@ export function eventSessionID(event: Event) {
   return
 }
 
-export async function eventVisibleToUser(input: { event: Event; userID?: string; cache?: Map<string, boolean> }) {
-  if (!input.userID) return true
+export function eventProjectID(event: Event) {
+  if (event.type === "project.updated") {
+    const id = event.properties.id
+    if (typeof id === "string") return id
+    return
+  }
+  const projectID = event.properties.projectID
+  if (typeof projectID === "string") return projectID
+  const info = event.properties.info
+  if (info && typeof info === "object") {
+    const value = (info as Record<string, unknown>).projectID
+    if (typeof value === "string") return value
+  }
+  return
+}
+
+export async function eventVisibleToUser(input: { event: Event; userID?: string; cache?: Map<string, boolean>; projectID?: string }) {
+  if (!input.userID && !input.projectID) return true
   const sessionID = eventSessionID(input.event)
   if (!sessionID) return true
   const cached = input.cache?.get(sessionID)

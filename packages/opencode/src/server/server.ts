@@ -47,6 +47,9 @@ import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
 import { AccountCurrent } from "@/user/current"
 import { eventSessionID, eventVisibleToUser } from "./event-visibility"
+import { AccountContextService } from "@/user/context"
+import { Project } from "@/project/project"
+import { Filesystem } from "@/util/filesystem"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -262,18 +265,43 @@ export namespace Server {
                   401,
                 )
               }
-              const user = detail.user
+              const user = await (async () => {
+                const context_project_id = detail.user.context_project_id
+                if (!context_project_id) return detail.user
+                const project = await Project.get(context_project_id)
+                if (project && (await Filesystem.isDir(project.worktree))) return detail.user
+                log.warn("invalid account context project; forcing reselect", {
+                  user_id: detail.user.id,
+                  context_project_id,
+                  project_found: !!project,
+                  worktree: project?.worktree,
+                })
+                return {
+                  ...detail.user,
+                  context_project_id: undefined,
+                }
+              })()
               c.set("account_user" as never, user)
               c.set("account_user_id" as never, user.id)
               c.set("account_org_id" as never, user.org_id)
               c.set("account_department_id" as never, user.department_id)
+              c.set("account_context_project_id" as never, user.context_project_id)
               c.set("account_roles" as never, user.roles)
               c.set("account_permissions" as never, user.permissions)
+              if (!path.startsWith("/account") && path !== "/global/health" && !user.context_project_id) {
+                return c.json(
+                  {
+                    error: "project_context_required",
+                  },
+                  428,
+                )
+              }
               return AccountCurrent.provide(
                 {
                   user_id: user.id,
                   org_id: user.org_id,
                   department_id: user.department_id,
+                  context_project_id: user.context_project_id,
                   roles: user.roles,
                   permissions: user.permissions,
                 },
@@ -339,14 +367,11 @@ export namespace Server {
           async (c) => {
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
               const permissions = c.get("account_permissions" as never) as string[] | undefined
-              if (
-                !permissions?.includes("provider:config_own") &&
-                !permissions?.includes("provider:config_global")
-              ) {
+              if (!permissions?.includes("provider:config_global")) {
                 return c.json(
                   {
                     error: "forbidden",
-                    permission: "provider:config_own",
+                    permission: "provider:config_global",
                   },
                   403,
                 )
@@ -354,7 +379,11 @@ export namespace Server {
             }
             const providerID = c.req.valid("param").providerID
             const info = c.req.valid("json")
-            await Auth.set(providerID, info)
+            if (Flag.TPCODE_ACCOUNT_ENABLED) {
+              await Auth.setGlobal(providerID, info)
+            } else {
+              await Auth.set(providerID, info)
+            }
             return c.json(true)
           },
         )
@@ -385,21 +414,22 @@ export namespace Server {
           async (c) => {
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
               const permissions = c.get("account_permissions" as never) as string[] | undefined
-              if (
-                !permissions?.includes("provider:config_own") &&
-                !permissions?.includes("provider:config_global")
-              ) {
+              if (!permissions?.includes("provider:config_global")) {
                 return c.json(
                   {
                     error: "forbidden",
-                    permission: "provider:config_own",
+                    permission: "provider:config_global",
                   },
                   403,
                 )
               }
             }
             const providerID = c.req.valid("param").providerID
-            await Auth.remove(providerID)
+            if (Flag.TPCODE_ACCOUNT_ENABLED) {
+              await Auth.removeGlobal(providerID)
+            } else {
+              await Auth.remove(providerID)
+            }
             return c.json(true)
           },
         )
@@ -407,18 +437,40 @@ export namespace Server {
         .use(async (c, next) => {
           if (c.req.path === "/log") return next()
           if (c.req.path.startsWith("/account")) return next()
-          const raw = c.req.query("directory") || c.req.header("x-opencode-directory") || process.cwd()
-          const directory = (() => {
+          const hinted = c.req.query("directory") || c.req.header("x-opencode-directory")
+          const raw = hinted || process.cwd()
+          let directory = (() => {
             try {
               return decodeURIComponent(raw)
             } catch {
               return raw
             }
           })()
+          if (Flag.TPCODE_ACCOUNT_ENABLED) {
+            const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+            if (context_project_id) {
+              const project = await Project.get(context_project_id)
+              if (project) directory = project.worktree
+            }
+          }
           return Instance.provide({
             directory,
             init: InstanceBootstrap,
             async fn() {
+              if (Flag.TPCODE_ACCOUNT_ENABLED) {
+                const user_id = c.get("account_user_id" as never) as string | undefined
+                const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+                if (user_id && context_project_id) {
+                  if (Instance.project.id !== context_project_id) {
+                    return c.json({ error: "project_context_mismatch" }, 403)
+                  }
+                  const allowed = await AccountContextService.canAccessProject({
+                    user_id,
+                    project_id: context_project_id,
+                  })
+                  if (!allowed) return c.json({ error: "project_forbidden" }, 403)
+                }
+              }
               return next()
             },
           })
@@ -628,8 +680,20 @@ export namespace Server {
             },
           }),
           async (c) => {
-            const modes = await Agent.list()
-            return c.json(modes)
+            const list = await Agent.list()
+            if (!Flag.TPCODE_ACCOUNT_ENABLED) return c.json(list)
+            const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
+            const required = {
+              docs: "agent:use_docs",
+              build: "agent:use_build",
+            } as const
+            return c.json(
+              list.filter((item) => {
+                const code = required[item.name as keyof typeof required]
+                if (!code) return true
+                return permissions.includes(code)
+              }),
+            )
           },
         )
         .get(
@@ -719,6 +783,10 @@ export namespace Server {
             c.header("X-Content-Type-Options", "nosniff")
             const accountUserID =
               Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_user_id" as never) as string | undefined) : undefined
+            const accountProjectID =
+              Flag.TPCODE_ACCOUNT_ENABLED
+                ? (c.get("account_context_project_id" as never) as string | undefined)
+                : undefined
             return streamSSE(c, async (stream) => {
               const visibilityCache = new Map<string, boolean>()
               stream.writeSSE({
@@ -732,7 +800,7 @@ export namespace Server {
                 if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
                   visibilityCache.delete(sessionID)
                 }
-                if (!(await eventVisibleToUser({ event, userID: accountUserID, cache: visibilityCache }))) return
+                if (!(await eventVisibleToUser({ event, userID: accountUserID, projectID: accountProjectID, cache: visibilityCache }))) return
                 await stream.writeSSE({
                   data: JSON.stringify(event),
                 })

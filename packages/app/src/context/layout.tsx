@@ -133,7 +133,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         const width = typeof fileTree.width === "number" ? fileTree.width : DEFAULT_PANEL_WIDTH
         return {
           ...fileTree,
-          opened: true,
+          opened: false,
           width: width === 260 ? DEFAULT_PANEL_WIDTH : width,
           tab: "changes",
         }
@@ -143,7 +143,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         if (!isRecord(review)) return review
         if (typeof review.panelOpened === "boolean") return review
 
-        const opened = isRecord(fileTree) && typeof fileTree.opened === "boolean" ? fileTree.opened : true
+        const opened = isRecord(fileTree) && typeof fileTree.opened === "boolean" ? fileTree.opened : false
         return {
           ...review,
           panelOpened: opened,
@@ -175,10 +175,10 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
         review: {
           diffStyle: "split" as ReviewDiffStyle,
-          panelOpened: true,
+          panelOpened: false,
         },
         fileTree: {
-          opened: true,
+          opened: false,
           width: DEFAULT_PANEL_WIDTH,
           tab: "changes" as "changes" | "all",
         },
@@ -414,6 +414,10 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     })
 
     const enriched = createMemo(() => server.projects.list().map(enrich))
+    const allowedWorktrees = createMemo(() => {
+      if (!auth.enabled()) return
+      return new Set(globalSync.data.project.flatMap((project) => [project.worktree, ...(project.sandboxes ?? [])]))
+    })
     const list = createMemo(() => {
       const projects = enriched()
       return projects.map((project) => {
@@ -478,9 +482,20 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       }
     })
 
+    createEffect(() => {
+      const allowed = allowedWorktrees()
+      if (!allowed) return
+      for (const project of server.projects.list()) {
+        if (allowed.has(project.worktree)) continue
+        server.projects.close(project.worktree)
+      }
+    })
+
     onMount(() => {
+      const allowed = allowedWorktrees()
       Promise.all(
         server.projects.list().map((project) => {
+          if (allowed && !allowed.has(project.worktree)) return
           return globalSync.project.loadSessions(project.worktree)
         }),
       )
@@ -501,7 +516,10 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       projects: {
         list,
         open(directory: string) {
+          const allowed = allowedWorktrees()
+          if (allowed && !allowed.has(directory)) return
           const root = rootFor(directory)
+          if (allowed && !allowed.has(root)) return
           if (server.projects.list().find((x) => x.worktree === root)) return
           globalSync.project.loadSessions(root)
           server.projects.open(root)
@@ -555,14 +573,14 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         diffStyle: createMemo(() => store.review?.diffStyle ?? "split"),
         setDiffStyle(diffStyle: ReviewDiffStyle) {
           if (!store.review) {
-            setStore("review", { diffStyle, panelOpened: true })
+            setStore("review", { diffStyle, panelOpened: false })
             return
           }
           setStore("review", "diffStyle", diffStyle)
         },
       },
       fileTree: {
-        opened: createMemo(() => store.fileTree?.opened ?? true),
+        opened: createMemo(() => store.fileTree?.opened ?? false),
         width: createMemo(() => store.fileTree?.width ?? DEFAULT_PANEL_WIDTH),
         tab: createMemo(() => store.fileTree?.tab ?? "changes"),
         setTab(tab: "changes" | "all") {
@@ -670,7 +688,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         const key = createSessionKeyReader(sessionKey, ensureKey)
         const s = createMemo(() => store.sessionView[key()] ?? { scroll: {} })
         const terminalOpened = createMemo(() => store.terminal?.opened ?? false)
-        const reviewPanelOpened = createMemo(() => store.review?.panelOpened ?? true)
+        const reviewPanelOpened = createMemo(() => store.review?.panelOpened ?? false)
 
         function setTerminalOpened(next: boolean) {
           const current = store.terminal
@@ -691,7 +709,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
             return
           }
 
-          const value = current.panelOpened ?? true
+          const value = current.panelOpened ?? false
           if (value === next) return
           setStore("review", "panelOpened", next)
         }

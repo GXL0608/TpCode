@@ -14,6 +14,7 @@ import { GlobalBus } from "@/bus/global"
 import { existsSync } from "fs"
 import { git } from "../util/git"
 import { Glob } from "../util/glob"
+import { createHash } from "crypto"
 
 export namespace Project {
   const log = Log.create({ service: "project" })
@@ -28,6 +29,12 @@ export namespace Project {
 
     if (path.isAbsolute(name)) return path.normalize(name)
     return path.resolve(cwd, name)
+  }
+
+  function scoped(base: string, worktree: string) {
+    const normalized = Filesystem.windowsPath(path.resolve(worktree)).toLowerCase()
+    const digest = createHash("sha1").update(normalized).digest("hex").slice(0, 12)
+    return `${base}_${digest}`
   }
 
   export const Info = z
@@ -203,11 +210,24 @@ export namespace Project {
       }
     })
 
-    const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, data.id)).get())
+    const legacy_id = data.id
+    const scoped_id = legacy_id === "global" ? legacy_id : scoped(legacy_id, data.worktree)
+    const legacy_row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, legacy_id)).get())
+    const scoped_row =
+      scoped_id === legacy_id
+        ? legacy_row
+        : await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, scoped_id)).get())
+    let project_id = legacy_id
+    if (legacy_id !== "global") {
+      if (scoped_row) project_id = scoped_id
+      else if (!legacy_row) project_id = scoped_id
+      else if (legacy_row.worktree !== data.worktree) project_id = scoped_id
+    }
+    const row = project_id === legacy_id ? legacy_row : scoped_row
     const existing = await iife(async () => {
       if (row) return fromRow(row)
       const fresh: Info = {
-        id: data.id,
+        id: project_id,
         worktree: data.worktree,
         vcs: data.vcs as Info["vcs"],
         sandboxes: [],
@@ -216,8 +236,8 @@ export namespace Project {
           updated: Date.now(),
         },
       }
-      if (data.id !== "global") {
-        await migrateFromGlobal(data.id, data.worktree)
+      if (project_id !== "global") {
+        await migrateFromGlobal(project_id, data.worktree)
       }
       return fresh
     })
