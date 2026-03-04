@@ -5,12 +5,23 @@ let createPromptSubmit: typeof import("./submit").createPromptSubmit
 
 const createdClients: string[] = []
 const createdSessions: string[] = []
-const sentShell: string[] = []
 const syncedDirectories: string[] = []
+const toasts: { title?: string; description?: string }[] = []
+const shellCalls: { directory: string; sessionID: string }[] = []
+const commandCalls: { directory: string; sessionID: string; command: string }[] = []
+const promptAsyncCalls: { directory: string; sessionID: string }[] = []
 
 let selected = "/repo/worktree-a"
+let route: { id?: string } = {}
+let promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
+let commands: { name: string }[] = []
+let promptAsyncError: Error | undefined
 
-const promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
+const event = { preventDefault: () => undefined } as unknown as Event
+
+const flush = async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
 
 const clientFor = (directory: string) => {
   createdClients.push(directory)
@@ -20,12 +31,20 @@ const clientFor = (directory: string) => {
         createdSessions.push(directory)
         return { data: { id: `session-${createdSessions.length}` } }
       },
-      shell: async () => {
-        sentShell.push(directory)
+      shell: async (input: { sessionID: string }) => {
+        shellCalls.push({ directory, sessionID: input.sessionID })
         return { data: undefined }
       },
       prompt: async () => ({ data: undefined }),
-      command: async () => ({ data: undefined }),
+      promptAsync: async (input: { sessionID: string }) => {
+        promptAsyncCalls.push({ directory, sessionID: input.sessionID })
+        if (promptAsyncError) throw promptAsyncError
+        return { data: undefined }
+      },
+      command: async (input: { sessionID: string; command: string }) => {
+        commandCalls.push({ directory, sessionID: input.sessionID, command: input.command })
+        return { data: undefined }
+      },
       abort: async () => ({ data: undefined }),
     },
     worktree: {
@@ -39,18 +58,14 @@ beforeAll(async () => {
 
   mock.module("@solidjs/router", () => ({
     useNavigate: () => () => undefined,
-    useParams: () => ({}),
-  }))
-
-  mock.module("@opencode-ai/sdk/v2/client", () => ({
-    createOpencodeClient: (input: { directory: string }) => {
-      createdClients.push(input.directory)
-      return clientFor(input.directory)
-    },
+    useParams: () => route,
   }))
 
   mock.module("@opencode-ai/ui/toast", () => ({
-    showToast: () => 0,
+    showToast: (input: { title?: string; description?: string }) => {
+      toasts.push(input)
+      return 0
+    },
   }))
 
   mock.module("@opencode-ai/util/encode", () => ({
@@ -91,22 +106,17 @@ beforeAll(async () => {
   }))
 
   mock.module("@/context/sdk", () => ({
-    useSDK: () => {
-      const sdk = {
-        directory: "/repo/main",
-        client: rootClient,
-        url: "http://localhost:4096",
-        createClient(opts: any) {
-          return clientFor(opts.directory)
-        },
-      }
-      return sdk
-    },
+    useSDK: () => ({
+      directory: "/repo/main",
+      client: rootClient,
+      url: "http://localhost:4096",
+      createClient: (opts: { directory: string; throwOnError?: boolean }) => clientFor(opts.directory),
+    }),
   }))
 
   mock.module("@/context/sync", () => ({
     useSync: () => ({
-      data: { command: [] },
+      data: { command: commands },
       session: {
         optimistic: {
           add: () => undefined,
@@ -128,7 +138,7 @@ beforeAll(async () => {
 
   mock.module("@/context/platform", () => ({
     usePlatform: () => ({
-      fetch: fetch,
+      fetch,
     }),
   }))
 
@@ -145,32 +155,44 @@ beforeAll(async () => {
 beforeEach(() => {
   createdClients.length = 0
   createdSessions.length = 0
-  sentShell.length = 0
   syncedDirectories.length = 0
+  toasts.length = 0
+  shellCalls.length = 0
+  commandCalls.length = 0
+  promptAsyncCalls.length = 0
   selected = "/repo/worktree-a"
+  route = {}
+  promptValue = [{ type: "text", content: "ls", start: 0, end: 2 }]
+  commands = []
+  promptAsyncError = undefined
 })
 
-describe("prompt submit worktree selection", () => {
-  test("reads the latest worktree accessor value per submit", async () => {
-    const submit = createPromptSubmit({
-      info: () => undefined,
-      imageAttachments: () => [],
-      commentCount: () => 0,
-      mode: () => "shell",
-      working: () => false,
-      editor: () => undefined,
-      queueScroll: () => undefined,
-      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
-      addToHistory: () => undefined,
-      resetHistoryNavigation: () => undefined,
-      setMode: () => undefined,
-      setPopover: () => undefined,
-      newSessionWorktree: () => selected,
-      onNewSessionWorktreeReset: () => undefined,
-      onSubmit: () => undefined,
-    })
+function createSubmit(input?: {
+  mode?: "normal" | "shell"
+  info?: () => { id: string } | undefined
+}) {
+  return createPromptSubmit({
+    info: input?.info ?? (() => undefined),
+    imageAttachments: () => [],
+    commentCount: () => 0,
+    mode: () => input?.mode ?? "normal",
+    working: () => false,
+    editor: () => undefined,
+    queueScroll: () => undefined,
+    promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+    addToHistory: () => undefined,
+    resetHistoryNavigation: () => undefined,
+    setMode: () => undefined,
+    setPopover: () => undefined,
+    newSessionWorktree: () => selected,
+    onNewSessionWorktreeReset: () => undefined,
+    onSubmit: () => undefined,
+  })
+}
 
-    const event = { preventDefault: () => undefined } as unknown as Event
+describe("prompt submit session resolution", () => {
+  test("reads the latest worktree accessor value per submit", async () => {
+    const submit = createSubmit({ mode: "shell" })
 
     await submit.handleSubmit(event)
     selected = "/repo/worktree-b"
@@ -178,7 +200,57 @@ describe("prompt submit worktree selection", () => {
 
     expect(createdClients).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(createdSessions).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
-    expect(sentShell).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
+    expect(shellCalls.map((item) => item.directory)).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(syncedDirectories).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
+  })
+
+  test("uses route session id for normal mode without creating a session", async () => {
+    route = { id: "session-route-normal" }
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual([])
+    expect(promptAsyncCalls).toEqual([{ directory: "/repo/main", sessionID: "session-route-normal" }])
+  })
+
+  test("uses route session id for shell mode without creating a session", async () => {
+    route = { id: "session-route-shell" }
+    const submit = createSubmit({ mode: "shell", info: () => undefined })
+
+    await submit.handleSubmit(event)
+
+    expect(createdSessions).toEqual([])
+    expect(shellCalls).toEqual([{ directory: "/repo/main", sessionID: "session-route-shell" }])
+  })
+
+  test("uses route session id for slash command mode without creating a session", async () => {
+    route = { id: "session-route-command" }
+    promptValue = [{ type: "text", content: "/deploy --fast", start: 0, end: 14 }]
+    commands = [{ name: "deploy" }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+
+    expect(createdSessions).toEqual([])
+    expect(commandCalls).toEqual([
+      { directory: "/repo/main", sessionID: "session-route-command", command: "deploy" },
+    ])
+  })
+
+  test("route session not found shows backend error instead of preflight missing-session toast", async () => {
+    route = { id: "session-route-missing" }
+    promptAsyncError = new Error("Session not found: session-route-missing")
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual([])
+    expect(toasts.length).toBe(1)
+    expect(toasts[0]?.title).toBe("prompt.toast.promptSendFailed.title")
+    expect(toasts[0]?.description).toBe("Session not found: session-route-missing")
+    expect(toasts[0]?.description).not.toBe("prompt.toast.promptSendFailed.description")
   })
 })

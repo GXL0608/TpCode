@@ -46,7 +46,7 @@ import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
 import { AccountCurrent } from "@/user/current"
-import { eventVisibleToUser } from "./event-visibility"
+import { eventSessionID, eventVisibleToUser } from "./event-visibility"
 import { AccountContextService } from "@/user/context"
 import { Project } from "@/project/project"
 import { Filesystem } from "@/util/filesystem"
@@ -341,19 +341,24 @@ export namespace Server {
         })
         .use(async (c, next) => {
           const skipLogging = c.req.path === "/log"
-          if (!skipLogging) {
-            log.info("request", {
+          const start = Date.now()
+          if (!skipLogging && Flag.TPCODE_ACCOUNT_AUTH_DEBUG) {
+            log.debug("request", {
               method: c.req.method,
               path: c.req.path,
             })
           }
-          const timer = log.time("request", {
-            method: c.req.method,
-            path: c.req.path,
-          })
           await next()
           if (!skipLogging) {
-            timer.stop()
+            const duration = Date.now() - start
+            if (duration >= 1000 || c.res.status >= 500) {
+              log.warn("request slow", {
+                method: c.req.method,
+                path: c.req.path,
+                status: c.res.status,
+                duration,
+              })
+            }
           }
         })
         .route("/global", GlobalRoutes())
@@ -806,6 +811,7 @@ export namespace Server {
                 ? (c.get("account_context_project_id" as never) as string | undefined)
                 : undefined
             return streamSSE(c, async (stream) => {
+              const visibilityCache = new Map<string, boolean>()
               stream.writeSSE({
                 data: JSON.stringify({
                   type: "server.connected",
@@ -813,7 +819,11 @@ export namespace Server {
                 }),
               })
               const unsub = Bus.subscribeAll(async (event) => {
-                if (!(await eventVisibleToUser({ event, userID: accountUserID, projectID: accountProjectID }))) return
+                const sessionID = eventSessionID(event)
+                if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
+                  visibilityCache.delete(sessionID)
+                }
+                if (!(await eventVisibleToUser({ event, userID: accountUserID, projectID: accountProjectID, cache: visibilityCache }))) return
                 await stream.writeSSE({
                   data: JSON.stringify(event),
                 })

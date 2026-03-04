@@ -165,7 +165,8 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     input.resetHistoryNavigation()
 
     const projectDirectory = sdk.directory
-    const isNewSession = !params.id
+    const routeID = params.id
+    const isNewSession = !routeID
     const worktreeSelection = input.newSessionWorktree?.() || "main"
 
     let sessionDirectory = projectDirectory
@@ -210,9 +211,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       input.onNewSessionWorktreeReset?.()
     }
 
-    let session = input.info()
-    if (!session && isNewSession) {
-      session = await client.session
+    let sessionID = routeID ?? input.info()?.id
+    if (!sessionID && !routeID) {
+      const created = await client.session
         .create()
         .then((x) => x.data ?? undefined)
         .catch((err) => {
@@ -222,12 +223,13 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           })
           return undefined
         })
-      if (session) {
-        layout.handoff.setTabs(base64Encode(sessionDirectory), session.id)
-        navigate(`/${base64Encode(sessionDirectory)}/session/${session.id}`)
+      if (created) {
+        sessionID = created.id
+        layout.handoff.setTabs(base64Encode(sessionDirectory), created.id)
+        navigate(`/${base64Encode(sessionDirectory)}/session/${created.id}`)
       }
     }
-    if (!session) {
+    if (!sessionID) {
       showToast({
         title: language.t("prompt.toast.promptSendFailed.title"),
         description: language.t("prompt.toast.promptSendFailed.description"),
@@ -267,7 +269,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       clearInput()
       client.session
         .shell({
-          sessionID: session.id,
+          sessionID,
           agent,
           model,
           command: text,
@@ -290,7 +292,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         clearInput()
         client.session
           .command({
-            sessionID: session.id,
+            sessionID,
             command: commandName,
             arguments: args.join(" "),
             agent,
@@ -324,14 +326,14 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       context,
       images,
       text,
-      sessionID: session.id,
+      sessionID,
       messageID,
       sessionDirectory,
     })
 
     const optimisticMessage: Message = {
       id: messageID,
-      sessionID: session.id,
+      sessionID,
       role: "user",
       time: { created: Date.now() },
       agent,
@@ -341,7 +343,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const addOptimisticMessage = () =>
       sync.session.optimistic.add({
         directory: sessionDirectory,
-        sessionID: session.id,
+        sessionID,
         message: optimisticMessage,
         parts: optimisticParts,
       })
@@ -349,7 +351,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const removeOptimisticMessage = () =>
       sync.session.optimistic.remove({
         directory: sessionDirectory,
-        sessionID: session.id,
+        sessionID,
         messageID,
       })
 
@@ -362,20 +364,20 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       if (!worktree || worktree.status !== "pending") return true
 
       if (sessionDirectory === projectDirectory) {
-        sync.set("session_status", session.id, { type: "busy" })
+        sync.set("session_status", sessionID, { type: "busy" })
       }
 
       const controller = new AbortController()
       const cleanup = () => {
         if (sessionDirectory === projectDirectory) {
-          sync.set("session_status", session.id, { type: "idle" })
+          sync.set("session_status", sessionID, { type: "idle" })
         }
         removeOptimisticMessage()
         restoreCommentItems(commentItems)
         restoreInput()
       }
 
-      pending.set(session.id, { abort: controller, cleanup })
+      pending.set(sessionID, { abort: controller, cleanup })
 
       const abortWait = new Promise<Awaited<ReturnType<typeof WorktreeState.wait>>>((resolve) => {
         if (controller.signal.aborted) {
@@ -406,7 +408,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         if (timer.id === undefined) return
         clearTimeout(timer.id)
       })
-      pending.delete(session.id)
+      pending.delete(sessionID)
       if (controller.signal.aborted) return false
       if (result.status === "failed") throw new Error(result.message)
       return true
@@ -416,7 +418,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       const ok = await waitForWorktree()
       if (!ok) return
       await client.session.promptAsync({
-        sessionID: session.id,
+        sessionID,
         agent,
         model,
         messageID,
@@ -426,9 +428,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     void send().catch((err) => {
-      pending.delete(session.id)
+      pending.delete(sessionID)
       if (sessionDirectory === projectDirectory) {
-        sync.set("session_status", session.id, { type: "idle" })
+        sync.set("session_status", sessionID, { type: "idle" })
       }
       showToast({
         title: language.t("prompt.toast.promptSendFailed.title"),

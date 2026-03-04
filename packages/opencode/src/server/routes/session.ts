@@ -203,16 +203,12 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const result = SessionStatus.list()
         if (!Flag.TPCODE_ACCOUNT_ENABLED) return c.json(result)
+        const readable = await Session.readableSessionIDs(Object.keys(result))
         const filtered: Record<string, SessionStatus.Info> = {}
-        await Promise.all(
-          Object.entries(result).map(async ([sessionID, status]) => {
-            const readable = await Session.get(sessionID)
-              .then(() => true)
-              .catch(() => false)
-            if (!readable) return
-            filtered[sessionID] = status
-          }),
-        )
+        for (const [sessionID, status] of Object.entries(result)) {
+          if (!readable.has(sessionID)) continue
+          filtered[sessionID] = status
+        }
         return c.json(filtered)
       },
     )

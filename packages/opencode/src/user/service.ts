@@ -18,6 +18,8 @@ import { AccountContextService } from "./context"
 type UserRow = typeof TpUserTable.$inferSelect
 const log = Log.create({ service: "user" })
 const AUTH_CACHE_TTL_MS = 300_000
+const AUTH_CACHE_MAX_SIZE = 20_000
+const AUTH_CACHE_SWEEP_BATCH = 256
 
 function hash(input: string) {
   return createHash("sha256").update(input).digest("hex")
@@ -246,6 +248,7 @@ const authCacheByTokenHash = new Map<
   }
 >()
 const authCacheTokenSetByUserID = new Map<string, Set<string>>()
+let ensureSeedPromise: Promise<void> | undefined
 
 function invalidateByTokenHash(tokenHash: string) {
   const existing = authCacheByTokenHash.get(tokenHash)
@@ -266,9 +269,30 @@ function invalidateByUserID(userID: string) {
   authCacheTokenSetByUserID.delete(userID)
 }
 
-function cacheAuthorizeDetail(input: { tokenHash: string; userID: string; detail: AuthorizeDetailOk; now: number }) {
+function sweepExpiredAuthCache(now: number) {
+  let checked = 0
+  for (const [tokenHash, cached] of authCacheByTokenHash) {
+    if (checked >= AUTH_CACHE_SWEEP_BATCH) break
+    checked += 1
+    if (cached.expiresAt > now) continue
+    invalidateByTokenHash(tokenHash)
+  }
+}
+
+function enforceAuthCacheLimit() {
+  while (authCacheByTokenHash.size > AUTH_CACHE_MAX_SIZE) {
+    const oldest = authCacheByTokenHash.keys().next().value
+    if (typeof oldest !== "string") break
+    invalidateByTokenHash(oldest)
+  }
+}
+
+function cacheAuthorizeDetail(input: { tokenHash: string; userID: string; detail: AuthorizeDetailOk; expiresAt: number }) {
+  if (authCacheByTokenHash.has(input.tokenHash)) {
+    invalidateByTokenHash(input.tokenHash)
+  }
   authCacheByTokenHash.set(input.tokenHash, {
-    expiresAt: input.now + AUTH_CACHE_TTL_MS,
+    expiresAt: input.expiresAt,
     detail: input.detail,
     userID: input.userID,
   })
@@ -278,9 +302,19 @@ function cacheAuthorizeDetail(input: { tokenHash: string; userID: string; detail
     authCacheTokenSetByUserID.set(input.userID, tokens)
   }
   tokens.add(input.tokenHash)
+  enforceAuthCacheLimit()
 }
 
 export namespace UserService {
+  export function ensureSeedOnce() {
+    if (ensureSeedPromise) return ensureSeedPromise
+    ensureSeedPromise = ensureSeed().catch((error) => {
+      ensureSeedPromise = undefined
+      throw error
+    })
+    return ensureSeedPromise
+  }
+
   export async function ensureSeed() {
     const p = permissions()
     const r = roles()
@@ -782,6 +816,7 @@ export namespace UserService {
     const parsed = await UserJwt.verifyAccess(token)
     if (!parsed) return { ok: false, reason: "jwt_invalid" }
     const now = Date.now()
+    sweepExpiredAuthCache(now)
     const hashed = tokenHash(token)
     const cached = authCacheByTokenHash.get(hashed)
     if (cached && cached.expiresAt > now) {
@@ -831,12 +866,15 @@ export namespace UserService {
       sid: parsed.sid,
       sub: parsed.sub,
     }
-    cacheAuthorizeDetail({
-      tokenHash: hashed,
-      userID: user.id,
-      detail,
-      now,
-    })
+    const expiresAt = Math.min(now + AUTH_CACHE_TTL_MS, parsed.exp * 1000)
+    if (expiresAt > now) {
+      cacheAuthorizeDetail({
+        tokenHash: hashed,
+        userID: user.id,
+        detail,
+        expiresAt,
+      })
+    }
     return detail
   }
 

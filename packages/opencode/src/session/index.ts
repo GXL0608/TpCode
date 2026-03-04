@@ -79,6 +79,29 @@ export namespace Session {
     return row
   }
 
+  export async function readableSessionIDs(sessionIDs: string[]) {
+    if (sessionIDs.length === 0) return new Set<string>()
+    const a = actor()
+    if (!a) return new Set(sessionIDs)
+    const result = new Set<string>()
+    const size = 500
+    for (let i = 0; i < sessionIDs.length; i += size) {
+      const chunk = sessionIDs.slice(i, i + size)
+      if (chunk.length === 0) continue
+      const rows = await Database.use((db) =>
+        db
+          .select({ id: SessionTable.id })
+          .from(SessionTable)
+          .where(and(eq(SessionTable.user_id, a.user_id), inArray(SessionTable.id, chunk)))
+          .all(),
+      )
+      for (const row of rows) {
+        result.add(row.id)
+      }
+    }
+    return result
+  }
+
   export function fromRow(row: SessionRow): Info {
     const summary =
       row.summary_additions !== null || row.summary_deletions !== null || row.summary_files !== null
