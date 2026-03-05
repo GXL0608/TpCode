@@ -8,6 +8,7 @@ import { ulid } from "ulid"
 import { TpRoleProductAccessTable } from "./role-product-access.sql"
 import { TpRoleTable } from "./role.sql"
 import { TpProductTable } from "./product.sql"
+import { TpProjectRoleAccessTable } from "./project-role-access.sql"
 
 export type ProductItem = {
   id: string
@@ -183,7 +184,11 @@ export namespace AccountProductService {
   export async function remove(product_id: string) {
     const row = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, product_id)).get())
     if (!row) return { ok: false as const, code: "product_missing" as const }
-    await Database.use((db) => db.delete(TpProductTable).where(eq(TpProductTable.id, product_id)).run())
+    await Database.use(async (db) => {
+      await db.delete(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.product_id, product_id)).run()
+      await db.delete(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.project_id, row.project_id)).run()
+      await db.delete(TpProductTable).where(eq(TpProductTable.id, product_id)).run()
+    })
     return { ok: true as const }
   }
 
@@ -193,11 +198,12 @@ export namespace AccountProductService {
     const links = await Database.use((db) =>
       db.select().from(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.role_id, role.id)).all(),
     )
-    const product_ids = unique(links.map((item) => item.product_id))
+    const ids = unique(links.map((item) => item.product_id))
     const products =
-      product_ids.length === 0
+      ids.length === 0
         ? []
-        : await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.id, product_ids)).all())
+        : await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.id, ids)).all())
+    const product_ids = products.map((item) => item.id)
     return {
       ok: true as const,
       role_code,
@@ -213,17 +219,40 @@ export namespace AccountProductService {
     const products =
       product_ids.length === 0
         ? []
-        : await Database.use((db) => db.select({ id: TpProductTable.id }).from(TpProductTable).where(inArray(TpProductTable.id, product_ids)).all())
+        : await Database.use((db) =>
+            db
+              .select({
+                id: TpProductTable.id,
+                project_id: TpProductTable.project_id,
+              })
+              .from(TpProductTable)
+              .where(inArray(TpProductTable.id, product_ids))
+              .all(),
+          )
     if (products.length !== product_ids.length) return { ok: false as const, code: "product_missing" as const }
+    const project_ids = unique(products.map((item) => item.project_id))
+    const now = Date.now()
     await Database.use(async (db) => {
       await db.delete(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.role_id, role.id)).run()
+      await db.delete(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.role_id, role.id)).run()
       if (product_ids.length > 0) {
         await db.insert(TpRoleProductAccessTable)
           .values(
             product_ids.map((product_id) => ({
               product_id,
               role_id: role.id,
-              time_created: Date.now(),
+              time_created: now,
+            })),
+          )
+          .run()
+      }
+      if (project_ids.length > 0) {
+        await db.insert(TpProjectRoleAccessTable)
+          .values(
+            project_ids.map((project_id) => ({
+              project_id,
+              role_id: role.id,
+              time_created: now,
             })),
           )
           .run()
