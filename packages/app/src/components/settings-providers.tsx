@@ -6,7 +6,6 @@ import { showToast } from "@opencode-ai/ui/toast"
 import { iconNames, type IconName } from "@opencode-ai/ui/icons/provider"
 import { popularProviders, useProviders } from "@/hooks/use-providers"
 import { createMemo, type Component, For, Show } from "solid-js"
-import { createStore } from "solid-js/store"
 import { useLanguage } from "@/context/language"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
@@ -37,7 +36,6 @@ export const SettingsProviders: Component = () => {
   const auth = useAccountAuth()
   const accountRequest = useAccountRequest()
   const providers = useProviders()
-  const [keyVisible, setKeyVisible] = createStore<Record<string, boolean>>({})
 
   const icon = (id: string): IconName => {
     if (iconNames.includes(id as IconName)) return id as IconName
@@ -141,7 +139,7 @@ export const SettingsProviders: Component = () => {
     const manager = auth.has("provider:config_global")
 
     await globalSDK.client.auth.remove({ providerID }).catch(() => undefined)
-    if (manager) {
+    if (manager && !auth.enabled()) {
       const response = await accountRequest({
         path: `/account/admin/provider/${encodeURIComponent(providerID)}/global`,
         method: "DELETE",
@@ -170,9 +168,7 @@ export const SettingsProviders: Component = () => {
   }
 
   const keyText = (item: ProviderItem) => {
-    const value = providerKey(item)
-    if (!value) return "未配置"
-    if (keyVisible[item.id] ?? true) return value
+    if (!providerKey(item)) return "未配置"
     return "••••••••••••••••"
   }
   const providerKey = (item: ProviderItem) => {
@@ -230,15 +226,6 @@ export const SettingsProviders: Component = () => {
                             >
                               {keyText(item)}
                             </code>
-                            <Show when={providerKey(item)}>
-                              <Button
-                                size="small"
-                                variant="ghost"
-                                onClick={() => setKeyVisible(item.id, (value) => !(value ?? true))}
-                              >
-                                {keyVisible[item.id] ?? true ? "隐藏" : "显示"}
-                              </Button>
-                            </Show>
                           </div>
                         </Show>
                       </div>

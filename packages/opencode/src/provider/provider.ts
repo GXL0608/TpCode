@@ -764,10 +764,9 @@ export namespace Provider {
 
   function strictAccountScope() {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
-    if (!Flag.TPCODE_PROVIDER_STRICT_ACCOUNT) return false
     const current = AccountCurrent.optional()
     if (!current?.user_id) return false
-    return !current.permissions.includes("provider:config_global")
+    return true
   }
 
   const state = State.create(stateKey, async () => {

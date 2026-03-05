@@ -15,11 +15,11 @@ import { AccountCurrent } from "@/user/current"
 function requireProviderConfig(c: Context) {
   const permissions = c.get("account_permissions" as never) as string[] | undefined
   if (!permissions) return
-  if (permissions.includes("provider:config_global")) return
+  if (permissions.includes("provider:config_own") || permissions.includes("provider:config_global")) return
   return c.json(
     {
       error: "forbidden",
-      permission: "provider:config_global",
+      permission: "provider:config_own|provider:config_global",
     },
     403,
   )

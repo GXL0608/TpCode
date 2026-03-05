@@ -79,28 +79,26 @@ function requireLogin(c: Context) {
 function requireProviderConfig(c: Context) {
   const permissions = c.get("account_permissions" as never) as string[] | undefined
   if (!permissions) return
-  if (permissions.includes("provider:config_global")) return
+  if (permissions.includes("provider:config_own") || permissions.includes("provider:config_global")) return
   return c.json(
     {
       error: "forbidden",
-      permission: "provider:config_global",
+      permission: "provider:config_own|provider:config_global",
     },
     403,
   )
 }
 
-function requireUserProviderConfig(c: Context) {
-  const permissions = c.get("account_permissions" as never) as string[] | undefined
-  if (!permissions) return
-  if (!permissions.includes("provider:config_user")) {
-    return c.json(
-      {
-        error: "forbidden",
-        permission: "provider:config_user",
-      },
-      403,
-    )
-  }
+function requireSuperAdmin(c: Context) {
+  const roles = c.get("account_roles" as never) as string[] | undefined
+  if (roles?.includes("super_admin")) return
+  return c.json(
+    {
+      error: "forbidden",
+      permission: "role:super_admin",
+    },
+    403,
+  )
 }
 
 function requireUserList(c: Context) {
@@ -549,7 +547,7 @@ export const AccountRoutes = lazy(() =>
                   z.object({
                     provider_id: z.string(),
                     configured: z.boolean(),
-                    source: z.enum(["none", "user", "global"]),
+                    source: z.enum(["none", "user"]),
                     auth_type: z.string().optional(),
                   }),
                 ),
@@ -571,15 +569,6 @@ export const AccountRoutes = lazy(() =>
             configured: true,
             source: "user" as const,
             auth_type: own[param.provider_id].type,
-          })
-        }
-        const visible = await Auth.all()
-        if (visible[param.provider_id]) {
-          return c.json({
-            provider_id: param.provider_id,
-            configured: true,
-            source: "global" as const,
-            auth_type: visible[param.provider_id].type,
           })
         }
         return c.json({
@@ -945,50 +934,39 @@ export const AccountRoutes = lazy(() =>
         return c.json(result)
       },
     )
-    .get("/admin/provider/global", UserRbac.require("provider:config_global"), async (c) => c.json(await Auth.sharedAll()))
+    .get("/admin/provider/global", async (c) =>
+      c.json(
+        {
+          error: "forbidden",
+          permission: "account:provider_global_disabled",
+        },
+        403,
+      ),
+    )
     .put(
       "/admin/provider/:provider_id/global",
-      UserRbac.require("provider:config_global"),
       validator("param", z.object({ provider_id: z.string() })),
       validator("json", Auth.Info),
-      async (c) => {
-        const actor_user_id = requireLogin(c)
-        if (typeof actor_user_id !== "string") return actor_user_id
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        await Auth.setGlobal(param.provider_id, body)
-        await UserService.audit({
-          actor_user_id,
-          action: "account.provider.global.set",
-          target_type: "provider",
-          target_id: param.provider_id,
-          result: "success",
-          ip: c.req.header("x-forwarded-for"),
-          user_agent: c.req.header("user-agent"),
-        })
-        return c.json(true)
-      },
+      async (c) =>
+        c.json(
+          {
+            error: "forbidden",
+            permission: "account:provider_global_disabled",
+          },
+          403,
+        ),
     )
     .delete(
       "/admin/provider/:provider_id/global",
-      UserRbac.require("provider:config_global"),
       validator("param", z.object({ provider_id: z.string() })),
-      async (c) => {
-        const actor_user_id = requireLogin(c)
-        if (typeof actor_user_id !== "string") return actor_user_id
-        const param = c.req.valid("param")
-        await Auth.removeGlobal(param.provider_id)
-        await UserService.audit({
-          actor_user_id,
-          action: "account.provider.global.remove",
-          target_type: "provider",
-          target_id: param.provider_id,
-          result: "success",
-          ip: c.req.header("x-forwarded-for"),
-          user_agent: c.req.header("user-agent"),
-        })
-        return c.json(true)
-      },
+      async (c) =>
+        c.json(
+          {
+            error: "forbidden",
+            permission: "account:provider_global_disabled",
+          },
+          403,
+        ),
     )
     .get(
       "/admin/project-access/role",
@@ -1288,7 +1266,7 @@ export const AccountRoutes = lazy(() =>
       "/admin/users/:user_id/providers",
       validator("param", z.object({ user_id: z.string() })),
       async (c) => {
-        const denied = requireUserProviderConfig(c)
+        const denied = requireSuperAdmin(c)
         if (denied) return denied
         const param = c.req.valid("param")
         const user = await UserService.userByID(param.user_id)
@@ -1308,7 +1286,7 @@ export const AccountRoutes = lazy(() =>
       validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
       validator("json", Auth.Info),
       async (c) => {
-        const denied = requireUserProviderConfig(c)
+        const denied = requireSuperAdmin(c)
         if (denied) return denied
         const actor_user_id = requireLogin(c)
         if (typeof actor_user_id !== "string") return actor_user_id
@@ -1337,7 +1315,7 @@ export const AccountRoutes = lazy(() =>
       "/admin/users/:user_id/providers/:provider_id",
       validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
       async (c) => {
-        const denied = requireUserProviderConfig(c)
+        const denied = requireSuperAdmin(c)
         if (denied) return denied
         const actor_user_id = requireLogin(c)
         if (typeof actor_user_id !== "string") return actor_user_id

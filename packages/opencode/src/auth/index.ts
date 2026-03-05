@@ -47,11 +47,6 @@ export namespace Auth {
     return AccountCurrent.optional()?.user_id
   }
 
-  function canReadSharedInStrictMode() {
-    const permissions = AccountCurrent.optional()?.permissions ?? []
-    return permissions.includes("provider:config_global")
-  }
-
   function parseJson(raw: string) {
     try {
       return JSON.parse(raw) as unknown
@@ -103,22 +98,11 @@ export namespace Auth {
 
   export async function all(): Promise<Record<string, Info>> {
     const uid = userID()
-    if (!uid) return globalAll()
     if (Flag.TPCODE_ACCOUNT_ENABLED) {
-      const personal = await fromDb(uid)
-      if (!canReadSharedInStrictMode()) return personal
-      const shared = await globalAll()
-      return { ...shared, ...personal }
+      if (!uid) return {}
+      return fromDb(uid)
     }
-    const shared = await globalAll()
-    if (!Flag.TPCODE_PROVIDER_STRICT_ACCOUNT) {
-      const personal = await fromDb(uid)
-      return { ...shared, ...personal }
-    }
-    if (canReadSharedInStrictMode()) {
-      const personal = await fromDb(uid)
-      return { ...shared, ...personal }
-    }
+    if (!uid) return globalAll()
     return fromDb(uid)
   }
 
@@ -183,7 +167,8 @@ export namespace Auth {
 
   export async function set(key: string, info: Info) {
     const uid = userID()
-    if (uid) {
+    if (Flag.TPCODE_ACCOUNT_ENABLED) {
+      if (!uid) throw new Error("account_user_missing")
       await setUser(uid, key, info)
       return
     }
@@ -192,7 +177,8 @@ export namespace Auth {
 
   export async function remove(key: string) {
     const uid = userID()
-    if (uid) {
+    if (Flag.TPCODE_ACCOUNT_ENABLED) {
+      if (!uid) throw new Error("account_user_missing")
       await removeUser(uid, key)
       return
     }

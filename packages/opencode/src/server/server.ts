@@ -481,11 +481,14 @@ export namespace Server {
           async (c) => {
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
               const permissions = c.get("account_permissions" as never) as string[] | undefined
-              if (!permissions?.includes("provider:config_global")) {
+              const allowed =
+                !!permissions &&
+                (permissions.includes("provider:config_own") || permissions.includes("provider:config_global"))
+              if (!allowed) {
                 return c.json(
                   {
                     error: "forbidden",
-                    permission: "provider:config_global",
+                    permission: "provider:config_own|provider:config_global",
                   },
                   403,
                 )
@@ -494,7 +497,9 @@ export namespace Server {
             const providerID = c.req.valid("param").providerID
             const info = c.req.valid("json")
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
-              await Auth.setGlobal(providerID, info)
+              const user_id = c.get("account_user_id" as never) as string | undefined
+              if (!user_id) return c.json({ error: "unauthorized" }, 401)
+              await Auth.setUser(user_id, providerID, info)
             } else {
               await Auth.set(providerID, info)
             }
@@ -528,11 +533,14 @@ export namespace Server {
           async (c) => {
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
               const permissions = c.get("account_permissions" as never) as string[] | undefined
-              if (!permissions?.includes("provider:config_global")) {
+              const allowed =
+                !!permissions &&
+                (permissions.includes("provider:config_own") || permissions.includes("provider:config_global"))
+              if (!allowed) {
                 return c.json(
                   {
                     error: "forbidden",
-                    permission: "provider:config_global",
+                    permission: "provider:config_own|provider:config_global",
                   },
                   403,
                 )
@@ -540,7 +548,9 @@ export namespace Server {
             }
             const providerID = c.req.valid("param").providerID
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
-              await Auth.removeGlobal(providerID)
+              const user_id = c.get("account_user_id" as never) as string | undefined
+              if (!user_id) return c.json({ error: "unauthorized" }, 401)
+              await Auth.removeUser(user_id, providerID)
             } else {
               await Auth.remove(providerID)
             }

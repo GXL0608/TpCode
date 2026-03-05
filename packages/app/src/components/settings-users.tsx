@@ -36,7 +36,7 @@ export const SettingsUsers = () => {
   const providers = useProviders()
   const canManage = createMemo(() => auth.has("user:manage"))
   const canRole = createMemo(() => auth.has("role:manage"))
-  const canProviderUser = createMemo(() => auth.has("provider:config_user"))
+  const canProviderUser = createMemo(() => auth.user()?.roles.includes("super_admin") ?? false)
 
   const [state, setState] = createStore({
     loading: false,
@@ -465,7 +465,7 @@ export const SettingsUsers = () => {
           </Show>
           <Show when={!canProviderUser()}>
             <div class="rounded-md bg-surface-panel px-3 py-2 text-12-regular text-text-weak">
-              当前角色未授予“配置用户模型密钥（provider:config_user）”，请在角色管理的权限设置中勾选后使用“设置供应商”。
+              仅 super_admin 可为其他用户代管模型提供商与模型配置。
             </div>
           </Show>
 
@@ -520,16 +520,11 @@ export const SettingsUsers = () => {
                             <Button type="button" size="small" variant="secondary" onClick={() => void resetPassword(item)} disabled={state.pending}>
                               重置密码
                             </Button>
-                            <Button
-                              type="button"
-                              size="small"
-                              variant="secondary"
-                              onClick={() => void openProvider(item)}
-                              disabled={!canProviderUser()}
-                              title={canProviderUser() ? "" : "缺少 provider:config_user 权限"}
-                            >
-                              设置供应商
-                            </Button>
+                            <Show when={canProviderUser()}>
+                              <Button type="button" size="small" variant="secondary" onClick={() => void openProvider(item)}>
+                                设置供应商
+                              </Button>
+                            </Show>
                           </div>
                         </td>
                       </tr>

@@ -11,16 +11,18 @@ import { AccountCurrent } from "@/user/current"
 import { State } from "@/project/state"
 
 export namespace ProviderAuth {
-  function canWriteGlobal() {
+  function canWriteOwn() {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
-    const permissions = AccountCurrent.optional()?.permissions ?? []
-    return permissions.includes("provider:config_global")
+    const current = AccountCurrent.optional()
+    if (!current?.user_id) return false
+    return current.permissions.includes("provider:config_own") || current.permissions.includes("provider:config_global")
   }
 
   async function save(providerID: string, info: Auth.Info) {
     if (Flag.TPCODE_ACCOUNT_ENABLED) {
-      if (!canWriteGlobal()) throw new Error("provider_config_forbidden")
-      await Auth.setGlobal(providerID, info)
+      const current = AccountCurrent.optional()
+      if (!current?.user_id || !canWriteOwn()) throw new Error("provider_config_forbidden")
+      await Auth.setUser(current.user_id, providerID, info)
       return
     }
     await Auth.set(providerID, info)
