@@ -19,6 +19,7 @@ import {
 } from "../event-visibility"
 
 const log = Log.create({ service: "server" })
+const MAX_PENDING_EVENTS = 2000
 
 export const GlobalDisposedEvent = BusEvent.define("global.disposed", z.object({}))
 
@@ -83,38 +84,65 @@ export const GlobalRoutes = lazy(() =>
           const pending: Array<{ directory: string; payload: { type: string; properties: Record<string, unknown> } }> = []
           let timer: ReturnType<typeof setTimeout> | undefined
           let draining = false
+          let closed = false
+
+          const close = (reason: string, error?: unknown) => {
+            if (closed) return
+            closed = true
+            if (timer) {
+              clearTimeout(timer)
+              timer = undefined
+            }
+            if (error) {
+              log.error("closing global event stream", { reason, error })
+            } else {
+              log.warn("closing global event stream", { reason })
+            }
+            stream.close()
+          }
 
           const flush = async () => {
-            if (draining) return
+            if (draining || closed) return
             draining = true
-            while (pending.length > 0) {
-              const batch = pending.splice(0, 32)
-              if (visibilityCache) {
-                await warmEventVisibilityCache({
-                  events: batch.map((item) => item.payload),
-                  userID,
-                  projectID,
-                  cache: visibilityCache,
-                })
-              }
-              for (const event of batch) {
-                const payload = event.payload
-                const sessionID = eventSessionID(payload)
-                if ((payload.type === "session.updated" || payload.type === "session.deleted") && sessionID) {
-                  visibilityCache?.delete(sessionID)
+            try {
+              while (pending.length > 0) {
+                const batch = pending.splice(0, 32)
+                if (visibilityCache) {
+                  await warmEventVisibilityCache({
+                    events: batch.map((item) => item.payload),
+                    userID,
+                    projectID,
+                    cache: visibilityCache,
+                  })
                 }
-                const visible = await eventVisibleToUser({ event: payload, userID, projectID, cache: visibilityCache })
-                if (!visible) continue
-                await stream.writeSSE({
-                  data: JSON.stringify(event),
-                })
+                for (const event of batch) {
+                  if (closed) return
+                  const payload = event.payload
+                  const sessionID = eventSessionID(payload)
+                  if ((payload.type === "session.updated" || payload.type === "session.deleted") && sessionID) {
+                    visibilityCache?.delete(sessionID)
+                  }
+                  const visible = await eventVisibleToUser({ event: payload, userID, projectID, cache: visibilityCache })
+                  if (!visible) continue
+                  await stream.writeSSE({
+                    data: JSON.stringify(event),
+                  })
+                }
               }
+            } catch (error) {
+              close("flush_failed", error)
+            } finally {
+              draining = false
             }
-            draining = false
           }
 
           const queue = (event: { directory: string; payload: { type: string; properties: Record<string, unknown> } }) => {
+            if (closed) return
             pending.push(event)
+            if (pending.length > MAX_PENDING_EVENTS) {
+              close("queue_overflow")
+              return
+            }
             if (timer) return
             timer = setTimeout(() => {
               timer = undefined
@@ -122,14 +150,19 @@ export const GlobalRoutes = lazy(() =>
             }, 20)
           }
 
-          stream.writeSSE({
-            data: JSON.stringify({
-              payload: {
-                type: "server.connected",
-                properties: {},
-              },
-            }),
-          })
+          await stream
+            .writeSSE({
+              data: JSON.stringify({
+                payload: {
+                  type: "server.connected",
+                  properties: {},
+                },
+              }),
+            })
+            .catch((error) => {
+              close("connected_write_failed", error)
+            })
+          if (closed) return
           async function handler(event: any) {
             const payload = event?.payload
             if (!payload || typeof payload !== "object") return
@@ -140,18 +173,24 @@ export const GlobalRoutes = lazy(() =>
 
           // Send heartbeat every 10s to prevent stalled proxy streams.
           const heartbeat = setInterval(() => {
-            stream.writeSSE({
-              data: JSON.stringify({
-                payload: {
-                  type: "server.heartbeat",
-                  properties: {},
-                },
-              }),
-            })
+            if (closed) return
+            stream
+              .writeSSE({
+                data: JSON.stringify({
+                  payload: {
+                    type: "server.heartbeat",
+                    properties: {},
+                  },
+                }),
+              })
+              .catch((error) => {
+                close("heartbeat_write_failed", error)
+              })
           }, 10_000)
 
           await new Promise<void>((resolve) => {
             stream.onAbort(() => {
+              closed = true
               if (timer) clearTimeout(timer)
               clearInterval(heartbeat)
               GlobalBus.off("event", handler)

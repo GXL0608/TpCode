@@ -270,8 +270,18 @@ function createGlobalSync() {
         },
       })
       if (event.type === "server.connected" || event.type === "global.disposed") {
-        for (const directory of Object.keys(children.children)) {
+        for (const [directory, child] of Object.entries(children.children)) {
           queue.push(directory)
+          if (event.type !== "server.connected") continue
+          const [, setStore] = child
+          sdkFor(directory)
+            .session.status()
+            .then((x) => {
+              setStore("session_status", reconcile(x.data ?? {}))
+            })
+            .catch((error) => {
+              console.error("[global-sync] failed to refresh session status on reconnect", { directory, error })
+            })
         }
       }
       return

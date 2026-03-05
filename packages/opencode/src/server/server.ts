@@ -896,47 +896,74 @@ export namespace Server {
               const pending: Array<{ type: string; properties: Record<string, unknown> }> = []
               let timer: ReturnType<typeof setTimeout> | undefined
               let draining = false
+              let closed = false
+              const maxPending = 2000
+
+              const close = (reason: string, error?: unknown) => {
+                if (closed) return
+                closed = true
+                if (timer) {
+                  clearTimeout(timer)
+                  timer = undefined
+                }
+                if (error) {
+                  log.error("closing event stream", { reason, error })
+                } else {
+                  log.warn("closing event stream", { reason })
+                }
+                stream.close()
+              }
 
               const flush = async () => {
-                if (draining) return
+                if (draining || closed) return
                 draining = true
-                while (pending.length > 0) {
-                  const batch = pending.splice(0, 32)
-                  if (visibilityCache) {
-                    await warmEventVisibilityCache({
-                      events: batch,
-                      userID: accountUserID,
-                      projectID: accountProjectID,
-                      cache: visibilityCache,
-                    })
-                  }
-                  for (const event of batch) {
-                    const sessionID = eventSessionID(event)
-                    if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
-                      visibilityCache?.delete(sessionID)
+                try {
+                  while (pending.length > 0) {
+                    const batch = pending.splice(0, 32)
+                    if (visibilityCache) {
+                      await warmEventVisibilityCache({
+                        events: batch,
+                        userID: accountUserID,
+                        projectID: accountProjectID,
+                        cache: visibilityCache,
+                      })
                     }
-                    const visible = await eventVisibleToUser({
-                      event,
-                      userID: accountUserID,
-                      projectID: accountProjectID,
-                      cache: visibilityCache,
-                    })
-                    if (!visible) continue
-                    await stream.writeSSE({
-                      data: JSON.stringify(event),
-                    })
-                    if (event.type === Bus.InstanceDisposed.type) {
-                      stream.close()
-                      draining = false
-                      return
+                    for (const event of batch) {
+                      if (closed) return
+                      const sessionID = eventSessionID(event)
+                      if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
+                        visibilityCache?.delete(sessionID)
+                      }
+                      const visible = await eventVisibleToUser({
+                        event,
+                        userID: accountUserID,
+                        projectID: accountProjectID,
+                        cache: visibilityCache,
+                      })
+                      if (!visible) continue
+                      await stream.writeSSE({
+                        data: JSON.stringify(event),
+                      })
+                      if (event.type === Bus.InstanceDisposed.type) {
+                        close("instance_disposed")
+                        return
+                      }
                     }
                   }
+                } catch (error) {
+                  close("flush_failed", error)
+                } finally {
+                  draining = false
                 }
-                draining = false
               }
 
               const queue = (event: { type: string; properties: Record<string, unknown> }) => {
+                if (closed) return
                 pending.push(event)
+                if (pending.length > maxPending) {
+                  close("queue_overflow")
+                  return
+                }
                 if (timer) return
                 timer = setTimeout(() => {
                   timer = undefined
@@ -944,28 +971,39 @@ export namespace Server {
                 }, 20)
               }
 
-              stream.writeSSE({
-                data: JSON.stringify({
-                  type: "server.connected",
-                  properties: {},
-                }),
-              })
+              await stream
+                .writeSSE({
+                  data: JSON.stringify({
+                    type: "server.connected",
+                    properties: {},
+                  }),
+                })
+                .catch((error) => {
+                  close("connected_write_failed", error)
+                })
+              if (closed) return
               const unsub = Bus.subscribeAll((event) => {
                 queue(event as { type: string; properties: Record<string, unknown> })
               })
 
               // Send heartbeat every 10s to prevent stalled proxy streams.
               const heartbeat = setInterval(() => {
-                stream.writeSSE({
-                  data: JSON.stringify({
-                    type: "server.heartbeat",
-                    properties: {},
-                  }),
-                })
+                if (closed) return
+                stream
+                  .writeSSE({
+                    data: JSON.stringify({
+                      type: "server.heartbeat",
+                      properties: {},
+                    }),
+                  })
+                  .catch((error) => {
+                    close("heartbeat_write_failed", error)
+                  })
               }, 10_000)
 
               await new Promise<void>((resolve) => {
                 stream.onAbort(() => {
+                  closed = true
                   if (timer) clearTimeout(timer)
                   clearInterval(heartbeat)
                   unsub()
