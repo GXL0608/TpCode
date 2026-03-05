@@ -1,7 +1,21 @@
 import type { ServerConnection } from "@/context/server"
 import { createSdkForServer } from "./server"
 
-export type ServerHealth = { healthy: boolean; version?: string }
+export type ServerHealth = {
+  healthy: boolean
+  version?: string
+  degraded?: boolean
+  checks?: Record<
+    string,
+    {
+      degraded: boolean
+      reason?: string
+      since?: number
+      last: number
+      details?: Record<string, unknown>
+    }
+  >
+}
 
 interface CheckServerHealthOptions {
   timeoutMs?: number
@@ -77,7 +91,27 @@ export async function checkServerHealth(
       signal,
     })
       .global.health()
-      .then((x) => (x.error ? next(count, x.error) : { healthy: x.data?.healthy === true, version: x.data?.version }))
+      .then((x) =>
+        x.error
+          ? next(count, x.error)
+          : (() => {
+              const data = x.data as
+                | {
+                    healthy?: boolean
+                    version?: string
+                    degraded?: boolean
+                    checks?: ServerHealth["checks"]
+                  }
+                | undefined
+              const result: ServerHealth = {
+                healthy: data?.healthy === true,
+                version: data?.version,
+              }
+              if (data?.degraded !== undefined) result.degraded = data.degraded
+              if (data?.checks !== undefined) result.checks = data.checks
+              return result
+            })(),
+      )
       .catch((error) => next(count, error))
   return attempt(0).finally(() => timeout?.clear?.())
 }

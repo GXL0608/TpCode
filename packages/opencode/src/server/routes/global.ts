@@ -11,6 +11,7 @@ import { lazy } from "../../util/lazy"
 import { Config } from "../../config/config"
 import { errors } from "../error"
 import { Flag } from "../../flag/flag"
+import { ServerDegraded, ServerDegradedEvent } from "../degraded"
 import {
   createEventVisibilityCache,
   eventSessionID,
@@ -19,6 +20,15 @@ import {
 } from "../event-visibility"
 
 const log = Log.create({ service: "server" })
+const MAX_PENDING_EVENTS = 5000
+const HEALTH_CHECK = z.object({
+  degraded: z.boolean(),
+  active: z.number().optional(),
+  reason: z.string().optional(),
+  since: z.number().optional(),
+  last: z.number(),
+  details: z.record(z.string(), z.unknown()).optional(),
+})
 
 export const GlobalDisposedEvent = BusEvent.define("global.disposed", z.object({}))
 
@@ -35,14 +45,27 @@ export const GlobalRoutes = lazy(() =>
             description: "Health information",
             content: {
               "application/json": {
-                schema: resolver(z.object({ healthy: z.literal(true), version: z.string() })),
+                schema: resolver(
+                  z.object({
+                    healthy: z.literal(true),
+                    version: z.string(),
+                    degraded: z.boolean().optional(),
+                    checks: z.record(z.string(), HEALTH_CHECK).optional(),
+                  }),
+                ),
               },
             },
           },
         },
       }),
       async (c) => {
-        return c.json({ healthy: true, version: Installation.VERSION })
+        const status = ServerDegraded.health()
+        return c.json({
+          healthy: true,
+          version: Installation.VERSION,
+          degraded: status.degraded,
+          checks: status.checks,
+        })
       },
     )
     .get(
@@ -81,40 +104,141 @@ export const GlobalRoutes = lazy(() =>
         return streamSSE(c, async (stream) => {
           const visibilityCache = Flag.TPCODE_EVENT_VISIBILITY_CACHE ? createEventVisibilityCache() : undefined
           const pending: Array<{ directory: string; payload: { type: string; properties: Record<string, unknown> } }> = []
+          const sourceID = `${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`
+          const pressure = Math.floor(MAX_PENDING_EVENTS * 0.75)
           let timer: ReturnType<typeof setTimeout> | undefined
           let draining = false
+          let closed = false
+          let degraded = false
+          let droppedDelta = 0
+          let lastDegradedAt = 0
+
+          const close = (reason: string, error?: unknown) => {
+            if (closed) return
+            closed = true
+            if (timer) {
+              clearTimeout(timer)
+              timer = undefined
+            }
+            if (error) {
+              log.error("closing global event stream", { reason, error })
+            } else {
+              log.warn("closing global event stream", { reason })
+            }
+            ServerDegraded.clear("sse.global", {
+              reason,
+            }, sourceID)
+            stream.close()
+          }
+
+          const clearDegraded = () => {
+            if (!degraded) return
+            degraded = false
+            ServerDegraded.clear("sse.global", {
+              pending: pending.length,
+              dropped_delta: droppedDelta,
+            }, sourceID)
+          }
+
+          const emitDegraded = (reason: string) => {
+            const now = Date.now()
+            if (now - lastDegradedAt < 3000) return
+            lastDegradedAt = now
+            stream
+              .writeSSE({
+                data: JSON.stringify({
+                  directory: "global",
+                  payload: {
+                    type: ServerDegradedEvent.type,
+                    properties: {
+                      reason,
+                      check: "sse.global",
+                      pending: pending.length,
+                      dropped_delta: droppedDelta,
+                      at: now,
+                    },
+                  },
+                }),
+              })
+              .catch((error) => {
+                close("degraded_write_failed", error)
+              })
+          }
+
+          const markDegraded = (reason: string) => {
+            degraded = true
+            ServerDegraded.mark("sse.global", reason, {
+              pending: pending.length,
+              dropped_delta: droppedDelta,
+            }, sourceID)
+            emitDegraded(reason)
+          }
+
+          const trimOverflow = () => {
+            if (pending.length <= MAX_PENDING_EVENTS) return true
+            if (!Flag.TPCODE_SSE_DROP_DELTA_ON_OVERFLOW) return false
+            let dropped = 0
+            while (pending.length > MAX_PENDING_EVENTS) {
+              const index = pending.findIndex((item) => item.payload.type === "message.part.delta")
+              if (index < 0) return false
+              pending.splice(index, 1)
+              dropped += 1
+            }
+            if (dropped > 0) {
+              droppedDelta += dropped
+              markDegraded("queue_pressure")
+            }
+            return true
+          }
 
           const flush = async () => {
-            if (draining) return
+            if (draining || closed) return
             draining = true
-            while (pending.length > 0) {
-              const batch = pending.splice(0, 32)
-              if (visibilityCache) {
-                await warmEventVisibilityCache({
-                  events: batch.map((item) => item.payload),
-                  userID,
-                  projectID,
-                  cache: visibilityCache,
-                })
-              }
-              for (const event of batch) {
-                const payload = event.payload
-                const sessionID = eventSessionID(payload)
-                if ((payload.type === "session.updated" || payload.type === "session.deleted") && sessionID) {
-                  visibilityCache?.delete(sessionID)
+            try {
+              while (pending.length > 0) {
+                const batch = pending.splice(0, 32)
+                if (visibilityCache) {
+                  await warmEventVisibilityCache({
+                    events: batch.map((item) => item.payload),
+                    userID,
+                    projectID,
+                    cache: visibilityCache,
+                  })
                 }
-                const visible = await eventVisibleToUser({ event: payload, userID, projectID, cache: visibilityCache })
-                if (!visible) continue
-                await stream.writeSSE({
-                  data: JSON.stringify(event),
-                })
+                for (const event of batch) {
+                  if (closed) return
+                  const payload = event.payload
+                  const sessionID = eventSessionID(payload)
+                  if ((payload.type === "session.updated" || payload.type === "session.deleted") && sessionID) {
+                    visibilityCache?.delete(sessionID)
+                  }
+                  const visible = await eventVisibleToUser({ event: payload, userID, projectID, cache: visibilityCache })
+                  if (!visible) continue
+                  await stream.writeSSE({
+                    data: JSON.stringify(event),
+                  })
+                }
               }
+            } catch (error) {
+              close("flush_failed", error)
+            } finally {
+              if (pending.length < Math.floor(pressure / 2)) {
+                clearDegraded()
+              }
+              draining = false
             }
-            draining = false
           }
 
           const queue = (event: { directory: string; payload: { type: string; properties: Record<string, unknown> } }) => {
+            if (closed) return
             pending.push(event)
+            if (pending.length > pressure) {
+              markDegraded("queue_backlog")
+            }
+            if (!trimOverflow()) {
+              close("queue_overflow")
+              return
+            }
             if (timer) return
             timer = setTimeout(() => {
               timer = undefined
@@ -122,14 +246,19 @@ export const GlobalRoutes = lazy(() =>
             }, 20)
           }
 
-          stream.writeSSE({
-            data: JSON.stringify({
-              payload: {
-                type: "server.connected",
-                properties: {},
-              },
-            }),
-          })
+          await stream
+            .writeSSE({
+              data: JSON.stringify({
+                payload: {
+                  type: "server.connected",
+                  properties: {},
+                },
+              }),
+            })
+            .catch((error) => {
+              close("connected_write_failed", error)
+            })
+          if (closed) return
           async function handler(event: any) {
             const payload = event?.payload
             if (!payload || typeof payload !== "object") return
@@ -140,20 +269,27 @@ export const GlobalRoutes = lazy(() =>
 
           // Send heartbeat every 10s to prevent stalled proxy streams.
           const heartbeat = setInterval(() => {
-            stream.writeSSE({
-              data: JSON.stringify({
-                payload: {
-                  type: "server.heartbeat",
-                  properties: {},
-                },
-              }),
-            })
+            if (closed) return
+            stream
+              .writeSSE({
+                data: JSON.stringify({
+                  payload: {
+                    type: "server.heartbeat",
+                    properties: {},
+                  },
+                }),
+              })
+              .catch((error) => {
+                close("heartbeat_write_failed", error)
+              })
           }, 10_000)
 
           await new Promise<void>((resolve) => {
             stream.onAbort(() => {
+              closed = true
               if (timer) clearTimeout(timer)
               clearInterval(heartbeat)
+              clearDegraded()
               GlobalBus.off("event", handler)
               resolve()
               log.info("global event disconnected")

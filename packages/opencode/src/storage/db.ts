@@ -100,7 +100,9 @@ export namespace Database {
   }
 
   export function url() {
-    return process.env.OPENCODE_DATABASE_URL ?? process.env.OPENCODE_PG_URL ?? seed
+    const value = process.env.OPENCODE_DATABASE_URL ?? process.env.OPENCODE_PG_URL
+    if (value) return value
+    return seed
   }
 
   export function source() {
@@ -203,7 +205,7 @@ export namespace Database {
       location,
     })
     if (source === "DEFAULT_SEED") {
-      log.error("database using default fallback url", {
+      log.warn("database using default fallback url", {
         action: "set OPENCODE_DATABASE_URL",
         postgres: masked(),
       })

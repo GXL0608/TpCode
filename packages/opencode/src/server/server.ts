@@ -46,6 +46,7 @@ import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
 import { AccountCurrent } from "@/user/current"
+import { ServerDegraded, ServerDegradedEvent } from "./degraded"
 import {
   createEventVisibilityCache,
   eventSessionID,
@@ -206,13 +207,25 @@ export namespace Server {
             else if (err instanceof Provider.ModelNotFoundError) status = 400
             else if (err.name.startsWith("Worktree")) status = 400
             else status = 500
-            return c.json(err.toObject(), { status })
+            return c.json(
+              {
+                ...err.toObject(),
+                error_code: err.name,
+              },
+              { status },
+            )
           }
           if (err instanceof HTTPException) return err.getResponse()
           const message = err instanceof Error && err.stack ? err.stack : err.toString()
-          return c.json(new NamedError.Unknown({ message }).toObject(), {
+          return c.json(
+            {
+              ...new NamedError.Unknown({ message }).toObject(),
+              error_code: "UnknownError",
+            },
+            {
             status: 500,
-          })
+            },
+          )
         })
         .use(
           cors({
@@ -894,49 +907,147 @@ export namespace Server {
             return streamSSE(c, async (stream) => {
               const visibilityCache = Flag.TPCODE_EVENT_VISIBILITY_CACHE ? createEventVisibilityCache() : undefined
               const pending: Array<{ type: string; properties: Record<string, unknown> }> = []
+              const sourceID = `${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`
               let timer: ReturnType<typeof setTimeout> | undefined
               let draining = false
+              let closed = false
+              const maxPending = 2000
+              const pressure = Math.floor(maxPending * 0.75)
+              let degraded = false
+              let droppedDelta = 0
+              let lastDegradedAt = 0
+
+              const close = (reason: string, error?: unknown) => {
+                if (closed) return
+                closed = true
+                if (timer) {
+                  clearTimeout(timer)
+                  timer = undefined
+                }
+                if (error) {
+                  log.error("closing event stream", { reason, error })
+                } else {
+                  log.warn("closing event stream", { reason })
+                }
+                ServerDegraded.clear("sse.instance", {
+                  reason,
+                }, sourceID)
+                stream.close()
+              }
+
+              const clearDegraded = () => {
+                if (!degraded) return
+                degraded = false
+                ServerDegraded.clear("sse.instance", {
+                  pending: pending.length,
+                  dropped_delta: droppedDelta,
+                }, sourceID)
+              }
+
+              const emitDegraded = (reason: string) => {
+                const now = Date.now()
+                if (now - lastDegradedAt < 3000) return
+                lastDegradedAt = now
+                stream
+                  .writeSSE({
+                    data: JSON.stringify({
+                      type: ServerDegradedEvent.type,
+                      properties: {
+                        reason,
+                        check: "sse.instance",
+                        pending: pending.length,
+                        dropped_delta: droppedDelta,
+                        at: now,
+                      },
+                    }),
+                  })
+                  .catch((error) => {
+                    close("degraded_write_failed", error)
+                  })
+              }
+
+              const markDegraded = (reason: string) => {
+                degraded = true
+                ServerDegraded.mark("sse.instance", reason, {
+                  pending: pending.length,
+                  dropped_delta: droppedDelta,
+                }, sourceID)
+                emitDegraded(reason)
+              }
+
+              const trimOverflow = () => {
+                if (pending.length <= maxPending) return true
+                if (!Flag.TPCODE_SSE_DROP_DELTA_ON_OVERFLOW) return false
+                let dropped = 0
+                while (pending.length > maxPending) {
+                  const index = pending.findIndex((item) => item.type === "message.part.delta")
+                  if (index < 0) return false
+                  pending.splice(index, 1)
+                  dropped += 1
+                }
+                if (dropped > 0) {
+                  droppedDelta += dropped
+                  markDegraded("queue_pressure")
+                }
+                return true
+              }
 
               const flush = async () => {
-                if (draining) return
+                if (draining || closed) return
                 draining = true
-                while (pending.length > 0) {
-                  const batch = pending.splice(0, 32)
-                  if (visibilityCache) {
-                    await warmEventVisibilityCache({
-                      events: batch,
-                      userID: accountUserID,
-                      projectID: accountProjectID,
-                      cache: visibilityCache,
-                    })
-                  }
-                  for (const event of batch) {
-                    const sessionID = eventSessionID(event)
-                    if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
-                      visibilityCache?.delete(sessionID)
+                try {
+                  while (pending.length > 0) {
+                    const batch = pending.splice(0, 32)
+                    if (visibilityCache) {
+                      await warmEventVisibilityCache({
+                        events: batch,
+                        userID: accountUserID,
+                        projectID: accountProjectID,
+                        cache: visibilityCache,
+                      })
                     }
-                    const visible = await eventVisibleToUser({
-                      event,
-                      userID: accountUserID,
-                      projectID: accountProjectID,
-                      cache: visibilityCache,
-                    })
-                    if (!visible) continue
-                    await stream.writeSSE({
-                      data: JSON.stringify(event),
-                    })
-                    if (event.type === Bus.InstanceDisposed.type) {
-                      stream.close()
-                      draining = false
-                      return
+                    for (const event of batch) {
+                      if (closed) return
+                      const sessionID = eventSessionID(event)
+                      if ((event.type === "session.updated" || event.type === "session.deleted") && sessionID) {
+                        visibilityCache?.delete(sessionID)
+                      }
+                      const visible = await eventVisibleToUser({
+                        event,
+                        userID: accountUserID,
+                        projectID: accountProjectID,
+                        cache: visibilityCache,
+                      })
+                      if (!visible) continue
+                      await stream.writeSSE({
+                        data: JSON.stringify(event),
+                      })
+                      if (event.type === Bus.InstanceDisposed.type) {
+                        close("instance_disposed")
+                        return
+                      }
                     }
                   }
+                } catch (error) {
+                  close("flush_failed", error)
+                } finally {
+                  if (pending.length < Math.floor(pressure / 2)) {
+                    clearDegraded()
+                  }
+                  draining = false
                 }
-                draining = false
               }
 
               const queue = (event: { type: string; properties: Record<string, unknown> }) => {
+                if (closed) return
                 pending.push(event)
+                if (pending.length > pressure) {
+                  markDegraded("queue_backlog")
+                }
+                if (!trimOverflow()) {
+                  close("queue_overflow")
+                  return
+                }
                 if (timer) return
                 timer = setTimeout(() => {
                   timer = undefined
@@ -944,30 +1055,42 @@ export namespace Server {
                 }, 20)
               }
 
-              stream.writeSSE({
-                data: JSON.stringify({
-                  type: "server.connected",
-                  properties: {},
-                }),
-              })
+              await stream
+                .writeSSE({
+                  data: JSON.stringify({
+                    type: "server.connected",
+                    properties: {},
+                  }),
+                })
+                .catch((error) => {
+                  close("connected_write_failed", error)
+                })
+              if (closed) return
               const unsub = Bus.subscribeAll((event) => {
                 queue(event as { type: string; properties: Record<string, unknown> })
               })
 
               // Send heartbeat every 10s to prevent stalled proxy streams.
               const heartbeat = setInterval(() => {
-                stream.writeSSE({
-                  data: JSON.stringify({
-                    type: "server.heartbeat",
-                    properties: {},
-                  }),
-                })
+                if (closed) return
+                stream
+                  .writeSSE({
+                    data: JSON.stringify({
+                      type: "server.heartbeat",
+                      properties: {},
+                    }),
+                  })
+                  .catch((error) => {
+                    close("heartbeat_write_failed", error)
+                  })
               }, 10_000)
 
               await new Promise<void>((resolve) => {
                 stream.onAbort(() => {
+                  closed = true
                   if (timer) clearTimeout(timer)
                   clearInterval(heartbeat)
+                  clearDegraded()
                   unsub()
                   resolve()
                   log.info("event disconnected")
@@ -1029,9 +1152,10 @@ export namespace Server {
     _corsWhitelist = opts.cors ?? []
     webRoot()
 
+    const idleTimeout = Number(process.env.OPENCODE_SERVER_IDLE_TIMEOUT ?? "120")
     const args = {
       hostname: opts.hostname,
-      idleTimeout: 0,
+      idleTimeout: Number.isFinite(idleTimeout) && idleTimeout > 0 ? idleTimeout : 120,
       fetch: App().fetch,
       websocket: websocket,
     } as const

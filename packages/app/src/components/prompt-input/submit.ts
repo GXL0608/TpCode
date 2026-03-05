@@ -3,6 +3,7 @@ import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate, useParams } from "@solidjs/router"
 import type { Accessor } from "solid-js"
+import { reconcile } from "solid-js/store"
 import type { FileSelection } from "@/context/file"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
@@ -78,6 +79,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
   const layout = useLayout()
   const language = useLanguage()
   const params = useParams()
+  const statusCompensationTimers = new Map<string, number>()
 
   const errorMessage = (err: unknown) => {
     if (err && typeof err === "object" && "data" in err) {
@@ -91,6 +93,12 @@ export function createPromptSubmit(input: PromptSubmitInput) {
   const abort = async () => {
     const sessionID = params.id
     if (!sessionID) return Promise.resolve()
+    const key = `${sdk.directory}\n${sessionID}`
+    const timer = statusCompensationTimers.get(key)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      statusCompensationTimers.delete(key)
+    }
 
     globalSync.todo.set(sessionID, [])
     const [, setStore] = globalSync.child(sdk.directory)
@@ -425,6 +433,29 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         parts: requestParts,
         variant,
       })
+      if (sessionDirectory !== projectDirectory) return
+      sync.set("session_status", sessionID, { type: "busy" })
+      if (typeof document === "undefined") return
+      const key = `${sessionDirectory}\n${sessionID}`
+      const existing = statusCompensationTimers.get(key)
+      if (existing !== undefined) {
+        clearTimeout(existing)
+      }
+      const timer = window.setTimeout(() => {
+        statusCompensationTimers.delete(key)
+        const status = sync.data.session_status[sessionID]
+        if (status?.type !== "busy") return
+        const [, setStore] = globalSync.child(sessionDirectory)
+        client.session
+          .status()
+          .then((x) => {
+            setStore("session_status", reconcile(x.data ?? {}))
+          })
+          .catch((error) => {
+            console.error("[prompt-submit] failed to compensate session status", { directory: sessionDirectory, sessionID, error })
+          })
+      }, 20_000)
+      statusCompensationTimers.set(key, timer)
     }
 
     void send().catch((err) => {

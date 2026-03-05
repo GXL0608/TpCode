@@ -41,6 +41,7 @@ const clientFor = (directory: string) => {
         if (promptAsyncError) throw promptAsyncError
         return { data: undefined }
       },
+      status: async () => ({ data: {} }),
       command: async (input: { sessionID: string; command: string }) => {
         commandCalls.push({ directory, sessionID: input.sessionID, command: input.command })
         return { data: undefined }
@@ -116,7 +117,7 @@ beforeAll(async () => {
 
   mock.module("@/context/sync", () => ({
     useSync: () => ({
-      data: { command: commands },
+      data: { command: commands, session_status: {} },
       session: {
         optimistic: {
           add: () => undefined,

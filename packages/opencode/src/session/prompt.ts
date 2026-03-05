@@ -62,6 +62,30 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
+  const QUEUE_TIMEOUT_MS = Number(process.env.OPENCODE_SESSION_QUEUE_TIMEOUT_MS ?? "120000")
+
+  const QueueTimeoutError = NamedError.create(
+    "SessionPromptQueueTimeoutError",
+    z.object({
+      sessionID: z.string(),
+      timeout_ms: z.number(),
+    }),
+  )
+
+  const QueueCancelledError = NamedError.create(
+    "SessionPromptQueueCancelledError",
+    z.object({
+      sessionID: z.string(),
+      reason: z.string(),
+    }),
+  )
+
+  type QueueCallback = {
+    done: boolean
+    timer: ReturnType<typeof setTimeout>
+    resolve(input: MessageV2.WithParts): void
+    reject(reason?: unknown): void
+  }
 
   const state = Instance.state(
     () => {
@@ -69,17 +93,24 @@ export namespace SessionPrompt {
         string,
         {
           abort: AbortController
-          callbacks: {
-            resolve(input: MessageV2.WithParts): void
-            reject(reason?: any): void
-          }[]
+          callbacks: QueueCallback[]
         }
       > = {}
       return data
     },
     async (current) => {
-      for (const item of Object.values(current)) {
+      for (const [sessionID, item] of Object.entries(current)) {
         item.abort.abort()
+        const callbacks = item.callbacks.splice(0, item.callbacks.length)
+        for (const callback of callbacks) {
+          if (!queueDone(callback)) continue
+          callback.reject(
+            new QueueCancelledError({
+              sessionID,
+              reason: "dispose",
+            }),
+          )
+        }
       }
     },
   )
@@ -247,6 +278,42 @@ export namespace SessionPrompt {
     return controller.signal
   }
 
+  function queueRemove(sessionID: string, callback: QueueCallback) {
+    const match = state()[sessionID]
+    if (!match) return
+    const index = match.callbacks.indexOf(callback)
+    if (index >= 0) {
+      match.callbacks.splice(index, 1)
+    }
+  }
+
+  function queueDone(callback: QueueCallback) {
+    if (callback.done) return false
+    callback.done = true
+    clearTimeout(callback.timer)
+    return true
+  }
+
+  function queueReject(sessionID: string, reason: unknown) {
+    const match = state()[sessionID]
+    if (!match) return
+    const callbacks = match.callbacks.splice(0, match.callbacks.length)
+    for (const callback of callbacks) {
+      if (!queueDone(callback)) continue
+      callback.reject(reason)
+    }
+  }
+
+  function queueResolve(sessionID: string, message: MessageV2.WithParts) {
+    const match = state()[sessionID]
+    if (!match) return
+    const callbacks = match.callbacks.splice(0, match.callbacks.length)
+    for (const callback of callbacks) {
+      if (!queueDone(callback)) continue
+      callback.resolve(message)
+    }
+  }
+
   function resume(sessionID: string) {
     const s = state()
     if (!s[sessionID]) return
@@ -263,6 +330,13 @@ export namespace SessionPrompt {
       return
     }
     match.abort.abort()
+    queueReject(
+      sessionID,
+      new QueueCancelledError({
+        sessionID,
+        reason: "cancelled",
+      }),
+    )
     delete s[sessionID]
     SessionStatus.set(sessionID, { type: "idle" })
     return
@@ -278,8 +352,32 @@ export namespace SessionPrompt {
     const abort = resume_existing ? resume(sessionID) : start(sessionID)
     if (!abort) {
       return new Promise<MessageV2.WithParts>((resolve, reject) => {
-        const callbacks = state()[sessionID].callbacks
-        callbacks.push({ resolve, reject })
+        const match = state()[sessionID]
+        if (!match) {
+          reject(
+            new QueueCancelledError({
+              sessionID,
+              reason: "state_missing",
+            }),
+          )
+          return
+        }
+        const callback = {
+          done: false,
+          timer: setTimeout(() => {
+            if (!queueDone(callback)) return
+            queueRemove(sessionID, callback)
+            reject(
+              new QueueTimeoutError({
+                sessionID,
+                timeout_ms: QUEUE_TIMEOUT_MS,
+              }),
+            )
+          }, QUEUE_TIMEOUT_MS),
+          resolve,
+          reject,
+        }
+        match.callbacks.push(callback)
       })
     }
 
@@ -717,16 +815,18 @@ export namespace SessionPrompt {
       }
       continue
     }
-    SessionCompaction.prune({ sessionID })
-    for await (const item of MessageV2.stream(sessionID)) {
-      if (item.info.role === "user") continue
-      const queued = state()[sessionID]?.callbacks ?? []
-      for (const q of queued) {
-        q.resolve(item)
+    try {
+      SessionCompaction.prune({ sessionID })
+      for await (const item of MessageV2.stream(sessionID)) {
+        if (item.info.role === "user") continue
+        queueResolve(sessionID, item)
+        return item
       }
-      return item
+      throw new Error("Impossible")
+    } catch (error) {
+      queueReject(sessionID, error)
+      throw error
     }
-    throw new Error("Impossible")
   })
 
   async function lastModel(sessionID: string) {
