@@ -11,10 +11,19 @@ import { lazy } from "../../util/lazy"
 import { Flag } from "@/flag/flag"
 import { Auth } from "@/auth"
 import { AccountCurrent } from "@/user/current"
+import { UserProviderConfig } from "@/provider/user-provider-config"
 
 function requireProviderConfig(c: Context) {
   const permissions = c.get("account_permissions" as never) as string[] | undefined
-  if (!permissions) return
+  if (!permissions) {
+    return c.json(
+      {
+        error: "forbidden",
+        permission: "provider:config_own|provider:config_global",
+      },
+      403,
+    )
+  }
   if (permissions.includes("provider:config_own") || permissions.includes("provider:config_global")) return
   return c.json(
     {
@@ -51,30 +60,40 @@ export const ProviderRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        const config = await Config.get()
-        const disabled = new Set(config.disabled_providers ?? [])
-        const enabled = config.enabled_providers ? new Set(config.enabled_providers) : undefined
-
         const allProviders = await ModelsDev.get()
+        const connected = await Provider.list()
+
+        const strictAccount = Flag.TPCODE_ACCOUNT_ENABLED
+        const config = strictAccount ? undefined : await Config.get()
+        const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
+        const user = strictAccount && uid ? await UserProviderConfig.state(uid) : undefined
+        const disabled = new Set(strictAccount ? (user?.control.disabled_providers ?? []) : (config?.disabled_providers ?? []))
+        if (strictAccount) {
+          for (const [providerID, item] of Object.entries(user?.providers ?? {})) {
+            if (item.meta.flags?.disabled) disabled.add(providerID)
+          }
+        }
+        const enabled = strictAccount
+          ? (user?.control.enabled_providers ? new Set(user.control.enabled_providers) : undefined)
+          : (config?.enabled_providers ? new Set(config.enabled_providers) : undefined)
+
         const filteredProviders: Record<string, (typeof allProviders)[string]> = {}
         for (const [key, value] of Object.entries(allProviders)) {
           if ((enabled ? enabled.has(key) : true) && !disabled.has(key)) {
             filteredProviders[key] = value
           }
         }
-
-        const connected = await Provider.list()
         const providers = Object.assign(
           mapValues(filteredProviders, (x) => Provider.fromModelsDevProvider(x)),
           connected,
         )
         let connectedIDs = Object.keys(connected)
-        if (Flag.TPCODE_ACCOUNT_ENABLED) {
-          const current = AccountCurrent.optional()
-          if (current?.user_id) {
-            const account = await Auth.all()
-            connectedIDs = Object.keys(account)
-          }
+        if (strictAccount && user) {
+          connectedIDs = Object.entries(user.providers).flatMap(([providerID, item]) => (item.auth ? [providerID] : []))
+        }
+        if (strictAccount && !user) {
+          const account = await Auth.all()
+          connectedIDs = Object.keys(account)
         }
         return c.json({
           all: Object.values(providers),

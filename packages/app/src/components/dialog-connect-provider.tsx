@@ -17,6 +17,8 @@ import { useLanguage } from "@/context/language"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { usePlatform } from "@/context/platform"
+import { useAccountAuth } from "@/context/account-auth"
+import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { DialogSelectModel } from "./dialog-select-model"
 import { DialogSelectProvider } from "./dialog-select-provider"
 
@@ -26,6 +28,8 @@ export function DialogConnectProvider(props: { provider: string }) {
   const globalSDK = useGlobalSDK()
   const platform = usePlatform()
   const language = useLanguage()
+  const account = useAccountAuth()
+  const accountRequest = useAccountRequest()
 
   const alive = { value: true }
   const timer = { current: undefined as ReturnType<typeof setTimeout> | undefined }
@@ -190,6 +194,17 @@ export function DialogConnectProvider(props: { provider: string }) {
     })
   }
 
+  async function enableProvider() {
+    if (!account.enabled()) return
+    const response = await accountRequest({
+      method: "PATCH",
+      path: `/account/me/providers/${encodeURIComponent(props.provider)}/disabled`,
+      body: { disabled: false },
+    }).catch(() => undefined)
+    if (response?.ok) return
+    throw new Error(await parseAccountError(response))
+  }
+
   function goBack() {
     if (methods().length === 1) {
       dialog.show(() => <DialogSelectProvider />)
@@ -264,6 +279,7 @@ export function DialogConnectProvider(props: { provider: string }) {
           key: apiKey,
         },
       })
+      await enableProvider()
       await complete()
     }
 
@@ -343,6 +359,7 @@ export function DialogConnectProvider(props: { provider: string }) {
         .then((value) => (value.error ? { ok: false as const, error: value.error } : { ok: true as const }))
         .catch((error) => ({ ok: false as const, error }))
       if (result.ok) {
+        await enableProvider()
         await complete()
         return
       }
@@ -407,6 +424,7 @@ export function DialogConnectProvider(props: { provider: string }) {
           return
         }
 
+        await enableProvider()
         await complete()
       })()
     })

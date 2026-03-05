@@ -396,10 +396,16 @@ export namespace Server {
               c.set("account_context_project_id" as never, user.context_project_id)
               c.set("account_roles" as never, user.roles)
               c.set("account_permissions" as never, user.permissions)
+              const contextOptional =
+                path === "/provider" ||
+                path.startsWith("/provider/") ||
+                path.startsWith("/auth/") ||
+                path === "/config/providers"
               if (
                 !path.startsWith("/account") &&
                 path !== "/global/health" &&
                 path !== "/agent" &&
+                !contextOptional &&
                 !user.context_project_id &&
                 !user.permissions.includes("role:manage")
               ) {

@@ -11,6 +11,8 @@ import { Link } from "@/components/link"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
+import { useAccountAuth } from "@/context/account-auth"
+import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { DialogSelectProvider } from "./dialog-select-provider"
 
 const PROVIDER_ID = /^[a-z0-9][a-z0-9-_]*$/
@@ -166,6 +168,8 @@ export function DialogCustomProvider(props: Props) {
   const globalSync = useGlobalSync()
   const globalSDK = useGlobalSDK()
   const language = useLanguage()
+  const auth = useAccountAuth()
+  const accountRequest = useAccountRequest()
 
   const [form, setForm] = createStore<FormState>({
     providerID: "",
@@ -219,7 +223,7 @@ export function DialogCustomProvider(props: Props) {
     const output = validateCustomProvider({
       form,
       t: language.t,
-      disabledProviders: globalSync.data.config.disabled_providers ?? [],
+      disabledProviders: auth.enabled() ? [] : (globalSync.data.config.disabled_providers ?? []),
       existingProviderIDs: new Set(globalSync.data.provider.all.map((p) => p.id)),
     })
     setErrors(output.errors)
@@ -235,10 +239,7 @@ export function DialogCustomProvider(props: Props) {
 
     setForm("saving", true)
 
-    const disabledProviders = globalSync.data.config.disabled_providers ?? []
-    const nextDisabled = disabledProviders.filter((id) => id !== result.providerID)
-
-    const auth = result.key
+    const authWrite = result.key
       ? globalSDK.client.auth.set({
           providerID: result.providerID,
           auth: {
@@ -248,11 +249,30 @@ export function DialogCustomProvider(props: Props) {
         })
       : Promise.resolve()
 
-    auth
-      .then(() =>
-        globalSync.updateConfig({ provider: { [result.providerID]: result.config }, disabled_providers: nextDisabled }),
-      )
-      .then(() => {
+    authWrite
+      .then(async () => {
+        if (!auth.enabled()) {
+          const disabledProviders = globalSync.data.config.disabled_providers ?? []
+          const nextDisabled = disabledProviders.filter((id) => id !== result.providerID)
+          await globalSync.updateConfig({ provider: { [result.providerID]: result.config }, disabled_providers: nextDisabled })
+          return
+        }
+        const path = `/account/me/providers/${encodeURIComponent(result.providerID)}/config`
+        const write = await accountRequest({
+          method: "PUT",
+          path,
+          body: result.config as unknown as Record<string, unknown>,
+        }).catch(() => undefined)
+        if (!write?.ok) throw new Error(await parseAccountError(write))
+        const enable = await accountRequest({
+          method: "PATCH",
+          path: `/account/me/providers/${encodeURIComponent(result.providerID)}/disabled`,
+          body: { disabled: false },
+        }).catch(() => undefined)
+        if (!enable?.ok) throw new Error(await parseAccountError(enable))
+      })
+      .then(async () => {
+        await globalSDK.client.global.dispose().catch(() => undefined)
         dialog.close()
         showToast({
           variant: "success",

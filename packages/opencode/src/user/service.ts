@@ -101,6 +101,7 @@ const rolePerm = {
     "agent:use_build",
     "agent:use_plan",
     "provider:config_global",
+    "provider:config_own",
     "provider:config_user",
     "ui:settings.providers:view",
     "ui:settings.models:view",
@@ -120,9 +121,18 @@ const rolePerm = {
     "prototype:approve",
     "file:browse",
     "agent:use_plan",
+    "provider:config_own",
   ],
-  developer: ["session:create", "session:view_own", "code:generate", "prototype:view", "file:browse", "agent:use_plan"],
-  ops: ["session:create", "session:view_own", "code:deploy", "prototype:view", "file:browse", "agent:use_plan"],
+  developer: [
+    "session:create",
+    "session:view_own",
+    "code:generate",
+    "prototype:view",
+    "file:browse",
+    "agent:use_plan",
+    "provider:config_own",
+  ],
+  ops: ["session:create", "session:view_own", "code:deploy", "prototype:view", "file:browse", "agent:use_plan", "provider:config_own"],
   pm: [
     "session:create",
     "session:view_own",
@@ -131,8 +141,9 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
+    "provider:config_own",
   ],
-  value_ops: ["session:create", "session:view_own", "session:view_all", "prototype:view", "agent:use_plan"],
+  value_ops: ["session:create", "session:view_own", "session:view_all", "prototype:view", "agent:use_plan", "provider:config_own"],
   hospital_admin: [
     "session:create",
     "session:view_own",
@@ -140,6 +151,7 @@ const rolePerm = {
     "session:view_org",
     "prototype:view",
     "agent:use_plan",
+    "provider:config_own",
   ],
   dept_director: [
     "session:create",
@@ -148,8 +160,9 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
+    "provider:config_own",
   ],
-  hospital_user: ["session:create", "session:view_own", "prototype:view", "agent:use_plan"],
+  hospital_user: ["session:create", "session:view_own", "prototype:view", "agent:use_plan", "provider:config_own"],
   dean: [
     "session:view_own",
     "session:view_org",
@@ -157,6 +170,7 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
+    "provider:config_own",
   ],
 } as const
 

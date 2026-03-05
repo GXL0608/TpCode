@@ -1,4 +1,4 @@
-import { createMemo } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { DateTime } from "luxon"
 import { filter, firstBy, flat, groupBy, mapValues, pipe, uniqueBy, values } from "remeda"
@@ -6,6 +6,7 @@ import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useAccountAuth } from "./account-auth"
 import { useProviders } from "@/hooks/use-providers"
 import { Persist, persisted } from "@/utils/persist"
+import { useAccountRequest } from "@/components/settings-account-api"
 
 export type ModelKey = { providerID: string; modelID: string }
 
@@ -23,12 +24,29 @@ function modelKey(model: ModelKey) {
   return `${model.providerID}:${model.modelID}`
 }
 
+function remoteKey(model: ModelKey) {
+  return `${model.providerID}/${model.modelID}`
+}
+
+function parseKey(input: string) {
+  const hasColon = input.includes(":")
+  if (hasColon) {
+    const idx = input.indexOf(":")
+    if (idx > 0) return { providerID: input.slice(0, idx), modelID: input.slice(idx + 1) }
+  }
+  const [providerID, ...rest] = input.split("/")
+  if (!providerID || rest.length === 0) return
+  return { providerID, modelID: rest.join("/") }
+}
+
 export const { use: useModels, provider: ModelsProvider } = createSimpleContext({
   name: "Models",
   init: () => {
     const auth = useAccountAuth()
+    const accountRequest = useAccountRequest()
     const accountID = auth.user()?.id ?? "anonymous"
     const providers = useProviders()
+    const [loaded, setLoaded] = createSignal(false)
 
     const [store, setStore, _, ready] = persisted(
       Persist.global(`acct:${accountID}:model`),
@@ -38,6 +56,113 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
         variant: {},
       }),
     )
+
+    const readyState = createMemo(() => {
+      if (!auth.enabled()) return ready()
+      return ready() && loaded()
+    })
+
+    function encode() {
+      const visibility = store.user.reduce(
+        (acc, item) => {
+          acc[remoteKey(item)] = item.visibility
+          return acc
+        },
+        {} as Record<string, "show" | "hide">,
+      )
+      const favorite = store.user.filter((x) => x.favorite).map(remoteKey)
+      return {
+        visibility,
+        favorite,
+        recent: store.recent.map(remoteKey),
+        variant: store.variant ?? {},
+      }
+    }
+
+    function decode(input: unknown) {
+      if (!input || typeof input !== "object" || Array.isArray(input)) return
+      const row = input as {
+        visibility?: unknown
+        favorite?: unknown
+        recent?: unknown
+        variant?: unknown
+      }
+      const fav = new Set(
+        (Array.isArray(row.favorite) ? row.favorite : [])
+          .map((x) => (typeof x === "string" ? parseKey(x) : undefined))
+          .filter((x): x is ModelKey => !!x)
+          .map(modelKey),
+      )
+      const user = Object.entries(
+        row.visibility && typeof row.visibility === "object" && !Array.isArray(row.visibility) ? row.visibility : {},
+      ).flatMap(([key, value]) => {
+        const parsed = parseKey(key)
+        if (!parsed) return []
+        if (value !== "show" && value !== "hide") return []
+        return [
+          {
+            ...parsed,
+            visibility: value,
+            favorite: fav.has(modelKey(parsed)),
+          },
+        ]
+      })
+      const recent = (Array.isArray(row.recent) ? row.recent : []).flatMap((x) => {
+        if (typeof x !== "string") return []
+        const parsed = parseKey(x)
+        if (!parsed) return []
+        return [parsed]
+      })
+      const variant = row.variant && typeof row.variant === "object" && !Array.isArray(row.variant) ? row.variant : {}
+      setStore("user", user)
+      setStore("recent", recent)
+      setStore("variant", variant as Record<string, string | undefined>)
+    }
+
+    createEffect(() => {
+      if (!auth.enabled()) {
+        setLoaded(false)
+        return
+      }
+      const user = auth.user()
+      if (!user?.id) return
+      let done = false
+      void accountRequest({
+        path: "/account/me/model-prefs",
+      })
+        .then((response) => {
+          if (!response?.ok) return
+          return response.json().catch(() => undefined)
+        })
+        .then((body) => {
+          if (done) return
+          decode(body)
+          setLoaded(true)
+        })
+        .catch(() => {
+          if (done) return
+          setLoaded(true)
+        })
+      onCleanup(() => {
+        done = true
+      })
+    })
+
+    createEffect(() => {
+      if (!auth.enabled()) return
+      if (!loaded()) return
+      const body = encode()
+      const timer = setTimeout(() => {
+        void accountRequest({
+          method: "PUT",
+          path: "/account/me/model-prefs",
+          body: body as unknown as Record<string, unknown>,
+        })
+      }, 150)
+      onCleanup(() => {
+        clearTimeout(timer)
+      })
+    })
 
     const available = createMemo(() =>
       providers.connected().flatMap((p) =>
@@ -147,8 +272,8 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
       setStore("variant", key, value)
     }
 
-    return {
-      ready,
+      return {
+      ready: readyState,
       list,
       find,
       visible,

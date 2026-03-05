@@ -7,8 +7,6 @@ import { mapValues } from "remeda"
 import { errors } from "../error"
 import { Log } from "../../util/log"
 import { lazy } from "../../util/lazy"
-import { Flag } from "@/flag/flag"
-import { Auth } from "@/auth"
 
 const log = Log.create({ service: "server" })
 
@@ -84,18 +82,7 @@ export const ConfigRoutes = lazy(() =>
       }),
       async (c) => {
         using _ = log.time("providers")
-        const providers = await Provider.list().then((x) => mapValues(x, (item) => item))
-        const own = Flag.TPCODE_ACCOUNT_ENABLED ? await Auth.userAll() : undefined
-        const scoped = own
-          ? Object.entries(providers).reduce(
-              (acc, [providerID, provider]) => {
-                if (own[providerID] === undefined) return acc
-                acc[providerID] = provider
-                return acc
-              },
-              {} as Record<string, (typeof providers)[string]>,
-            )
-          : providers
+        const scoped = await Provider.list().then((x) => mapValues(x, (item) => item))
         return c.json({
           providers: Object.values(scoped),
           default: mapValues(scoped, (item) => Provider.sort(Object.values(item.models))[0].id),
