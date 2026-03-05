@@ -47,6 +47,9 @@ import { checksum } from "@opencode-ai/util/encode"
 import { Tooltip } from "./tooltip"
 import { IconButton } from "./icon-button"
 import { TextShimmer } from "./text-shimmer"
+import { Button } from "./button"
+import { Dialog } from "./dialog"
+import { TextField } from "./text-field"
 
 interface Diagnostic {
   range: {
@@ -1089,6 +1092,7 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
 PART_MAPPING["text"] = function TextPartDisplay(props) {
   const data = useData()
   const i18n = useI18n()
+  const dialog = useDialog()
   const part = props.part as TextPart
   const interrupted = createMemo(
     () =>
@@ -1147,12 +1151,23 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
     return isLastTextPart()
   })
   const [copied, setCopied] = createSignal(false)
+  const [saved, setSaved] = createSignal(false)
+  const [saving, setSaving] = createSignal(false)
   const [exported, setExported] = createSignal(false)
   const [exporting, setExporting] = createSignal(false)
-  const canExport = createMemo(
+  const canPlanAction = createMemo(
     () => showCopy() && props.message.role === "assistant" && (props.message as AssistantMessage).agent === "plan",
   )
-  const exportLabel = createMemo(() => (exported() ? "Exported" : "Export plan"))
+  const canSave = createMemo(() => canPlanAction() && !!data.savePlan)
+  const canExport = createMemo(() => canPlanAction() && !data.savePlan)
+  const saveLabel = createMemo(() => {
+    if (saved()) return i18n.t("ui.messagePart.plan.saved")
+    if (saving()) return i18n.t("ui.messagePart.plan.saving")
+    return i18n.t("ui.messagePart.plan.save")
+  })
+  const exportLabel = createMemo(() =>
+    exported() ? i18n.t("ui.messagePart.plan.exported") : i18n.t("ui.messagePart.plan.export"),
+  )
 
   const handleCopy = async () => {
     const content = displayText()
@@ -1185,12 +1200,91 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
     setTimeout(() => setExported(false), 2000)
   }
 
+  const save = async (vho_feedback_no?: string) => {
+    if (!canSave()) return false
+    if (saving()) return false
+    const fn = data.savePlan
+    if (!fn) return false
+    setSaving(true)
+    const result = await fn({
+      sessionID: props.message.sessionID,
+      messageID: props.message.id,
+      partID: part.id,
+      vho_feedback_no,
+    })
+    setSaving(false)
+    if (!result.ok) return false
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+    return true
+  }
+
+  const openSaveDialog = () => {
+    if (!canSave()) return
+    dialog.show(() => {
+      const [feedback, setFeedback] = createSignal("")
+      const [pending, setPending] = createSignal(false)
+      const submit = async () => {
+        if (pending()) return
+        setPending(true)
+        const ok = await save(feedback().trim() || undefined)
+        setPending(false)
+        if (!ok) return
+        dialog.close()
+      }
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key !== "Enter" || event.isComposing) return
+        event.preventDefault()
+        void submit()
+      }
+      return (
+        <Dialog title={i18n.t("ui.messagePart.plan.dialog.title")} fit>
+          <div data-slot="text-part-save-dialog">
+            <TextField
+              label={i18n.t("ui.messagePart.plan.dialog.feedbackLabel")}
+              placeholder={i18n.t("ui.messagePart.plan.dialog.feedbackPlaceholder")}
+              value={feedback()}
+              autofocus
+              disabled={pending()}
+              onChange={setFeedback}
+              onKeyDown={onKeyDown}
+            />
+            <span data-slot="text-part-save-dialog-hint">{i18n.t("ui.messagePart.plan.dialog.feedbackHint")}</span>
+            <div data-slot="text-part-save-dialog-actions">
+              <Button type="button" variant="ghost" size="large" onClick={() => dialog.close()} disabled={pending()}>
+                {i18n.t("ui.messagePart.plan.dialog.cancel")}
+              </Button>
+              <Button type="button" variant="primary" size="large" onClick={() => void submit()} disabled={pending()}>
+                {i18n.t("ui.messagePart.plan.dialog.confirm")}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )
+    })
+  }
+
   return (
     <Show when={throttledText()}>
       <div data-component="text-part">
         <div data-slot="text-part-body">
           <Markdown text={throttledText()} cacheKey={part.id} />
         </div>
+        <Show when={canSave()}>
+          <div data-slot="text-part-plan-save">
+            <Button
+              data-slot="text-part-save-button"
+              size="small"
+              variant={saved() ? "secondary" : "primary"}
+              onMouseDown={(event: MouseEvent) => event.preventDefault()}
+              onClick={openSaveDialog}
+              aria-label={saveLabel()}
+              disabled={saving()}
+            >
+              {saveLabel()}
+            </Button>
+          </div>
+        </Show>
         <Show when={showCopy()}>
           <div data-slot="text-part-copy-wrapper" data-interrupted={interrupted() ? "" : undefined}>
             <Show when={canExport()}>

@@ -42,6 +42,27 @@ type RegisterInput = {
   phone: string
 }
 
+type SavePlanInput = {
+  session_id: string
+  message_id: string
+  part_id?: string
+  vho_feedback_no?: string
+}
+
+type SavePlanResult =
+  | {
+      ok: true
+      id: string
+      saved_at: number
+      session_id: string
+      message_id: string
+      part_id: string
+    }
+  | {
+      ok: false
+      code: string
+    }
+
 function json<T>(input: unknown): T | undefined {
   if (!input || typeof input !== "object") return
   return input as T
@@ -311,6 +332,41 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         }).catch(() => undefined)
         clearSession()
         setState("last_error", undefined)
+      },
+      async savePlan(input: SavePlanInput): Promise<SavePlanResult> {
+        const call = () =>
+          request({
+            path: "/account/plan/save",
+            method: "POST",
+            body: input,
+            auth: "required",
+          }).catch(() => undefined)
+        let response = await call()
+        if (response?.status === 401) {
+          const ok = await refresh()
+          if (ok) response = await call()
+        }
+        if (!response?.ok) {
+          return {
+            ok: false,
+            code: (await responseCode(response)) ?? "plan_save_failed",
+          }
+        }
+        const body = json<SavePlanResult>(await response.json().catch(() => undefined))
+        if (!body) {
+          return {
+            ok: false,
+            code: "plan_save_failed",
+          }
+        }
+        if (!body.ok) return body
+        if (!body.id || !body.saved_at || !body.session_id || !body.message_id || !body.part_id) {
+          return {
+            ok: false,
+            code: "plan_save_failed",
+          }
+        }
+        return body
       },
       async contextProjects() {
         const response = await request({

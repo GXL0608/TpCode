@@ -185,6 +185,18 @@
     margin-top: 0;
   }
 
+  [data-slot="text-part-plan-save"] {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+  }
+
+  [data-slot="text-part-save-button"] {
+    min-width: 56px;
+    padding-inline: 14px;
+  }
+
   [data-slot="text-part-copy-wrapper"] {
     min-height: 24px;
     margin-top: 4px;
@@ -223,6 +235,29 @@
     margin-top: 0;
     font-size: var(--font-size-base);
   }
+}
+
+[data-slot="text-part-save-dialog"] {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 6px 10px 8px;
+  min-width: min(520px, calc(100vw - 72px));
+}
+
+[data-slot="text-part-save-dialog-hint"] {
+  color: var(--text-weak);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-large);
+  margin-top: -2px;
+}
+
+[data-slot="text-part-save-dialog-actions"] {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 [data-component="reasoning-part"] {

@@ -26,6 +26,21 @@ export type NavigateToSessionFn = (sessionID: string) => void
 
 export type SessionHrefFn = (sessionID: string) => string
 
+export type SavePlanFn = (input: {
+  sessionID: string
+  messageID: string
+  partID: string
+  vho_feedback_no?: string
+}) => Promise<{
+  ok: boolean
+  code?: string
+  id?: string
+  saved_at?: number
+  session_id?: string
+  message_id?: string
+  part_id?: string
+}>
+
 export const { use: useData, provider: DataProvider } = createSimpleContext({
   name: "Data",
   init: (props: {
@@ -33,6 +48,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
     directory: string
     onNavigateToSession?: NavigateToSessionFn
     onSessionHref?: SessionHrefFn
+    onSavePlan?: SavePlanFn
   }) => {
     return {
       get store() {
@@ -43,6 +59,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       },
       navigateToSession: props.onNavigateToSession,
       sessionHref: props.onSessionHref,
+      savePlan: props.onSavePlan,
     }
   },
 })

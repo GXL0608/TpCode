@@ -13,6 +13,7 @@ import { Auth } from "@/auth"
 import { Filesystem } from "@/util/filesystem"
 import path from "path"
 import { readdir } from "fs/promises"
+import { PlanService } from "@/plan/service"
 
 const LoginResult = z
   .object({
@@ -34,6 +35,39 @@ const LoginResult = z
     }),
   })
   .meta({ ref: "AccountLoginResult" })
+
+const PlanSaveBody = z.object({
+  session_id: z.string().min(1),
+  message_id: z.string().min(1),
+  part_id: z.string().min(1).optional(),
+  vho_feedback_no: z.string().optional(),
+})
+
+const PlanSaveSuccess = z
+  .object({
+    ok: z.literal(true),
+    id: z.string(),
+    saved_at: z.number(),
+    session_id: z.string(),
+    message_id: z.string(),
+    part_id: z.string(),
+  })
+  .meta({ ref: "AccountPlanSaveSuccess" })
+
+const PlanSaveFailure = z
+  .object({
+    ok: z.literal(false),
+    code: z.enum([
+      "session_missing",
+      "message_missing",
+      "plan_message_required",
+      "part_missing",
+      "plan_text_missing",
+      "forbidden",
+    ]),
+    permission: z.string().optional(),
+  })
+  .meta({ ref: "AccountPlanSaveFailure" })
 
 function requireLogin(c: Context) {
   const user_id = c.get("account_user_id") as string | undefined
@@ -76,6 +110,20 @@ function requireUserList(c: Context) {
     {
       error: "forbidden",
       permission: "user:manage|role:manage",
+    },
+    403,
+  )
+}
+
+function requirePlanUse(c: Context) {
+  const permissions = c.get("account_permissions" as never) as string[] | undefined
+  if (!permissions) return
+  if (permissions.includes("agent:use_plan")) return
+  return c.json(
+    {
+      ok: false as const,
+      code: "forbidden" as const,
+      permission: "agent:use_plan",
     },
     403,
   )
@@ -394,6 +442,85 @@ export const AccountRoutes = lazy(() =>
           user_agent: c.req.header("user-agent"),
         })
         if (!result.ok) return c.json(result, 400)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/plan/save",
+      describeRoute({
+        summary: "Save plan",
+        description: "Persist plan agent output into account plan records.",
+        operationId: "account.plan.save",
+        responses: {
+          200: {
+            description: "Saved",
+            content: {
+              "application/json": {
+                schema: resolver(PlanSaveSuccess),
+              },
+            },
+          },
+          400: {
+            description: "Validation failed",
+            content: {
+              "application/json": {
+                schema: resolver(PlanSaveFailure),
+              },
+            },
+          },
+          403: {
+            description: "Forbidden",
+            content: {
+              "application/json": {
+                schema: resolver(PlanSaveFailure),
+              },
+            },
+          },
+          404: {
+            description: "Not found",
+            content: {
+              "application/json": {
+                schema: resolver(PlanSaveFailure),
+              },
+            },
+          },
+        },
+      }),
+      validator("json", PlanSaveBody),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requirePlanUse(c)
+        if (denied) return denied
+        const body = c.req.valid("json")
+        const user = c.get("account_user" as never) as z.infer<typeof LoginResult.shape.user> | undefined
+        if (!user) return c.json({ error: "unauthorized" }, 401)
+        const result = await PlanService.save({
+          session_id: body.session_id,
+          message_id: body.message_id,
+          part_id: body.part_id,
+          vho_feedback_no: body.vho_feedback_no,
+          actor: user,
+        })
+        if (!result.ok) {
+          const status = result.code === "session_missing" || result.code === "message_missing" ? 404 : 400
+          return c.json(result, status)
+        }
+        UserService.auditLater({
+          actor_user_id: user_id,
+          action: "plan.save",
+          target_type: "tp_saved_plan",
+          target_id: result.id,
+          result: "success",
+          detail_json: {
+            plan_id: result.id,
+            session_id: result.session_id,
+            message_id: result.message_id,
+            part_id: result.part_id,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
         return c.json(result)
       },
     )

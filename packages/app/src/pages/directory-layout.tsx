@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "@solidjs/router"
 import { SDKProvider } from "@/context/sdk"
 import { SyncProvider, useSync } from "@/context/sync"
 import { LocalProvider } from "@/context/local"
+import { useAccountAuth } from "@/context/account-auth"
 
 import { DataProvider } from "@opencode-ai/ui/context"
 import { decode64 } from "@/utils/base64"
@@ -14,6 +15,8 @@ function DirectoryDataProvider(props: ParentProps<{ directory: string }>) {
   const params = useParams()
   const navigate = useNavigate()
   const sync = useSync()
+  const auth = useAccountAuth()
+  const language = useLanguage()
 
   return (
     <DataProvider
@@ -21,6 +24,29 @@ function DirectoryDataProvider(props: ParentProps<{ directory: string }>) {
       directory={props.directory}
       onNavigateToSession={(sessionID: string) => navigate(`/${params.dir}/session/${sessionID}`)}
       onSessionHref={(sessionID: string) => `/${params.dir}/session/${sessionID}`}
+      onSavePlan={async (input) => {
+        const result = await auth.savePlan({
+          session_id: input.sessionID,
+          message_id: input.messageID,
+          part_id: input.partID,
+          vho_feedback_no: input.vho_feedback_no,
+        })
+        if (!result.ok) {
+          showToast({
+            variant: "error",
+            title: language.t("common.requestFailed"),
+            description: result.code,
+          })
+        }
+        if (result.ok) {
+          showToast({
+            variant: "success",
+            icon: "circle-check",
+            title: language.t("ui.messagePart.plan.saved"),
+          })
+        }
+        return result
+      }}
     >
       <LocalProvider>{props.children}</LocalProvider>
     </DataProvider>
