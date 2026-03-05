@@ -425,6 +425,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     const enriched = createMemo(() => server.projects.list().map(enrich))
     const allowedWorktrees = createMemo(() => {
       if (!auth.enabled()) return
+      if (!globalSync.ready) return
       return new Set(globalSync.data.project.flatMap((project) => [project.worktree, ...(project.sandboxes ?? [])]))
     })
     const list = createMemo(() => {
