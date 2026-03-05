@@ -65,6 +65,14 @@ function createGlobalSync() {
   const booting = new Map<string, Promise<void>>()
   const sessionLoads = new Map<string, Promise<void>>()
   const sessionMeta = new Map<string, { limit: number }>()
+  const statusLoads = new Map<string, Promise<void>>()
+  const degradedPullAt = new Map<string, number>()
+  const busySince = new Map<string, number>()
+  const progressAt = new Map<string, number>()
+  const stalledPullAt = new Map<string, number>()
+  const STATUS_REFRESH_COOLDOWN_MS = 5000
+  const STALLED_BUSY_MS = 60_000
+  const STALLED_POLL_MS = 15_000
 
   const [projectCache, setProjectCache, , projectCacheReady] = persisted(
     Persist.global(`acct:${accountID}:globalSync.project`),
@@ -115,6 +123,14 @@ function createGlobalSync() {
       queue.clear(directory)
       sessionMeta.delete(directory)
       sdkCache.delete(directory)
+      statusLoads.delete(directory)
+      degradedPullAt.delete(directory)
+      for (const key of [...busySince.keys()]) {
+        if (!key.startsWith(`${directory}\n`)) continue
+        busySince.delete(key)
+        progressAt.delete(key)
+        stalledPullAt.delete(key)
+      }
     },
   })
 
@@ -127,6 +143,79 @@ function createGlobalSync() {
     })
     sdkCache.set(directory, sdk)
     return sdk
+  }
+
+  const sessionKey = (directory: string, sessionID: string) => `${directory}\n${sessionID}`
+
+  const refreshStatus = (directory: string, setStore: ReturnType<typeof children.child>[1], reason: string) => {
+    const pending = statusLoads.get(directory)
+    if (pending) return pending
+    const promise = sdkFor(directory)
+      .session.status()
+      .then((x) => {
+        setStore("session_status", reconcile(x.data ?? {}))
+      })
+      .catch((error) => {
+        console.error("[global-sync] failed to refresh session status", { directory, reason, error })
+      })
+      .finally(() => {
+        statusLoads.delete(directory)
+      })
+    statusLoads.set(directory, promise)
+    return promise
+  }
+
+  const noteBusy = (directory: string, sessionID: string) => {
+    const key = sessionKey(directory, sessionID)
+    if (!busySince.has(key)) {
+      busySince.set(key, Date.now())
+    }
+  }
+
+  const clearBusy = (directory: string, sessionID: string) => {
+    const key = sessionKey(directory, sessionID)
+    busySince.delete(key)
+    progressAt.delete(key)
+    stalledPullAt.delete(key)
+  }
+
+  const noteProgress = (directory: string, sessionID: string) => {
+    progressAt.set(sessionKey(directory, sessionID), Date.now())
+  }
+
+  const refreshStalledBusy = () => {
+    const now = Date.now()
+    for (const [directory, child] of Object.entries(children.children)) {
+      const [, setStore] = child
+      const sessions = child[0].session_status
+      const live = new Set<string>()
+      const stalled = Object.entries(sessions).some(([sessionID, status]) => {
+        const key = sessionKey(directory, sessionID)
+        live.add(key)
+        if (status?.type !== "busy") {
+          clearBusy(directory, sessionID)
+          return false
+        }
+        noteBusy(directory, sessionID)
+        const started = busySince.get(key) ?? now
+        const progressed = progressAt.get(key) ?? started
+        const pulled = stalledPullAt.get(key) ?? 0
+        if (now - started < STALLED_BUSY_MS) return false
+        if (now - progressed < STALLED_BUSY_MS) return false
+        if (now - pulled < STATUS_REFRESH_COOLDOWN_MS) return false
+        stalledPullAt.set(key, now)
+        return true
+      })
+      for (const key of [...busySince.keys()]) {
+        if (!key.startsWith(`${directory}\n`)) continue
+        if (live.has(key)) continue
+        busySince.delete(key)
+        progressAt.delete(key)
+        stalledPullAt.delete(key)
+      }
+      if (!stalled) continue
+      void refreshStatus(directory, setStore, "busy_stalled")
+    }
   }
 
   createEffect(() => {
@@ -255,6 +344,7 @@ function createGlobalSync() {
   const unsub = globalSDK.event.listen((e) => {
     const directory = e.name
     const event = e.details
+    const type = (event as { type?: string }).type
 
     if (directory === "global") {
       applyGlobalEvent({
@@ -269,19 +359,20 @@ function createGlobalSync() {
           setGlobalStore("project", next)
         },
       })
-      if (event.type === "server.connected" || event.type === "global.disposed") {
+      if (type === "server.connected" || type === "global.disposed" || type === "server.degraded") {
         for (const [directory, child] of Object.entries(children.children)) {
-          queue.push(directory)
-          if (event.type !== "server.connected") continue
           const [, setStore] = child
-          sdkFor(directory)
-            .session.status()
-            .then((x) => {
-              setStore("session_status", reconcile(x.data ?? {}))
-            })
-            .catch((error) => {
-              console.error("[global-sync] failed to refresh session status on reconnect", { directory, error })
-            })
+          if (type === "global.disposed" || type === "server.connected") {
+            queue.push(directory)
+          }
+          if (type === "global.disposed") continue
+          if (type === "server.degraded") {
+            const now = Date.now()
+            const last = degradedPullAt.get(directory) ?? 0
+            if (now - last < STATUS_REFRESH_COOLDOWN_MS) continue
+            degradedPullAt.set(directory, now)
+          }
+          void refreshStatus(directory, setStore, type === "server.degraded" ? "degraded" : "reconnect")
         }
       }
       return
@@ -305,9 +396,43 @@ function createGlobalSync() {
           .then((x) => setStore("lsp", x.data ?? []))
       },
     })
+    if (type === "session.status") {
+      const props = event.properties as { sessionID?: string; status?: { type?: string } } | undefined
+      const sessionID = props?.sessionID
+      if (!sessionID) return
+      if (props.status?.type === "busy") noteBusy(directory, sessionID)
+      else clearBusy(directory, sessionID)
+      return
+    }
+    if (type === "message.updated") {
+      const props = event.properties as { info?: { sessionID?: string } } | undefined
+      const sessionID = props?.info?.sessionID
+      if (!sessionID) return
+      noteProgress(directory, sessionID)
+      return
+    }
+    if (type === "message.part.updated") {
+      const props = event.properties as { part?: { sessionID?: string } } | undefined
+      const sessionID = props?.part?.sessionID
+      if (!sessionID) return
+      noteProgress(directory, sessionID)
+      return
+    }
+    if (type === "message.part.delta" || type === "message.part.removed") {
+      const props = event.properties as { sessionID?: string } | undefined
+      const sessionID = props?.sessionID
+      if (!sessionID) return
+      noteProgress(directory, sessionID)
+      return
+    }
   })
 
+  const stalledWatch = setInterval(refreshStalledBusy, STALLED_POLL_MS)
+
   onCleanup(unsub)
+  onCleanup(() => {
+    clearInterval(stalledWatch)
+  })
   onCleanup(() => {
     queue.dispose()
   })

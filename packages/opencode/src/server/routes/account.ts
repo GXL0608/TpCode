@@ -194,7 +194,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -231,7 +231,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -266,7 +266,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -397,7 +397,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         const info = await UserService.meVho(user_id)
         return c.json({
           ...result,
@@ -451,7 +451,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -514,7 +514,7 @@ export const AccountRoutes = lazy(() =>
         })
         if (!result.ok) {
           const status = result.code === "session_missing" || result.code === "message_missing" ? 404 : 400
-          return c.json(result, status)
+          return c.json({ ...result, error_code: result.code }, status)
         }
         UserService.auditLater({
           actor_user_id: user_id,
@@ -634,7 +634,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -759,7 +759,7 @@ export const AccountRoutes = lazy(() =>
           name: body.name,
           directory: body.directory,
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         await UserService.audit({
           actor_user_id,
           action: "account.product.create",
@@ -798,7 +798,7 @@ export const AccountRoutes = lazy(() =>
           name: body.name,
           directory: body.directory,
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         await UserService.audit({
           actor_user_id,
           action: "account.product.update",
@@ -826,7 +826,7 @@ export const AccountRoutes = lazy(() =>
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
         const result = await AccountProductService.remove(param.product_id)
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         await UserService.audit({
           actor_user_id,
           action: "account.product.delete",
@@ -847,7 +847,7 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const param = c.req.valid("param")
         const result = await AccountProductService.roleProducts(param.role_code)
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -865,7 +865,7 @@ export const AccountRoutes = lazy(() =>
           role_code: param.role_code,
           product_ids: body.product_ids,
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         await UserService.audit({
           actor_user_id,
           action: "account.role.products.update",
@@ -889,7 +889,7 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const param = c.req.valid("param")
         const result = await AccountContextService.roleProjects(param.role_code)
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -907,7 +907,7 @@ export const AccountRoutes = lazy(() =>
           role_code: param.role_code,
           project_ids: body.project_ids,
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         await UserService.audit({
           actor_user_id,
           action: "account.role.projects.update",
@@ -941,7 +941,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -1017,7 +1017,7 @@ export const AccountRoutes = lazy(() =>
           project_id: body.project_id,
           role_codes: body.role_codes,
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         await UserService.audit({
           actor_user_id,
           action: "account.project_access.role.set",
@@ -1073,7 +1073,7 @@ export const AccountRoutes = lazy(() =>
           user_id: body.user_id,
           mode: body.mode,
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         await UserService.audit({
           actor_user_id,
           action: "account.project_access.user.set",
@@ -1139,7 +1139,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -1232,7 +1232,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -1262,7 +1262,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -1280,7 +1280,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -1375,7 +1375,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -1414,7 +1414,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     )
@@ -1480,7 +1480,7 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
-        if (!result.ok) return c.json(result, 400)
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
         return c.json(result)
       },
     ),

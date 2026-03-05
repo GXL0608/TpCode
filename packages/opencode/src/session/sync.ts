@@ -8,6 +8,8 @@ import { Log } from "@/util/log"
 import { Identifier } from "@/id/id"
 import { Instance } from "@/project/instance"
 import { createHash } from "crypto"
+import { Flag } from "@/flag/flag"
+import { ServerDegraded } from "@/server/degraded"
 
 const log = Log.create({ service: "sync" })
 
@@ -26,8 +28,13 @@ export namespace SessionSync {
     retryWorkerRunning: false,
     replayingSessions: new Set<string>(),
     replayRequestedSessions: new Set<string>(),
+    sessionSyncTimerByID: new Map<string, ReturnType<typeof setTimeout>>(),
     lastPayloadHashByEntity: new Map<string, string>(),
     sessionAccountByID: new Map<string, SessionAccountSnapshot>(),
+    syncCircuit: {
+      failures: 0,
+      openUntil: 0,
+    },
   }))
 
   /**
@@ -46,6 +53,19 @@ export namespace SessionSync {
   const DEFAULT_INITIAL_FULL_SYNC_BATCH_SIZE = 25
   const MAX_RETRY_DELAY_MS = 5 * 60 * 1000
   const MAX_BACKOFF_EXPONENT = 8
+  const MESSAGE_SYNC_DEBOUNCE_MS = 250
+  const SYNC_CIRCUIT_FAIL_THRESHOLD = 5
+  const SYNC_CIRCUIT_OPEN_MS = 30_000
+
+  const SyncCircuitError = class extends Error {
+    constructor(readonly until: number) {
+      super(`sync circuit open until ${until}`)
+    }
+  }
+
+  function circuitOpenError(error: unknown): error is InstanceType<typeof SyncCircuitError> {
+    return error instanceof SyncCircuitError
+  }
 
   /**
    * 初始化同步模块
@@ -102,6 +122,11 @@ export namespace SessionSync {
       instanceState.lastPayloadHashByEntity.delete(sessionEntityKey(sessionID))
       instanceState.replayingSessions.delete(sessionID)
       instanceState.replayRequestedSessions.delete(sessionID)
+      const timer = instanceState.sessionSyncTimerByID.get(sessionID)
+      if (timer) {
+        clearTimeout(timer)
+        instanceState.sessionSyncTimerByID.delete(sessionID)
+      }
     })
     log.info("session.deleted subscription created", { hasSubscription: !!sub6 })
 
@@ -109,7 +134,7 @@ export namespace SessionSync {
     log.info("subscribing to message events")
     const sub3 = Bus.subscribe(MessageV2.Event.Updated, (event) => {
       log.info("message.updated event received", { sessionID: event.properties.info.sessionID, messageID: event.properties.info.id })
-      void handleMessageEvent(event.properties.info.sessionID, event.properties.info.id).catch((err) => {
+      void handleMessageEvent(event.properties.info.sessionID, event.properties.info.id, "updated").catch((err) => {
         log.error("error handling message.updated", { error: err })
       })
     })
@@ -119,7 +144,7 @@ export namespace SessionSync {
     const sub4 = Bus.subscribe(MessageV2.Event.PartUpdated, (event) => {
       const { sessionID, messageID, id, type } = event.properties.part
       log.info("message.part.updated event received", { sessionID, messageID, partID: id, partType: type })
-      void handleMessageEvent(sessionID, messageID).catch((err) => {
+      void handleMessageEvent(sessionID, messageID, "part.updated").catch((err) => {
         log.error("error handling message.part.updated", { error: err })
       })
     })
@@ -131,7 +156,7 @@ export namespace SessionSync {
         messageID: event.properties.messageID,
         partID: event.properties.partID,
       })
-      void handleMessageEvent(event.properties.sessionID, event.properties.messageID).catch((err) => {
+      void handleMessageEvent(event.properties.sessionID, event.properties.messageID, "part.removed").catch((err) => {
         log.error("error handling message.part.removed", { error: err })
       })
     })
@@ -163,6 +188,13 @@ export namespace SessionSync {
       await sendToServer(await toSessionPayload(sessionInfo, options))
       log.debug("session synced successfully", { sessionID: sessionInfo.id, eventType })
     } catch (error) {
+      if (circuitOpenError(error)) {
+        log.warn("defer session sync while circuit is open", { sessionID: sessionInfo.id, eventType, error })
+        await enqueueRetry(eventType, sessionInfo.id, { type: "session", sessionID: sessionInfo.id }, error, {
+          nextRetryAt: error.until,
+        })
+        return
+      }
       log.warn("failed to sync session", { sessionID: sessionInfo.id, error })
       await enqueueRetry(eventType, sessionInfo.id, { type: "session", sessionID: sessionInfo.id }, error)
     }
@@ -171,13 +203,68 @@ export namespace SessionSync {
   /**
    * 处理消息事件
    */
-  async function handleMessageEvent(sessionID: string, messageID: string): Promise<void> {
+  async function handleMessageEvent(sessionID: string, messageID: string, eventType: string): Promise<void> {
+    if (!Flag.TPCODE_SYNC_INCREMENTAL) {
+      try {
+        await replaySessionHistory(sessionID, `message-event:${messageID}`)
+        log.debug("session history replayed after message event", { sessionID, messageID })
+      } catch (error) {
+        log.warn("failed to replay session history after message event", { sessionID, messageID, error })
+        await enqueueRetry("session.replay", sessionID, { type: "session-replay", sessionID }, error)
+      }
+      return
+    }
+
+    await syncMessageIncremental(sessionID, messageID, eventType)
+    scheduleSessionIncrementalSync(sessionID, `message-event:${messageID}`)
+  }
+
+  async function syncMessageIncremental(sessionID: string, messageID: string, eventType: string): Promise<void> {
     try {
-      await replaySessionHistory(sessionID, `message-event:${messageID}`)
-      log.debug("session history replayed after message event", { sessionID, messageID })
+      const message = await MessageV2.get({
+        sessionID,
+        messageID,
+      })
+      await sendToServer(toMessagePayload(sessionID, message))
+      log.debug("message synced incrementally", { sessionID, messageID, eventType })
     } catch (error) {
-      log.warn("failed to replay session history after message event", { sessionID, messageID, error })
-      await enqueueRetry("session.replay", sessionID, { type: "session-replay", sessionID }, error)
+      if (circuitOpenError(error)) {
+        log.warn("defer message sync while circuit is open", { sessionID, messageID, eventType, error })
+        await enqueueRetry(`message.${eventType}`, sessionID, { type: "message", sessionID, messageID }, error, {
+          nextRetryAt: error.until,
+        })
+        return
+      }
+      log.warn("failed to sync message incrementally", { sessionID, messageID, eventType, error })
+      await enqueueRetry(`message.${eventType}`, sessionID, { type: "message", sessionID, messageID }, error)
+    }
+  }
+
+  function scheduleSessionIncrementalSync(sessionID: string, reason: string) {
+    if (!Flag.TPCODE_SYNC_INCREMENTAL) return
+    const instanceState = state()
+    if (instanceState.sessionSyncTimerByID.has(sessionID)) return
+    const timer = setTimeout(() => {
+      instanceState.sessionSyncTimerByID.delete(sessionID)
+      void syncSessionIncremental(sessionID, reason)
+    }, MESSAGE_SYNC_DEBOUNCE_MS)
+    instanceState.sessionSyncTimerByID.set(sessionID, timer)
+  }
+
+  async function syncSessionIncremental(sessionID: string, reason: string): Promise<void> {
+    try {
+      await sendToServer(await buildSessionPayload(sessionID))
+      log.debug("session synced incrementally", { sessionID, reason })
+    } catch (error) {
+      if (circuitOpenError(error)) {
+        log.warn("defer session incremental sync while circuit is open", { sessionID, reason, error })
+        await enqueueRetry("session.incremental", sessionID, { type: "session", sessionID }, error, {
+          nextRetryAt: error.until,
+        })
+        return
+      }
+      log.warn("failed to sync session incrementally", { sessionID, reason, error })
+      await enqueueRetry("session.incremental", sessionID, { type: "session", sessionID }, error)
     }
   }
 
@@ -208,6 +295,13 @@ export namespace SessionSync {
     try {
       await sendToServer(await toSessionPayload(sessionInfo))
     } catch (error) {
+      if (circuitOpenError(error)) {
+        log.warn("defer session replay while circuit is open", { sessionID, reason, error })
+        await enqueueRetry("session.replay", sessionID, { type: "session-replay", sessionID }, error, {
+          nextRetryAt: error.until,
+        })
+        return
+      }
       await enqueueRetry("session.replay", sessionID, { type: "session", sessionID }, error)
     }
 
@@ -216,6 +310,13 @@ export namespace SessionSync {
         await sendToServer(toMessagePayload(sessionID, message))
         messageCount += 1
       } catch (error) {
+        if (circuitOpenError(error)) {
+          log.warn("defer replay message loop while circuit is open", { sessionID, reason, error })
+          await enqueueRetry("session.replay", sessionID, { type: "session-replay", sessionID }, error, {
+            nextRetryAt: error.until,
+          })
+          return
+        }
         await enqueueRetry("message.replay", sessionID, { type: "message", sessionID, messageID: message.info.id }, error)
       }
     }
@@ -358,6 +459,45 @@ export namespace SessionSync {
     return createHash("sha256").update(payload.type).update("\n").update(JSON.stringify(payload.data)).digest("hex")
   }
 
+  function syncCircuitCheck() {
+    const instanceState = state()
+    const now = Date.now()
+    if (now < instanceState.syncCircuit.openUntil) {
+      throw new SyncCircuitError(instanceState.syncCircuit.openUntil)
+    }
+  }
+
+  function syncCircuitSuccess() {
+    const circuit = state().syncCircuit
+    if (circuit.failures === 0 && circuit.openUntil === 0) return
+    circuit.failures = 0
+    circuit.openUntil = 0
+    ServerDegraded.clear("sync.circuit", {
+      failures: 0,
+    })
+  }
+
+  function syncCircuitFailure(error: unknown) {
+    const circuit = state().syncCircuit
+    circuit.failures += 1
+    if (circuit.failures < SYNC_CIRCUIT_FAIL_THRESHOLD) {
+      ServerDegraded.mark("sync.circuit", "sync_failures", {
+        failures: circuit.failures,
+      })
+      return
+    }
+    circuit.openUntil = Date.now() + SYNC_CIRCUIT_OPEN_MS
+    ServerDegraded.mark("sync.circuit", "sync_circuit_open", {
+      failures: circuit.failures,
+      open_until: circuit.openUntil,
+    })
+    log.warn("sync circuit opened", {
+      failures: circuit.failures,
+      openUntil: circuit.openUntil,
+      error,
+    })
+  }
+
   async function runInitialFullSyncIfNeeded(batchSize: number): Promise<void> {
     try {
       if (await hasCompletedInitialFullSync()) {
@@ -461,6 +601,13 @@ export namespace SessionSync {
           await sendToServer(await toSessionPayload(sessionInfo))
           sessionsSynced += 1
         } catch (error) {
+          if (circuitOpenError(error)) {
+            log.warn("defer initial full sync session while circuit is open", { sessionID: row.id, error })
+            await enqueueRetry("session.full-sync", row.id, { type: "session", sessionID: row.id }, error, {
+              nextRetryAt: error.until,
+            })
+            continue
+          }
           await enqueueRetry("session.full-sync", row.id, { type: "session", sessionID: row.id }, error)
         }
 
@@ -469,6 +616,17 @@ export namespace SessionSync {
             await sendToServer(toMessagePayload(row.id, message))
             messagesSynced += 1
           } catch (error) {
+            if (circuitOpenError(error)) {
+              log.warn("defer initial full sync message loop while circuit is open", {
+                sessionID: row.id,
+                messageID: message.info.id,
+                error,
+              })
+              await enqueueRetry("session.replay", row.id, { type: "session-replay", sessionID: row.id }, error, {
+                nextRetryAt: error.until,
+              })
+              break
+            }
             await enqueueRetry(
               "message.full-sync",
               row.id,
@@ -532,6 +690,13 @@ export namespace SessionSync {
           await sendToServer(payload)
           sessionsSynced += 1
         } catch (error) {
+          if (circuitOpenError(error)) {
+            log.warn("defer session account backfill while circuit is open", { sessionID: row.id, error })
+            await enqueueRetry("session.account-backfill", row.id, { type: "session", sessionID: row.id }, error, {
+              nextRetryAt: error.until,
+            })
+            continue
+          }
           await enqueueRetry("session.account-backfill", row.id, { type: "session", sessionID: row.id }, error)
         }
       }
@@ -553,6 +718,7 @@ export namespace SessionSync {
     if (!config.sync?.enabled) {
       throw new Error("Sync is not enabled")
     }
+    syncCircuitCheck()
 
     const entityKey = payloadEntityKey(payload)
     const nextHash = entityKey ? payloadHash(payload) : undefined
@@ -585,10 +751,14 @@ export namespace SessionSync {
         throw new Error(`HTTP ${response.status}: ${errorText}`)
       }
 
+      syncCircuitSuccess()
       if (entityKey && nextHash) {
         instanceState.lastPayloadHashByEntity.set(entityKey, nextHash)
       }
       log.debug("data sent to server successfully", { type: payload.type })
+    } catch (error) {
+      syncCircuitFailure(error)
+      throw error
     } finally {
       clearTimeout(timeoutId)
     }
@@ -602,10 +772,13 @@ export namespace SessionSync {
     sessionID: string,
     payload: any,
     error: unknown,
+    options?: {
+      nextRetryAt?: number
+    },
   ): Promise<void> {
     const config = await Config.state().then((s) => s.config)
     const errorMessage = error instanceof Error ? error.message : String(error)
-    const nextRetry = Date.now() + (config.sync?.retryDelay ?? 5000)
+    const nextRetry = options?.nextRetryAt ?? Date.now() + (config.sync?.retryDelay ?? 5000)
 
     try {
       await Database.use(async (db) => {
@@ -716,6 +889,23 @@ export namespace SessionSync {
 
         log.debug("retry task succeeded", { taskID: task.id, attempts: task.attempts + 1 })
       } catch (error) {
+        if (circuitOpenError(error)) {
+          const nextRetry = error.until
+          await Database.use(async (db) => {
+            await db.update(SyncQueueTable)
+              .set({
+                next_retry: nextRetry,
+                time_updated: Date.now(),
+              })
+              .where(eq(SyncQueueTable.id, task.id))
+              .run()
+          })
+          log.warn("retry task deferred while sync circuit is open", {
+            taskID: task.id,
+            nextRetry,
+          })
+          continue
+        }
         // 更新重试次数和错误信息
         const errorMessage = error instanceof Error ? error.message : String(error)
         const newAttempts = task.attempts + 1
@@ -763,8 +953,15 @@ export namespace SessionSync {
     instanceState.retryWorkerRunning = false
     instanceState.replayingSessions.clear()
     instanceState.replayRequestedSessions.clear()
+    for (const timer of instanceState.sessionSyncTimerByID.values()) {
+      clearTimeout(timer)
+    }
+    instanceState.sessionSyncTimerByID.clear()
     instanceState.lastPayloadHashByEntity.clear()
     instanceState.sessionAccountByID.clear()
+    instanceState.syncCircuit.failures = 0
+    instanceState.syncCircuit.openUntil = 0
+    ServerDegraded.clear("sync.circuit")
     instanceState.initialized = false
     log.info("session sync shutdown")
   }

@@ -122,6 +122,9 @@ export namespace Flag {
   export declare const TPCODE_CONTEXT_CACHE: boolean
   export declare const TPCODE_EVENT_VISIBILITY_CACHE: boolean
   export declare const TPCODE_SESSION_SEARCH_INFO_LOG: boolean
+  export declare const TPCODE_SYNC_INCREMENTAL: boolean
+  export declare const TPCODE_SSE_DROP_DELTA_ON_OVERFLOW: boolean
+  export declare const TPCODE_AUTH_BULKHEAD: boolean
   export declare const OPENCODE_WEB_ALLOW_REMOTE_PROXY: boolean
   export const OPENCODE_ENABLE_QUESTION_TOOL = truthy("OPENCODE_ENABLE_QUESTION_TOOL")
 
@@ -307,6 +310,36 @@ Object.defineProperty(Flag, "TPCODE_EVENT_VISIBILITY_CACHE", {
 Object.defineProperty(Flag, "TPCODE_SESSION_SEARCH_INFO_LOG", {
   get() {
     return truthy("TPCODE_SESSION_SEARCH_INFO_LOG")
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_SYNC_INCREMENTAL", {
+  get() {
+    const value = process.env["TPCODE_SYNC_INCREMENTAL"]?.toLowerCase()
+    if (value === undefined) return true
+    return value === "true" || value === "1"
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_SSE_DROP_DELTA_ON_OVERFLOW", {
+  get() {
+    const value = process.env["TPCODE_SSE_DROP_DELTA_ON_OVERFLOW"]?.toLowerCase()
+    if (value === undefined) return true
+    return value === "true" || value === "1"
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_AUTH_BULKHEAD", {
+  get() {
+    const value = process.env["TPCODE_AUTH_BULKHEAD"]?.toLowerCase()
+    if (value === undefined) return true
+    return value === "true" || value === "1"
   },
   enumerable: true,
   configurable: false,

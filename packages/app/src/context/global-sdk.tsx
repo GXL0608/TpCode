@@ -56,10 +56,15 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
     const deltaKey = (directory: string, messageID: string, partID: string) => `${directory}:${messageID}:${partID}`
 
     const key = (directory: string, payload: Event) => {
-      if (payload.type === "session.status") return `session.status:${directory}:${payload.properties.sessionID}`
-      if (payload.type === "lsp.updated") return `lsp.updated:${directory}`
-      if (payload.type === "message.part.updated") {
-        const part = payload.properties.part
+      const type = (payload as { type?: string }).type
+      if (type === "session.status") {
+        const props = payload.properties as { sessionID: string }
+        return `session.status:${directory}:${props.sessionID}`
+      }
+      if (type === "lsp.updated") return `lsp.updated:${directory}`
+      if (type === "server.degraded") return `server.degraded:${directory}`
+      if (type === "message.part.updated") {
+        const part = (payload.properties as { part: { messageID: string; id: string } }).part
         return `message.part.updated:${directory}:${part.messageID}:${part.id}`
       }
     }

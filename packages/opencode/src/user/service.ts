@@ -17,12 +17,16 @@ import { Log } from "@/util/log"
 import { AccountContextService } from "./context"
 import { Project } from "@/project/project"
 import { Filesystem } from "@/util/filesystem"
+import { ServerDegraded } from "@/server/degraded"
 
 type UserRow = typeof TpUserTable.$inferSelect
 const log = Log.create({ service: "user" })
 const AUTH_CACHE_TTL_MS = 300_000
 const AUTH_CACHE_MAX_SIZE = 20_000
 const AUTH_CACHE_SWEEP_BATCH = 256
+const LOGIN_BULKHEAD_CONCURRENCY = 16
+const LOGIN_BULKHEAD_QUEUE_MAX = 200
+const LOGIN_BULKHEAD_TIMEOUT_MS = 3000
 
 function hash(input: string) {
   return createHash("sha256").update(input).digest("hex")
@@ -255,7 +259,93 @@ const authCacheByTokenHash = new Map<
   }
 >()
 const authCacheTokenSetByUserID = new Map<string, Set<string>>()
+const authCacheMetrics = {
+  hit: 0,
+  miss: 0,
+}
+
+const loginBulkhead = {
+  active: 0,
+  queue: [] as {
+    done: boolean
+    timer: ReturnType<typeof setTimeout>
+    resolve(release: () => void): void
+    reject(reason: Error): void
+  }[],
+}
+
 let ensureSeedPromise: Promise<void> | undefined
+
+function authCacheTrace(input: { hit: boolean; startedAt: number }) {
+  if (input.hit) authCacheMetrics.hit += 1
+  else authCacheMetrics.miss += 1
+  const total = authCacheMetrics.hit + authCacheMetrics.miss
+  const hitRate = total === 0 ? 0 : Number((authCacheMetrics.hit / total).toFixed(4))
+  log.debug("account auth cache", {
+    auth_cache_hit: input.hit,
+    auth_cache_hit_rate: hitRate,
+    auth_cache_size: authCacheByTokenHash.size,
+    auth_latency_ms: Date.now() - input.startedAt,
+  })
+}
+
+function releaseLoginSlot() {
+  if (loginBulkhead.active > 0) {
+    loginBulkhead.active -= 1
+  }
+  while (loginBulkhead.active < LOGIN_BULKHEAD_CONCURRENCY && loginBulkhead.queue.length > 0) {
+    const next = loginBulkhead.queue.shift()
+    if (!next || next.done) continue
+    next.done = true
+    clearTimeout(next.timer)
+    loginBulkhead.active += 1
+    next.resolve(releaseLoginSlot)
+  }
+  if (loginBulkhead.active < LOGIN_BULKHEAD_CONCURRENCY && loginBulkhead.queue.length < LOGIN_BULKHEAD_QUEUE_MAX / 4) {
+    ServerDegraded.clear("auth.bulkhead", {
+      active: loginBulkhead.active,
+      queued: loginBulkhead.queue.length,
+    })
+  }
+}
+
+function acquireLoginSlot() {
+  if (!Flag.TPCODE_AUTH_BULKHEAD) {
+    return Promise.resolve(() => {})
+  }
+  if (loginBulkhead.active < LOGIN_BULKHEAD_CONCURRENCY) {
+    loginBulkhead.active += 1
+    return Promise.resolve(releaseLoginSlot)
+  }
+  if (loginBulkhead.queue.length >= LOGIN_BULKHEAD_QUEUE_MAX) {
+    ServerDegraded.mark("auth.bulkhead", "queue_overflow", {
+      active: loginBulkhead.active,
+      queued: loginBulkhead.queue.length,
+    })
+    return Promise.reject(new Error("auth_bulkhead_overloaded"))
+  }
+  return new Promise<() => void>((resolve, reject) => {
+    const wait = {
+      done: false,
+      timer: setTimeout(() => {
+        if (wait.done) return
+        wait.done = true
+        const index = loginBulkhead.queue.indexOf(wait)
+        if (index >= 0) {
+          loginBulkhead.queue.splice(index, 1)
+        }
+        ServerDegraded.mark("auth.bulkhead", "queue_timeout", {
+          active: loginBulkhead.active,
+          queued: loginBulkhead.queue.length,
+        })
+        reject(new Error("auth_bulkhead_timeout"))
+      }, LOGIN_BULKHEAD_TIMEOUT_MS),
+      resolve,
+      reject,
+    }
+    loginBulkhead.queue.push(wait)
+  })
+}
 
 function invalidateByTokenHash(tokenHash: string) {
   const existing = authCacheByTokenHash.get(tokenHash)
@@ -606,20 +696,60 @@ export namespace UserService {
   }
 
   export async function login(input: { username: string; password: string; ip?: string; user_agent?: string }) {
-    const user = await userByUsername(input.username)
-    if (!user) return { ok: false as const, code: "invalid_credentials" }
-    if (user.status !== "active") return { ok: false as const, code: "invalid_credentials" }
-    const now = Date.now()
-    const valid = await UserPassword.verify(input.password, user.password_hash)
-    if (!valid) {
-      if (user.locked_until && user.locked_until > now) return { ok: false as const, code: "user_locked" }
-      const failed = user.failed_login_count + 1
-      const locked = failed >= 5 ? now + 15 * 60 * 1000 : null
+    const release = await acquireLoginSlot().catch((error) => error as Error)
+    if (release instanceof Error) {
+      const code = release.message === "auth_bulkhead_timeout" ? "auth_timeout" : "auth_overloaded"
+      log.warn("login rejected by bulkhead", {
+        code,
+        active: loginBulkhead.active,
+        queued: loginBulkhead.queue.length,
+      })
+      return { ok: false as const, code }
+    }
+    try {
+      const user = await userByUsername(input.username)
+      if (!user) return { ok: false as const, code: "invalid_credentials" }
+      if (user.status !== "active") return { ok: false as const, code: "invalid_credentials" }
+      const now = Date.now()
+      const valid = await UserPassword.verify(input.password, user.password_hash)
+      if (!valid) {
+        if (user.locked_until && user.locked_until > now) return { ok: false as const, code: "user_locked" }
+        const failed = user.failed_login_count + 1
+        const locked = failed >= 5 ? now + 15 * 60 * 1000 : null
+        await Database.use(async (db) => {
+          await db.update(TpUserTable)
+            .set({
+              failed_login_count: failed,
+              locked_until: locked,
+            })
+            .where(eq(TpUserTable.id, user.id))
+            .run()
+        })
+        auditLater({
+          actor_user_id: user.id,
+          action: "account.login",
+          target_type: "tp_user",
+          target_id: user.id,
+          result: "failed",
+          ip: input.ip,
+          user_agent: input.user_agent,
+        })
+        return { ok: false as const, code: "invalid_credentials" }
+      }
+      const roles = await rolesByUser(user.id)
+      const permissions = await permissionsByUser(user.id)
+      const token = await issueTokens({
+        user_id: user.id,
+        ip: input.ip,
+        user_agent: input.user_agent,
+      })
       await Database.use(async (db) => {
         await db.update(TpUserTable)
           .set({
-            failed_login_count: failed,
-            locked_until: locked,
+            failed_login_count: 0,
+            locked_until: null,
+            last_login_at: Date.now(),
+            last_login_ip: input.ip,
           })
           .where(eq(TpUserTable.id, user.id))
           .run()
@@ -629,43 +759,17 @@ export namespace UserService {
         action: "account.login",
         target_type: "tp_user",
         target_id: user.id,
-        result: "failed",
+        result: "success",
         ip: input.ip,
         user_agent: input.user_agent,
       })
-      return { ok: false as const, code: "invalid_credentials" }
-    }
-    const roles = await rolesByUser(user.id)
-    const permissions = await permissionsByUser(user.id)
-    const token = await issueTokens({
-      user_id: user.id,
-      ip: input.ip,
-      user_agent: input.user_agent,
-    })
-    await Database.use(async (db) => {
-      await db.update(TpUserTable)
-        .set({
-          failed_login_count: 0,
-          locked_until: null,
-          last_login_at: Date.now(),
-          last_login_ip: input.ip,
-        })
-        .where(eq(TpUserTable.id, user.id))
-        .run()
-    })
-    auditLater({
-      actor_user_id: user.id,
-      action: "account.login",
-      target_type: "tp_user",
-      target_id: user.id,
-      result: "success",
-      ip: input.ip,
-      user_agent: input.user_agent,
-    })
-    return {
-      ok: true as const,
-      ...token,
-      user: profile({ user, roles, permissions }),
+      return {
+        ok: true as const,
+        ...token,
+        user: profile({ user, roles, permissions }),
+      }
+    } finally {
+      release()
     }
   }
 
@@ -817,13 +921,18 @@ export namespace UserService {
   }
 
   export async function authorizeDetail(token: string): Promise<AuthorizeDetail> {
+    const startedAt = Date.now()
     const parsed = await UserJwt.verifyAccess(token)
-    if (!parsed) return { ok: false, reason: "jwt_invalid" }
+    if (!parsed) {
+      authCacheTrace({ hit: false, startedAt })
+      return { ok: false, reason: "jwt_invalid" }
+    }
     const now = Date.now()
     sweepExpiredAuthCache(now)
     const hashed = tokenHash(token)
     const cached = authCacheByTokenHash.get(hashed)
     if (cached && cached.expiresAt > now) {
+      authCacheTrace({ hit: true, startedAt })
       return cached.detail
     }
     if (cached) {
@@ -844,11 +953,21 @@ export namespace UserService {
         )
         .get(),
     )
-    if (!row) return { ok: false, reason: "session_missing", sid: parsed.sid, sub: parsed.sub }
-    if (row.expires_at <= now) return { ok: false, reason: "session_expired", sid: parsed.sid, sub: parsed.sub }
+    if (!row) {
+      authCacheTrace({ hit: false, startedAt })
+      return { ok: false, reason: "session_missing", sid: parsed.sid, sub: parsed.sub }
+    }
+    if (row.expires_at <= now) {
+      authCacheTrace({ hit: false, startedAt })
+      return { ok: false, reason: "session_expired", sid: parsed.sid, sub: parsed.sub }
+    }
     const user = await userByID(parsed.sub)
-    if (!user || user.status !== "active") return { ok: false, reason: "user_inactive", sid: parsed.sid, sub: parsed.sub }
+    if (!user || user.status !== "active") {
+      authCacheTrace({ hit: false, startedAt })
+      return { ok: false, reason: "user_inactive", sid: parsed.sid, sub: parsed.sub }
+    }
     if (user.locked_until && user.locked_until > now) {
+      authCacheTrace({ hit: false, startedAt })
       return {
         ok: false,
         reason: "user_locked",
@@ -879,6 +998,7 @@ export namespace UserService {
         expiresAt,
       })
     }
+    authCacheTrace({ hit: false, startedAt })
     return detail
   }
 
