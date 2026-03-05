@@ -448,12 +448,13 @@ async fn initialize(app: AppHandle) {
     tracing::info!("Main and loading windows created");
 
     // SQLite migration handling:
-    // We only do this if the sqlite db doesn't exist, and we're expecting the sidecar to create it
+    // We only do this when PostgreSQL url is not configured and sqlite db doesn't exist,
+    // and we're expecting the sidecar to create it.
     // First, we spawn a task that listens for SqliteMigrationProgress events that can
     // come from any invocation of the sidecar CLI. The progress is captured by a stdout stream interceptor.
     // Then in the loading task, we wait for sqlite migration to complete before
     // starting our health check against the server, otherwise long migrations could result in a timeout.
-    let needs_sqlite_migration = !sqlite_file_exists();
+    let needs_sqlite_migration = !pgsql_configured() && !sqlite_file_exists();
     let sqlite_done = needs_sqlite_migration.then(|| {
         tracing::info!(
             path = %opencode_db_path().expect("failed to get db path").display(),
@@ -684,6 +685,10 @@ fn sqlite_file_exists() -> bool {
     };
 
     path.exists()
+}
+
+fn pgsql_configured() -> bool {
+    env::var_os("OPENCODE_DATABASE_URL").is_some() || env::var_os("OPENCODE_PG_URL").is_some()
 }
 
 fn opencode_db_path() -> Result<PathBuf, &'static str> {
