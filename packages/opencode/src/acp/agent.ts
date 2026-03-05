@@ -980,7 +980,7 @@ export namespace ACP {
           }
         } else if (part.type === "file") {
           // Replay file attachments as appropriate ACP content blocks.
-          // OpenCode stores files internally as { type: "file", url, filename, mime }.
+          // TpCode stores files internally as { type: "file", url, filename, mime }.
           // We convert these back to ACP blocks based on the URL scheme and MIME type:
           // - file:// URLs → resource_link
           // - data: URLs with image/* → image block

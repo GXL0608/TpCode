@@ -22,7 +22,7 @@ export function applyServeDefaults() {
 export const ServeCommand = cmd({
   command: "serve",
   builder: (yargs) => withNetworkOptions(yargs),
-  describe: "starts a headless opencode server",
+  describe: "starts a headless TpCode server",
   handler: async (args) => {
     applyServeDefaults()
 
@@ -31,7 +31,7 @@ export const ServeCommand = cmd({
     }
     const opts = await resolveNetworkOptions(args)
     const server = Server.listen(opts)
-    console.log(`opencode server listening on http://${server.hostname}:${server.port}`)
+    console.log(`TpCode server listening on http://${server.hostname}:${server.port}`)
 
     let workspaceSync: Array<Awaited<ReturnType<typeof Workspace.startSyncing>>> = []
     // Only available in development right now

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenCode Beta",
+  "productName": "TpCode Beta",
   "identifier": "ai.opencode.desktop.beta",
   "bundle": {
     "createUpdaterArtifacts": true,

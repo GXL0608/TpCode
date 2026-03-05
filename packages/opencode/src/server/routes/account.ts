@@ -113,7 +113,7 @@ export const AccountRoutes = lazy(() =>
       "/register",
       describeRoute({
         summary: "Register account",
-        description: "Register a new account for tpCode account system.",
+        description: "Register a new account for TpCode account system.",
         operationId: "account.register",
         responses: {
           200: {

@@ -512,7 +512,7 @@ async fn initialize(app: AppHandle) {
                                 let _ = child.kill();
 
                                 return Err(format!(
-                                    "Failed to spawn OpenCode Server ({err}). Logs:\n{}",
+                                    "Failed to spawn TpCode Server ({err}). Logs:\n{}",
                                     get_logs()
                                 ));
                             }

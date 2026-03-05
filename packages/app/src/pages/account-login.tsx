@@ -44,7 +44,7 @@ export default function AccountLogin() {
   return (
     <div class="min-h-screen w-full flex items-center justify-center px-4">
       <form class="w-full max-w-md flex flex-col gap-4 bg-surface-raised-base rounded-xl p-6" onSubmit={submit}>
-        <div class="text-20-medium text-text-strong">tpCode 账号登录</div>
+        <div class="text-20-medium text-text-strong">TpCode 账号登录</div>
         <input
           class="h-11 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
           placeholder="用户名"

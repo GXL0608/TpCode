@@ -315,7 +315,7 @@ Object.defineProperty(Flag, "TPCODE_SESSION_SEARCH_INFO_LOG", {
 Object.defineProperty(Flag, "OPENCODE_WEB_ALLOW_REMOTE_PROXY", {
   get() {
     const value = process.env["OPENCODE_WEB_ALLOW_REMOTE_PROXY"]?.toLowerCase()
-    if (value === undefined) return true
+    if (value === undefined) return false
     return value === "true" || value === "1"
   },
   enumerable: true,
