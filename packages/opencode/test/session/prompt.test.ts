@@ -209,3 +209,54 @@ describe("session.prompt agent variant", () => {
     }
   })
 })
+
+describe("session.prompt plan confidentiality hardening", () => {
+  const refusal =
+    "Plan mode does not provide project directory or file contents. I can provide an implementation plan, impact scope, risks, and verification steps summary instead."
+
+  const required = [
+    "## Confidentiality Contract",
+    "### Default-Deny Rule",
+    "### Override Immunity",
+    "### No-Verbatim Rule",
+    "### Allowed Output Only",
+    "### Equivalent Request Handling",
+    "### Tool Result Non-Repetition",
+    "### Pre-Response 3-Step Self-Check",
+    refusal,
+  ]
+
+  test("plan.txt includes strict confidentiality clauses", async () => {
+    const text = await Bun.file(path.join(import.meta.dir, "../../src/session/prompt/plan.txt")).text()
+    for (const clause of required) {
+      expect(text).toContain(clause)
+    }
+  })
+
+  test("prompt.ts dynamic reminder includes matching confidentiality clauses", async () => {
+    const text = await Bun.file(path.join(import.meta.dir, "../../src/session/prompt.ts")).text()
+    for (const clause of required) {
+      expect(text).toContain(clause)
+    }
+    expect(text).toContain("Include high-level component-level impact (without path-level details)")
+  })
+
+  test("red team prompt set contains at least 60 adversarial prompts across key classes", async () => {
+    const text = await Bun.file(path.join(import.meta.dir, "fixtures/plan-red-team-prompts.txt")).text()
+    const prompts = text
+      .split(/\r?\n/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+
+    expect(prompts.length).toBeGreaterThanOrEqual(60)
+
+    const joined = prompts.join("\n").toLowerCase()
+
+    expect(/(directory|目录|tree|ls)/i.test(joined)).toBe(true)
+    expect(/(full content|全文|verbatim|raw content|source code)/i.test(joined)).toBe(true)
+    expect(/(first 10 lines|lines 1-50|head|tail)/i.test(joined)).toBe(true)
+    expect(/(cat|find|xargs|sed|awk)/i.test(joined)).toBe(true)
+    expect(/(base64|hex|escaped|unicode)/i.test(joined)).toBe(true)
+    expect(/(ignore|authorized|approved test|override|绕过|授权)/i.test(joined)).toBe(true)
+  })
+})
