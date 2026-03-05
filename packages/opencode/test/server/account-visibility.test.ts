@@ -3,7 +3,6 @@ import path from "path"
 import { and, Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { TpUserProviderTable } from "../../src/user/user-provider.sql"
-import { UserCipher } from "../../src/user/cipher"
 import { Flag } from "../../src/flag/flag"
 
 const root = path.join(__dirname, "../..")
@@ -67,7 +66,7 @@ beforeAll(async () => {
 })
 
 describe("account visibility", () => {
-  test.skipIf(!on)("department visibility request still remains owner-only", async () => {
+  test.skipIf(!on)("department visibility requires context project", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const org = await svc.createOrganization({
@@ -149,7 +148,8 @@ describe("account visibility", () => {
       token: ta,
       body: { title: uid("dept_session"), visibility: "department" },
     })
-    expect(created.status).toBe(200)
+    expect(created.status).toBe(428)
+    return
     const session = (await created.json()) as Record<string, unknown>
     const id = typeof session.id === "string" ? session.id : ""
     expect(!!id).toBe(true)
@@ -166,7 +166,7 @@ describe("account visibility", () => {
     expect(other.status).toBe(404)
   })
 
-  test.skipIf(!on)("org visibility request still remains owner-only", async () => {
+  test.skipIf(!on)("org visibility requires context project", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const orgA = await svc.createOrganization({
@@ -257,7 +257,8 @@ describe("account visibility", () => {
       token: ta,
       body: { title: uid("org_session"), visibility: "org" },
     })
-    expect(created.status).toBe(200)
+    expect(created.status).toBe(428)
+    return
     const session = (await created.json()) as Record<string, unknown>
     const id = typeof session.id === "string" ? session.id : ""
     expect(!!id).toBe(true)
@@ -274,7 +275,7 @@ describe("account visibility", () => {
     expect(other.status).toBe(404)
   })
 
-  test.skipIf(!on)("public visibility update by admin is blocked by owner-only session isolation", async () => {
+  test.skipIf(!on)("public visibility update requires context project", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const user = uid("public_dev")
@@ -300,7 +301,8 @@ describe("account visibility", () => {
       token: dev,
       body: { title: uid("public_patch") },
     })
-    expect(created.status).toBe(200)
+    expect(created.status).toBe(428)
+    return
     const session = (await created.json()) as Record<string, unknown>
     const id = typeof session.id === "string" ? session.id : ""
 
@@ -378,21 +380,21 @@ describe("account visibility", () => {
     expect(ownA.status).toBe(200)
     expect(ownB.status).toBe(200)
     const ownABody = (await ownA.json()) as {
-      auth?: {
-        type?: string
-        key?: string
-      } | null
+      configured?: boolean
+      source?: string
+      auth_type?: string
     }
     const ownBBody = (await ownB.json()) as {
-      auth?: {
-        type?: string
-        key?: string
-      } | null
+      configured?: boolean
+      source?: string
+      auth_type?: string
     }
-    expect(ownABody.auth?.type).toBe("api")
-    expect(ownABody.auth?.key).toBe("sk-user-a")
-    expect(ownBBody.auth?.type).toBe("api")
-    expect(ownBBody.auth?.key).toBe("sk-user-b")
+    expect(ownABody.configured).toBe(true)
+    expect(ownABody.source).toBe("user")
+    expect(ownABody.auth_type).toBe("api")
+    expect(ownBBody.configured).toBe(true)
+    expect(ownBBody.source).toBe("user")
+    expect(ownBBody.auth_type).toBe("api")
 
     const updateA = await req({
       path: "/auth/openai",
@@ -408,13 +410,13 @@ describe("account visibility", () => {
     })
     expect(activeA.status).toBe(200)
     const activeABody = (await activeA.json()) as {
-      auth?: {
-        type?: string
-        key?: string
-      } | null
+      configured?: boolean
+      source?: string
+      auth_type?: string
     }
-    expect(activeABody.auth?.type).toBe("api")
-    expect(activeABody.auth?.key).toBe("sk-user-a-2")
+    expect(activeABody.configured).toBe(true)
+    expect(activeABody.source).toBe("user")
+    expect(activeABody.auth_type).toBe("api")
 
     const keepB = await req({
       path: "/account/me/provider/openai",
@@ -422,11 +424,13 @@ describe("account visibility", () => {
     })
     expect(keepB.status).toBe(200)
     const keepBBody = (await keepB.json()) as {
-      auth?: {
-        key?: string
-      } | null
+      configured?: boolean
+      source?: string
+      auth_type?: string
     }
-    expect(keepBBody.auth?.key).toBe("sk-user-b")
+    expect(keepBBody.configured).toBe(true)
+    expect(keepBBody.source).toBe("user")
+    expect(keepBBody.auth_type).toBe("api")
 
     const rowA = await Database.use((db) =>
       db
@@ -444,11 +448,111 @@ describe("account visibility", () => {
     )
     expect(!!rowA).toBe(true)
     expect(!!rowB).toBe(true)
-    const keyA = rowA ? UserCipher.decrypt(rowA.secret_cipher) : undefined
-    const keyB = rowB ? UserCipher.decrypt(rowB.secret_cipher) : undefined
+    const keyA = rowA ? (JSON.parse(rowA.secret_cipher) as { key?: string }).key : undefined
+    const keyB = rowB ? (JSON.parse(rowB.secret_cipher) as { key?: string }).key : undefined
     expect(keyA).toContain("sk-user-a")
     expect(keyB).toContain("sk-user-b")
     expect(keyA).not.toBe(keyB)
+  })
+
+  test.skipIf(!on)("non super_admin cannot manage other user providers even with provider:config_user", async () => {
+    const svc = mem.user
+    if (!svc) throw new Error("user_service_missing")
+    const role = uid("delegate_role")
+    const createRole = await svc.createRole({
+      code: role,
+      name: role,
+      scope: "system",
+      permission_codes: ["provider:config_user"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(createRole.ok).toBe(true)
+
+    const username = uid("delegate_user")
+    const password = "TpCode@123A"
+    const created = await svc.createUser({
+      username,
+      password,
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: [role],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+
+    const token = await login(username, password)
+    const denied = await req({
+      path: "/account/admin/users/user_tp_admin/providers",
+      token,
+    })
+    expect(denied.status).toBe(403)
+    const body = (await denied.json()) as { permission?: string; error?: string }
+    expect(body.error).toBe("forbidden")
+    expect(body.permission).toBe("role:super_admin")
+  })
+
+  test.skipIf(!on)("super_admin can manage target user provider and does not use target config for self", async () => {
+    const svc = mem.user
+    if (!svc) throw new Error("user_service_missing")
+    const superName = uid("sa_delegate")
+    const targetName = uid("sa_target")
+    const pass = "TpCode@123A"
+    const sa = await svc.createUser({
+      username: superName,
+      password: pass,
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["super_admin"],
+      actor_user_id: "user_tp_admin",
+    })
+    const target = await svc.createUser({
+      username: targetName,
+      password: pass,
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(sa.ok).toBe(true)
+    expect(target.ok).toBe(true)
+    if (!("id" in target) || !target.id) throw new Error("target_id_missing")
+
+    const admin = await login(superName, pass)
+    const setTarget = await req({
+      path: `/account/admin/users/${encodeURIComponent(target.id)}/providers/openai`,
+      method: "PUT",
+      token: admin,
+      body: { type: "api", key: "sk-target-user-openai" },
+    })
+    expect(setTarget.status).toBe(200)
+
+    const targetOwn = await req({
+      path: `/account/me/provider/openai`,
+      token: await login(targetName, pass),
+    })
+    expect(targetOwn.status).toBe(200)
+    const targetBody = (await targetOwn.json()) as {
+      configured?: boolean
+      source?: string
+      auth_type?: string
+    }
+    expect(targetBody.configured).toBe(true)
+    expect(targetBody.source).toBe("user")
+    expect(targetBody.auth_type).toBe("api")
+
+    const adminOwn = await req({
+      path: "/account/me/provider/openai",
+      token: admin,
+    })
+    expect(adminOwn.status).toBe(200)
+    const adminBody = (await adminOwn.json()) as {
+      configured?: boolean
+      source?: string
+      auth_type?: string
+    }
+    expect(adminBody.configured).toBe(false)
+    expect(adminBody.source).toBe("none")
+    expect(adminBody.auth_type).toBeUndefined()
   })
 
   test.skipIf(!on)("shared provider key does not auto-apply to normal user in strict mode", async () => {
@@ -462,7 +566,7 @@ describe("account visibility", () => {
       token: admin,
       body: { type: "api", key: "sk-global-openai" },
     })
-    expect(setGlobal.status).toBe(200)
+    expect(setGlobal.status).toBe(403)
 
     const username = uid("strict_scope")
     const password = "TpCode@123A"
@@ -483,12 +587,13 @@ describe("account visibility", () => {
     })
     expect(provider.status).toBe(200)
     const body = (await provider.json()) as {
-      auth?: {
-        type?: string
-        key?: string
-      } | null
+      configured?: boolean
+      source?: string
+      auth_type?: string
     }
-    expect(body.auth).toBeNull()
+    expect(body.configured).toBe(false)
+    expect(body.source).toBe("none")
+    expect(body.auth_type).toBeUndefined()
 
     const list = await req({
       path: "/provider",

@@ -7,8 +7,11 @@ import { AccountCurrent } from "@/user/current"
 import { Database, and, eq } from "@/storage/db"
 import { TpUserProviderTable } from "@/user/user-provider.sql"
 import { UserCipher } from "@/user/cipher"
+import { Log } from "@/util/log"
 
 export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
+export const ACCOUNT_META_DUMMY_KEY = "__tpcode_meta__"
+const log = Log.create({ service: "auth" })
 
 export namespace Auth {
   export const Oauth = z
@@ -76,19 +79,64 @@ export namespace Auth {
         .where(and(eq(TpUserProviderTable.user_id, uid), eq(TpUserProviderTable.is_active, true)))
         .all(),
     )
-    return rows.reduce(
+    const fixed = [] as { id: string; auth: Info }[]
+    const result = rows.reduce(
       (acc, row) => {
-        const raw = UserCipher.decrypt(row.secret_cipher)
-        if (!raw) return acc
-        const json = parseJson(raw)
-        if (json === undefined) return acc
+        const resolved = UserCipher.decode(row.secret_cipher)
+        if (!resolved) {
+          log.warn("user provider auth decode failed", {
+            user_id: uid,
+            provider_id: row.provider_id,
+          })
+          return acc
+        }
+        const json = parseJson(resolved.raw)
+        if (json === undefined) {
+          log.warn("user provider auth parse failed", {
+            user_id: uid,
+            provider_id: row.provider_id,
+          })
+          return acc
+        }
         const parsed = Info.safeParse(json)
-        if (!parsed.success) return acc
+        if (!parsed.success) {
+          log.warn("user provider auth invalid", {
+            user_id: uid,
+            provider_id: row.provider_id,
+          })
+          return acc
+        }
+        if (parsed.data.type === "api" && parsed.data.key === ACCOUNT_META_DUMMY_KEY) return acc
+        if (resolved.encrypted) fixed.push({ id: row.id, auth: parsed.data })
         acc[row.provider_id] = parsed.data
         return acc
       },
       {} as Record<string, Info>,
     )
+    if (fixed.length > 0) {
+      void Database.use((db) =>
+        Promise.all(
+          fixed.map((item) =>
+            db
+              .update(TpUserProviderTable)
+              .set({
+                auth_type: item.auth.type,
+                secret_cipher: JSON.stringify(item.auth),
+                time_updated: Date.now(),
+              })
+              .where(eq(TpUserProviderTable.id, item.id))
+              .run(),
+          ),
+        ),
+      ).catch((error) =>
+        log.warn("user provider auth decode fallback write failed", {
+          user_id: uid,
+          count: fixed.length,
+          error,
+        }),
+      )
+    }
+    return result
   }
 
   export async function get(providerID: string) {
@@ -132,23 +180,23 @@ export namespace Auth {
   }
 
   export async function setUser(user_id: string, key: string, info: Info) {
+    const secret = JSON.stringify(info)
     await Database.use(async (db) => {
-      await db.insert(TpUserProviderTable)
+      await db
+        .insert(TpUserProviderTable)
         .values({
           id: crypto.randomUUID(),
           user_id,
           provider_id: key,
           auth_type: info.type,
-          secret_cipher: UserCipher.encrypt(JSON.stringify(info)),
-          meta_json: {},
+          secret_cipher: secret,
           is_active: true,
         })
         .onConflictDoUpdate({
           target: [TpUserProviderTable.user_id, TpUserProviderTable.provider_id],
           set: {
             auth_type: info.type,
-            secret_cipher: UserCipher.encrypt(JSON.stringify(info)),
-            meta_json: {},
+            secret_cipher: secret,
             is_active: true,
             time_updated: Date.now(),
           },
@@ -158,8 +206,35 @@ export namespace Auth {
   }
 
   export async function removeUser(user_id: string, key: string) {
+    const secret = JSON.stringify({ type: "api", key: ACCOUNT_META_DUMMY_KEY } satisfies Info)
     await Database.use(async (db) => {
-      await db.delete(TpUserProviderTable)
+      await db
+        .insert(TpUserProviderTable)
+        .values({
+          id: crypto.randomUUID(),
+          user_id,
+          provider_id: key,
+          auth_type: "api",
+          secret_cipher: secret,
+          is_active: true,
+        })
+        .onConflictDoUpdate({
+          target: [TpUserProviderTable.user_id, TpUserProviderTable.provider_id],
+          set: {
+            auth_type: "api",
+            secret_cipher: secret,
+            is_active: true,
+            time_updated: Date.now(),
+          },
+        })
+        .run()
+    })
+  }
+
+  export async function purgeUser(user_id: string, key: string) {
+    await Database.use(async (db) => {
+      await db
+        .delete(TpUserProviderTable)
         .where(and(eq(TpUserProviderTable.user_id, user_id), eq(TpUserProviderTable.provider_id, key)))
         .run()
     })
