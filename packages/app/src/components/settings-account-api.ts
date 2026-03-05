@@ -7,6 +7,19 @@ function jsonObj(input: unknown) {
   return input as Record<string, unknown>
 }
 
+function isJSON(response?: Response) {
+  if (!response) return false
+  const type = response.headers.get("content-type")?.toLowerCase() ?? ""
+  return type.includes("application/json")
+}
+
+function invalidAPIResponse() {
+  return new Response(JSON.stringify({ error: "account_api_invalid_response" }), {
+    status: 502,
+    headers: { "content-type": "application/json" },
+  })
+}
+
 export async function parseAccountError(response?: Response) {
   if (!response) return "请求失败"
   const payload = jsonObj(await response.json().catch(() => undefined))
@@ -25,6 +38,10 @@ export async function parseAccountError(response?: Response) {
   if (code === "permission_missing") return "权限项不存在"
   if (code === "user_missing") return "用户不存在"
   if (code === "project_missing") return "项目不存在"
+  if (code === "product_missing") return "产品不存在"
+  if (code === "product_exists") return "产品名称已存在"
+  if (code === "product_name_invalid") return "产品名称不能为空"
+  if (code === "product_directory_exists") return "该目录已绑定其他产品"
   if (code === "phone_invalid") return "手机号格式不正确（示例：13800138000）"
   if (code === "api_key_invalid") return "API 密钥不能为空"
   if (code === "api_key_not_found") return "未找到对应的 API 密钥"
@@ -32,6 +49,8 @@ export async function parseAccountError(response?: Response) {
   if (code === "invalid_credentials") return "账号或密码错误"
   if (code === "user_locked") return "账号已被锁定，请稍后再试"
   if (code === "account_disabled") return "账号系统未启用"
+  if (code === "account_route_missing") return "当前后端版本不支持该接口，请重启并升级后端服务"
+  if (code === "account_api_invalid_response") return "后端接口响应异常（可能服务地址错误，或后端版本过旧）"
   return `操作失败：${code}`
 }
 
@@ -51,6 +70,7 @@ export function useAccountRequest() {
     const headers = new Headers()
     const token = AccountToken.access()
     if (token) headers.set("authorization", `Bearer ${token}`)
+    headers.set("accept", "application/json")
     if (input.body) headers.set("content-type", "application/json")
 
     const response = await fetcher(endpoint, {
@@ -59,7 +79,10 @@ export function useAccountRequest() {
       body: input.body ? JSON.stringify(input.body) : undefined,
     })
 
-    if (response.status !== 401 || !token) return response
+    if (response.status !== 401 || !token) {
+      if (response.ok && !isJSON(response)) return invalidAPIResponse()
+      return response
+    }
 
     const refreshed = await AccountToken.refreshIfNeeded({
       baseUrl: current.http.url,
@@ -72,10 +95,12 @@ export function useAccountRequest() {
 
     const retry = new Headers(headers)
     retry.set("authorization", `Bearer ${refreshed}`)
-    return fetcher(endpoint, {
+    const next = await fetcher(endpoint, {
       method: input.method ?? "GET",
       headers: retry,
       body: input.body ? JSON.stringify(input.body) : undefined,
     })
+    if (next.ok && !isJSON(next)) return invalidAPIResponse()
+    return next
   }
 }

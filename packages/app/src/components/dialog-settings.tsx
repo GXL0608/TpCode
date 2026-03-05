@@ -13,6 +13,7 @@ import { SettingsAccount } from "./settings-account"
 import { SettingsUsers } from "./settings-users"
 import { SettingsRoles } from "./settings-roles"
 import { SettingsSystem } from "./settings-system"
+import { SettingsProjects } from "./settings-projects"
 
 export const DialogSettings: Component = () => {
   const language = useLanguage()
@@ -20,6 +21,7 @@ export const DialogSettings: Component = () => {
   const auth = useAccountAuth()
   const canManageUsers = createMemo(() => auth.has("user:manage"))
   const canManageRoles = createMemo(() => auth.has("role:manage"))
+  const canManageProjects = createMemo(() => auth.has("role:manage"))
   const canManageSystem = createMemo(() => auth.has("role:manage"))
   const canViewProviders = createMemo(() => auth.has("ui:settings.providers:view"))
   const canViewModels = createMemo(() => auth.has("ui:settings.models:view"))
@@ -76,6 +78,12 @@ export const DialogSettings: Component = () => {
                         角色管理
                       </Tabs.Trigger>
                     </Show>
+                    <Show when={canManageProjects()}>
+                      <Tabs.Trigger value="projects">
+                        <Icon name="folder-add-left" />
+                        项目管理
+                      </Tabs.Trigger>
+                    </Show>
                     <Show when={canManageSystem()}>
                       <Tabs.Trigger value="system">
                         <Icon name="sliders" />
@@ -119,6 +127,11 @@ export const DialogSettings: Component = () => {
         <Show when={canManageRoles()}>
           <Tabs.Content value="roles" class="no-scrollbar">
             <SettingsRoles />
+          </Tabs.Content>
+        </Show>
+        <Show when={canManageProjects()}>
+          <Tabs.Content value="projects" class="no-scrollbar">
+            <SettingsProjects />
           </Tabs.Content>
         </Show>
         <Show when={canManageSystem()}>

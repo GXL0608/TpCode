@@ -27,6 +27,16 @@ type ContextProject = {
   last_selected: boolean
 }
 
+type ContextProduct = {
+  id: string
+  name?: string
+  project_id: string
+  worktree: string
+  vcs?: string
+  selected: boolean
+  last_selected: boolean
+}
+
 type LoginResult = {
   access_token: string
   refresh_token: string
@@ -68,6 +78,19 @@ function json<T>(input: unknown): T | undefined {
   return input as T
 }
 
+function isJSON(response?: Response) {
+  if (!response) return false
+  const type = response.headers.get("content-type")?.toLowerCase() ?? ""
+  return type.includes("application/json")
+}
+
+function invalidAPIResponse() {
+  return new Response(JSON.stringify({ error: "account_api_invalid_response" }), {
+    status: 502,
+    headers: { "content-type": "application/json" },
+  })
+}
+
 export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimpleContext({
   name: "AccountAuth",
   init: () => {
@@ -103,11 +126,14 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         const token = AccountToken.access()
         if (token) headers.set("authorization", `Bearer ${token}`)
       }
-      return fetcher(endpoint, {
+      headers.set("accept", "application/json")
+      const response = await fetcher(endpoint, {
         method: input.method ?? "GET",
         headers,
         body: input.body ? JSON.stringify(input.body) : undefined,
       })
+      if (response.ok && !isJSON(response)) return invalidAPIResponse()
+      return response
     }
 
     const responseCode = async (response?: Response) => {
@@ -214,7 +240,11 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
       ready: createMemo(() => state.ready),
       enabled: createMemo(() => state.enabled),
       authenticated: createMemo(() => !!state.user),
-      needsProjectContext: createMemo(() => state.enabled && !!state.user && !state.user.context_project_id),
+      needsProjectContext: createMemo(() => {
+        if (!state.enabled || !state.user) return false
+        if (state.user.context_project_id) return false
+        return !state.user.permissions.includes("role:manage")
+      }),
       user: createMemo(() => state.user),
       lastError: createMemo(() => state.last_error),
       has(permission: string) {
@@ -374,12 +404,40 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           method: "GET",
           auth: "required",
         }).catch(() => undefined)
-        if (!response?.ok) return
+        if (!response?.ok) {
+          setState("last_error", (await responseCode(response)) ?? "context_projects_failed")
+          return
+        }
         const payload = json<{
           current_project_id?: string
           last_project_id?: string
           projects: ContextProject[]
         }>(await response.json().catch(() => undefined))
+        if (!payload) {
+          setState("last_error", "context_projects_failed")
+          return
+        }
+        return payload
+      },
+      async contextProducts() {
+        const response = await request({
+          path: "/account/context/products",
+          method: "GET",
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) {
+          setState("last_error", (await responseCode(response)) ?? "context_products_failed")
+          return
+        }
+        const payload = json<{
+          current_project_id?: string
+          last_project_id?: string
+          products: ContextProduct[]
+        }>(await response.json().catch(() => undefined))
+        if (!payload) {
+          setState("last_error", "context_products_failed")
+          return
+        }
         return payload
       },
       async selectContext(project_id: string) {

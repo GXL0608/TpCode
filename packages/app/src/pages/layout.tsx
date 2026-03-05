@@ -1242,12 +1242,12 @@ export default function Layout(props: ParentProps) {
 
   async function chooseProject() {
     if (auth.enabled()) {
-      const payload = await auth.contextProjects()
-      const projects = payload?.projects ?? []
+      const payload = await auth.contextProducts()
+      const projects = payload?.products ?? []
       if (projects.length === 0) {
         showToast({
-          title: "无可用项目",
-          description: "当前账号未分配任何项目，请联系管理员。",
+          title: "无可用产品",
+          description: "当前账号未分配任何产品，请联系管理员。",
         })
         return
       }
@@ -1260,8 +1260,8 @@ export default function Layout(props: ParentProps) {
       if (!projectID) return
       const target = projects.find((item) => item.id === projectID)
       if (!target) return
-      if (auth.user()?.context_project_id !== projectID) {
-        const result = await auth.selectContext(projectID)
+      if (auth.user()?.context_project_id !== target.project_id) {
+        const result = await auth.selectContext(target.project_id)
         if (!result.ok) {
           showToast({
             title: "找不到文件夹",

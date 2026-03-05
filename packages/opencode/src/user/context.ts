@@ -7,6 +7,7 @@ import { TpProjectRoleAccessTable } from "./project-role-access.sql"
 import { TpProjectUserAccessTable } from "./project-user-access.sql"
 import { TpUserProjectStateTable } from "./user-project-state.sql"
 import { TpUserTable } from "./user.sql"
+import { AccountProductService } from "./product"
 
 function unique(input: string[]) {
   return [...new Set(input)]
@@ -112,12 +113,13 @@ export namespace AccountContextService {
               .where(inArray(TpProjectRoleAccessTable.role_id, roles.ids))
               .all(),
           )
+    const roleProductProjects = await AccountProductService.roleProjectIDs(roles.ids)
     const userProjects = await Database.use((db) =>
       db.select().from(TpProjectUserAccessTable).where(eq(TpProjectUserAccessTable.user_id, user_id)).all(),
     )
     const deny = new Set(userProjects.filter((item) => item.mode === "deny").map((item) => item.project_id))
     const allow = userProjects.filter((item) => item.mode === "allow").map((item) => item.project_id)
-    const ids = unique([...roleProjects.map((item) => item.project_id), ...allow]).filter((item) => !deny.has(item))
+    const ids = unique([...roleProjects.map((item) => item.project_id), ...roleProductProjects, ...allow]).filter((item) => !deny.has(item))
     cacheProjects(user_id, ids)
     return ids
   }
@@ -153,6 +155,47 @@ export namespace AccountContextService {
           vcs: item.vcs,
           selected: item.id === input.context_project_id,
           last_selected: item.id === state?.last_project_id,
+        })),
+    }
+  }
+
+  export async function listProducts(input: { user_id: string; context_project_id?: string }) {
+    const project_ids = await projectIDs(input.user_id)
+    const state = await Database.use((db) =>
+      db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
+    )
+    const rows = await AccountProductService.listByProjectIDs(project_ids)
+    const linked = new Set(rows.map((item) => item.project_id))
+    const fallback_ids = project_ids.filter((item) => !linked.has(item))
+    const fallback_rows =
+      fallback_ids.length === 0
+        ? []
+        : await Database.use((db) => db.select().from(ProjectTable).where(inArray(ProjectTable.id, fallback_ids)).all())
+    const fallback = fallback_rows.map((item) => ({
+      id: `project_${item.id}`,
+      name: AccountProductService.label({
+        name: item.name ?? "",
+        worktree: item.worktree,
+      }),
+      project_id: item.id,
+      worktree: item.worktree,
+      vcs: item.vcs ?? undefined,
+      time_created: item.time_created,
+      time_updated: item.time_updated,
+    }))
+    return {
+      current_project_id: input.context_project_id,
+      last_project_id: state?.last_project_id ?? undefined,
+      products: [...rows, ...fallback]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          project_id: item.project_id,
+          worktree: item.worktree,
+          vcs: item.vcs,
+          selected: item.project_id === input.context_project_id,
+          last_selected: item.project_id === state?.last_project_id,
         })),
     }
   }

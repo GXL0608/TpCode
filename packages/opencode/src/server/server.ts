@@ -387,7 +387,8 @@ export namespace Server {
                 !path.startsWith("/account") &&
                 path !== "/global/health" &&
                 path !== "/agent" &&
-                !user.context_project_id
+                !user.context_project_id &&
+                !user.permissions.includes("role:manage")
               ) {
                 return c.json(
                   {
@@ -534,6 +535,14 @@ export namespace Server {
           },
         )
         .route("/account", AccountRoutes())
+        .all("/account/*", (c) =>
+          c.json(
+            {
+              error: "account_route_missing",
+            },
+            404,
+          ),
+        )
         .use(async (c, next) => {
           if (c.req.path === "/log") return next()
           if (c.req.path.startsWith("/account")) return next()

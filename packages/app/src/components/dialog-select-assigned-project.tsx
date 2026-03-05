@@ -6,6 +6,7 @@ import { For, Show, createMemo, createSignal } from "solid-js"
 type Item = {
   id: string
   name?: string
+  project_id: string
   worktree: string
   selected?: boolean
   last_selected?: boolean
@@ -23,8 +24,8 @@ export function DialogSelectAssignedProject(props: {
     <Dialog size="normal" class="w-[680px] max-w-[95vw]">
       <div class="flex flex-col gap-3 p-4">
         <div>
-          <div class="text-16-medium text-text-strong">选择项目</div>
-          <div class="text-12-regular text-text-weak mt-1">仅展示你已分配的项目</div>
+          <div class="text-16-medium text-text-strong">选择产品</div>
+          <div class="text-12-regular text-text-weak mt-1">仅展示你已分配的产品</div>
         </div>
         <div class="max-h-96 overflow-auto pr-1 flex flex-col gap-2">
           <For each={props.projects}>
@@ -40,14 +41,13 @@ export function DialogSelectAssignedProject(props: {
                 onClick={() => setSelected(item.id)}
               >
                 <div class="flex items-center justify-between gap-2">
-                  <div class="text-14-medium text-text-strong">{item.name || item.worktree}</div>
+                  <div class="text-14-medium text-text-strong">{item.name || item.project_id}</div>
                   <Show when={selected() === item.id}>
                     <div class="rounded-full bg-icon-success-base/10 px-2 py-0.5 text-11-medium text-icon-success-base">
                       当前选择
                     </div>
                   </Show>
                 </div>
-                <div class="text-12-regular text-text-weak mt-1 break-all">{item.worktree}</div>
               </button>
             )}
           </For>
@@ -71,7 +71,7 @@ export function DialogSelectAssignedProject(props: {
               dialog.close()
             }}
           >
-            进入项目
+            进入产品
           </Button>
         </div>
       </div>

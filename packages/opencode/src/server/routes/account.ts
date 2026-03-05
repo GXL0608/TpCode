@@ -7,6 +7,7 @@ import { UserRbac } from "@/user/rbac"
 import { AccountContextService } from "@/user/context"
 import { AccountProjectCatalogService } from "@/user/project-catalog"
 import { AccountSystemSettingService } from "@/user/system-setting"
+import { AccountProductService } from "@/user/product"
 import { errors } from "../error"
 import { Flag } from "@/flag/flag"
 import { Auth } from "@/auth"
@@ -417,6 +418,15 @@ export const AccountRoutes = lazy(() =>
       },
     )
     .get(
+      "/context/products",
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        return c.json(await AccountContextService.listProducts({ user_id, context_project_id }))
+      },
+    )
+    .get(
       "/context/current",
       async (c) => {
         const user_id = requireLogin(c)
@@ -724,6 +734,152 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const query = c.req.valid("query")
         return c.json(await AccountProjectCatalogService.list({ source: query.source }))
+      },
+    )
+    .get(
+      "/admin/products",
+      UserRbac.require("role:manage"),
+      async (c) => c.json(await AccountProductService.list()),
+    )
+    .post(
+      "/admin/products",
+      UserRbac.require("role:manage"),
+      validator(
+        "json",
+        z.object({
+          name: z.string(),
+          directory: z.string(),
+        }),
+      ),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const body = c.req.valid("json")
+        const result = await AccountProductService.create({
+          name: body.name,
+          directory: body.directory,
+        })
+        if (!result.ok) return c.json(result, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.product.create",
+          target_type: "tp_product",
+          target_id: result.item.id,
+          result: "success",
+          detail_json: {
+            name: result.item.name,
+            project_id: result.item.project_id,
+            worktree: result.item.worktree,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .patch(
+      "/admin/products/:product_id",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ product_id: z.string() })),
+      validator(
+        "json",
+        z.object({
+          name: z.string().optional(),
+          directory: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const result = await AccountProductService.update({
+          product_id: param.product_id,
+          name: body.name,
+          directory: body.directory,
+        })
+        if (!result.ok) return c.json(result, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.product.update",
+          target_type: "tp_product",
+          target_id: param.product_id,
+          result: "success",
+          detail_json: {
+            name: result.item.name,
+            project_id: result.item.project_id,
+            worktree: result.item.worktree,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        AccountContextService.invalidateProjectAccess()
+        return c.json(result)
+      },
+    )
+    .delete(
+      "/admin/products/:product_id",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ product_id: z.string() })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const result = await AccountProductService.remove(param.product_id)
+        if (!result.ok) return c.json(result, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.product.delete",
+          target_type: "tp_product",
+          target_id: param.product_id,
+          result: "success",
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        AccountContextService.invalidateProjectAccess()
+        return c.json(result)
+      },
+    )
+    .get(
+      "/admin/roles/:role_code/products",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ role_code: z.string() })),
+      async (c) => {
+        const param = c.req.valid("param")
+        const result = await AccountProductService.roleProducts(param.role_code)
+        if (!result.ok) return c.json(result, 400)
+        return c.json(result)
+      },
+    )
+    .put(
+      "/admin/roles/:role_code/products",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ role_code: z.string() })),
+      validator("json", z.object({ product_ids: z.array(z.string()) })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const result = await AccountProductService.setRoleProducts({
+          role_code: param.role_code,
+          product_ids: body.product_ids,
+        })
+        if (!result.ok) return c.json(result, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.role.products.update",
+          target_type: "tp_role",
+          target_id: param.role_code,
+          result: "success",
+          detail_json: {
+            product_ids: body.product_ids,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        AccountContextService.invalidateProjectAccess()
+        return c.json(result)
       },
     )
     .get(
