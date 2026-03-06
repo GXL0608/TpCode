@@ -283,7 +283,7 @@ describe("session.prompt voice", () => {
 
 describe("session.prompt plan confidentiality hardening", () => {
   const refusal =
-    "Plan mode does not provide project directory or file contents. I can provide an implementation plan, impact scope, risks, and verification steps summary instead."
+    "计划模式不提供项目目录或文件内容。我可以提供实现计划、影响范围、风险和验证步骤总结。请告诉我你需要什么样的计划细节，我会尽力提供。"
 
   const required = [
     "## Confidentiality Contract",
