@@ -46,6 +46,7 @@ import { ProviderTransform } from "./transform"
 import { Installation } from "../installation"
 import { AccountCurrent } from "@/user/current"
 import { State } from "@/project/state"
+import { UserProviderConfig } from "./user-provider-config"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -135,8 +136,10 @@ export namespace Provider {
         const env = Env.all()
         if (input.env.some((item) => env[item])) return true
         if (await Auth.get(input.id)) return true
-        const config = await Config.get()
-        if (config.provider?.["opencode"]?.options?.apiKey) return true
+        if (!strictAccountScope()) {
+          const config = await Config.get()
+          if (config.provider?.["opencode"]?.options?.apiKey) return true
+        }
         return false
       })()
 
@@ -210,9 +213,8 @@ export namespace Provider {
         },
       }
     },
-    "amazon-bedrock": async () => {
-      const config = await Config.get()
-      const providerConfig = config.provider?.["amazon-bedrock"]
+    "amazon-bedrock": async (input) => {
+      const providerConfig = strictAccountScope() ? ({ options: input.options ?? {} } as { options?: Record<string, any> }) : await Config.get().then((x) => x.provider?.["amazon-bedrock"])
 
       const auth = await Auth.get("amazon-bedrock")
 
@@ -476,8 +478,7 @@ export namespace Provider {
         return Env.get("GITLAB_TOKEN")
       })()
 
-      const config = await Config.get()
-      const providerConfig = config.provider?.["gitlab"]
+      const providerConfig = strictAccountScope() ? ({ options: input.options ?? {} } as { options?: Record<string, any> }) : await Config.get().then((x) => x.provider?.["gitlab"])
 
       const aiGatewayHeaders = {
         "User-Agent": `opencode/${Installation.VERSION} gitlab-ai-provider/${GITLAB_PROVIDER_VERSION} (${os.platform()} ${os.release()}; ${os.arch()})`,
@@ -771,13 +772,42 @@ export namespace Provider {
 
   const state = State.create(stateKey, async () => {
     using _ = log.time("state")
-    const config = await Config.get()
+    const strictAccount = strictAccountScope()
+    const config = strictAccount ? undefined : await Config.get()
     const modelsDev = await ModelsDev.get()
     const database = mapValues(modelsDev, fromModelsDevProvider)
-    const strictAccount = strictAccountScope()
+    const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
+    const user = strictAccount && uid ? await UserProviderConfig.state(uid) : undefined
+    const ownAuth = strictAccount
+      ? Object.entries(user?.providers ?? {}).reduce(
+          (acc, [providerID, item]) => {
+            if (!item.auth) return acc
+            acc[providerID] = item.auth
+            return acc
+          },
+          {} as Record<string, Auth.Info>,
+        )
+      : {}
+    const configProviders = strictAccount
+      ? Object.entries(user?.providers ?? {}).reduce(
+          (acc, [providerID, item]) => {
+            if (!item.meta.provider_config) return acc
+            acc.push([providerID, item.meta.provider_config] as const)
+            return acc
+          },
+          [] as [string, z.output<typeof Config.Provider>][],
+        )
+      : (Object.entries(config?.provider ?? {}) as [string, z.output<typeof Config.Provider>][])
 
-    const disabled = new Set(config.disabled_providers ?? [])
-    const enabled = config.enabled_providers ? new Set(config.enabled_providers) : null
+    const disabled = new Set(strictAccount ? (user?.control.disabled_providers ?? []) : (config?.disabled_providers ?? []))
+    if (strictAccount) {
+      for (const [providerID, item] of Object.entries(user?.providers ?? {})) {
+        if (item.meta.flags?.disabled) disabled.add(providerID)
+      }
+    }
+    const enabled = strictAccount
+      ? (user?.control.enabled_providers ? new Set(user.control.enabled_providers) : null)
+      : (config?.enabled_providers ? new Set(config.enabled_providers) : null)
 
     function isProviderAllowed(providerID: string): boolean {
       if (enabled && !enabled.has(providerID)) return false
@@ -793,8 +823,7 @@ export namespace Provider {
     const sdk = new Map<number, SDK>()
 
     log.info("init")
-
-    const configProviders = Object.entries(config.provider ?? {})
+    const configByID = Object.fromEntries(configProviders)
 
     // Add GitHub Copilot Enterprise provider that inherits from GitHub Copilot
     if (database["github-copilot"]) {
@@ -921,8 +950,14 @@ export namespace Provider {
     }
 
     // load user-level apikeys (highest priority)
-    for (const [providerID, provider] of Object.entries(await Auth.userAll())) {
-      if (disabled.has(providerID)) continue
+    for (const [providerID, provider] of Object.entries(ownAuth)) {
+      if (!database[providerID]) {
+        log.warn("account auth provider missing from provider catalog", {
+          providerID,
+          user_id: AccountCurrent.optional()?.user_id,
+        })
+        continue
+      }
       if (provider.type === "api") {
         mergeProvider(providerID, {
           source: "api",
@@ -1022,7 +1057,7 @@ export namespace Provider {
         continue
       }
 
-      const configProvider = config.provider?.[providerID]
+      const configProvider = configByID[providerID]
 
       for (const [modelID, model] of Object.entries(provider.models)) {
         model.api.id = model.api.id ?? model.id ?? modelID
@@ -1246,11 +1281,21 @@ export namespace Provider {
   }
 
   export async function getSmallModel(providerID: string) {
-    const cfg = await Config.get()
-
-    if (cfg.small_model) {
-      const parsed = parseModel(cfg.small_model)
-      return getModel(parsed.providerID, parsed.modelID)
+    const strictAccount = strictAccountScope()
+    const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
+    if (strictAccount && uid) {
+      const control = await UserProviderConfig.getUserControl(uid)
+      if (control.small_model) {
+        const parsed = parseModel(control.small_model)
+        return getModel(parsed.providerID, parsed.modelID)
+      }
+    }
+    if (!strictAccount) {
+      const cfg = await Config.get()
+      if (cfg.small_model) {
+        const parsed = parseModel(cfg.small_model)
+        return getModel(parsed.providerID, parsed.modelID)
+      }
     }
 
     const provider = await state().then((state) => state.providers[providerID])
@@ -1322,8 +1367,14 @@ export namespace Provider {
   }
 
   export async function defaultModel() {
-    const cfg = await Config.get()
-    if (cfg.model) return parseModel(cfg.model)
+    const strictAccount = strictAccountScope()
+    const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
+    if (strictAccount && uid) {
+      const control = await UserProviderConfig.getUserControl(uid)
+      if (control.model) return parseModel(control.model)
+    }
+    const cfg = strictAccount ? undefined : await Config.get()
+    if (cfg?.model) return parseModel(cfg.model)
 
     const providers = await list()
     const recent = (await Filesystem.readJson<{ recent?: { providerID: string; modelID: string }[] }>(
@@ -1338,7 +1389,7 @@ export namespace Provider {
       return { providerID: entry.providerID, modelID: entry.modelID }
     }
 
-    const provider = Object.values(providers).find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))
+    const provider = Object.values(providers).find((p) => !cfg?.provider || Object.keys(cfg.provider).includes(p.id))
     if (!provider) throw new Error("no providers found")
     const [model] = sort(Object.values(provider.models))
     if (!model) throw new Error("no models found")

@@ -70,7 +70,10 @@ export const SettingsUsers = () => {
     providerUserName: "",
     providerID: "openai",
     providerKey: "",
-    providerRows: [] as Array<{ provider_id: string; configured: boolean; auth_type?: string }>,
+    providerRows: [] as Array<{ provider_id: string; configured: boolean; auth_type?: string; has_config?: boolean; disabled?: boolean }>,
+    providerModel: "",
+    providerSmallModel: "",
+    providerConfigText: "{}",
   })
 
   const editUser = createMemo(() => state.users.find((item) => item.id === state.editUserID))
@@ -300,8 +303,36 @@ export const SettingsUsers = () => {
       setState("error", await parseAccountError(response))
       return
     }
-    const rows = list<{ provider_id: string; configured: boolean; auth_type?: string }>(await response.json().catch(() => undefined))
+    const rows = list<{ provider_id: string; configured: boolean; auth_type?: string; has_config?: boolean; disabled?: boolean }>(
+      await response.json().catch(() => undefined),
+    )
     setState("providerRows", rows)
+  }
+
+  const loadUserProviderControl = async (userID: string) => {
+    const response = await request({
+      path: `/account/admin/users/${encodeURIComponent(userID)}/provider-control`,
+    }).catch(() => undefined)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    const row = (await response.json().catch(() => undefined)) as { model?: unknown; small_model?: unknown } | undefined
+    setState("providerModel", typeof row?.model === "string" ? row.model : "")
+    setState("providerSmallModel", typeof row?.small_model === "string" ? row.small_model : "")
+  }
+
+  const loadProviderConfig = async (userID: string, providerID: string) => {
+    const response = await request({
+      path: `/account/admin/users/${encodeURIComponent(userID)}/providers/${encodeURIComponent(providerID)}/config`,
+    }).catch(() => undefined)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    const row = (await response.json().catch(() => undefined)) as { config?: unknown } | undefined
+    const text = row?.config ? JSON.stringify(row.config, null, 2) : "{}"
+    setState("providerConfigText", text)
   }
 
   const openProvider = async (item: AccountUser) => {
@@ -312,7 +343,11 @@ export const SettingsUsers = () => {
     setState("providerID", providerCatalog()[0]?.id ?? "openai")
     setState("providerKey", "")
     setState("providerRows", [])
+    setState("providerModel", "")
+    setState("providerSmallModel", "")
+    setState("providerConfigText", "{}")
     await loadUserProviders(item.id)
+    await loadUserProviderControl(item.id)
   }
 
   const closeProvider = () => {
@@ -323,6 +358,9 @@ export const SettingsUsers = () => {
     setState("providerID", "openai")
     setState("providerKey", "")
     setState("providerRows", [])
+    setState("providerModel", "")
+    setState("providerSmallModel", "")
+    setState("providerConfigText", "{}")
   }
 
   const saveProvider = async (event: SubmitEvent) => {
@@ -364,6 +402,52 @@ export const SettingsUsers = () => {
       return
     }
     setState("message", "用户供应商已删除")
+    await loadUserProviders(state.providerUserID)
+  }
+
+  const saveProviderControl = async () => {
+    if (!state.providerUserID) return
+    setState("pending", true)
+    setState("message", "")
+    setState("error", "")
+    const response = await request({
+      method: "PUT",
+      path: `/account/admin/users/${encodeURIComponent(state.providerUserID)}/provider-control`,
+      body: {
+        model: state.providerModel.trim() || undefined,
+        small_model: state.providerSmallModel.trim() || undefined,
+      },
+    }).catch(() => undefined)
+    setState("pending", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    setState("message", "用户模型默认配置已更新")
+  }
+
+  const saveProviderConfig = async () => {
+    if (!state.providerUserID || !state.providerID.trim()) return
+    setState("pending", true)
+    setState("message", "")
+    setState("error", "")
+    const parsed = await Promise.resolve().then(() => JSON.parse(state.providerConfigText || "{}") as Record<string, unknown>).catch(() => undefined)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setState("pending", false)
+      setState("error", "提供商配置 JSON 格式无效")
+      return
+    }
+    const response = await request({
+      method: "PUT",
+      path: `/account/admin/users/${encodeURIComponent(state.providerUserID)}/providers/${encodeURIComponent(state.providerID.trim())}/config`,
+      body: parsed,
+    }).catch(() => undefined)
+    setState("pending", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    setState("message", "用户供应商配置已更新")
     await loadUserProviders(state.providerUserID)
   }
 
@@ -411,6 +495,15 @@ export const SettingsUsers = () => {
     if (!auth.ready()) return
     if (!auth.authenticated()) return
     void load()
+  })
+
+  createEffect(() => {
+    if (!state.providerOpen) return
+    if (!canProviderUser()) return
+    if (!state.providerUserID) return
+    const providerID = state.providerID.trim()
+    if (!providerID) return
+    void loadProviderConfig(state.providerUserID, providerID)
   })
 
   return (
@@ -765,7 +858,9 @@ export const SettingsUsers = () => {
                           </div>
                         </div>
                         <div class="flex items-center gap-1.5">
-                          <span class="text-11-regular text-text-weak">{item.auth_type ?? "-"}</span>
+                          <span class="text-11-regular text-text-weak">{item.auth_type ?? "no-key"}</span>
+                          <span class="text-11-regular text-text-weak">{item.has_config ? "cfg" : "no-cfg"}</span>
+                          <span class="text-11-regular text-text-weak">{item.disabled ? "disabled" : "enabled"}</span>
                           <Button
                             type="button"
                             size="small"
@@ -774,6 +869,15 @@ export const SettingsUsers = () => {
                             disabled={state.pending}
                           >
                             更新密钥
+                          </Button>
+                          <Button
+                            type="button"
+                            size="small"
+                            variant="secondary"
+                            onClick={() => setState("providerID", item.provider_id)}
+                            disabled={state.pending}
+                          >
+                            编辑配置
                           </Button>
                           <Button type="button" size="small" variant="secondary" onClick={() => void removeProvider(item.provider_id)} disabled={state.pending}>
                             删除
@@ -838,6 +942,34 @@ export const SettingsUsers = () => {
                   {(item) => <option value={item.id}>{item.name}</option>}
                 </For>
               </datalist>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <input
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  placeholder="默认模型 provider/model"
+                  value={state.providerModel}
+                  onInput={(event) => setState("providerModel", event.currentTarget.value)}
+                />
+                <input
+                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                  placeholder="small_model provider/model"
+                  value={state.providerSmallModel}
+                  onInput={(event) => setState("providerSmallModel", event.currentTarget.value)}
+                />
+              </div>
+              <textarea
+                class="min-h-[140px] rounded-md border border-border-weak-base bg-surface-base px-3 py-2 text-12-regular font-mono"
+                placeholder="Provider Config JSON"
+                value={state.providerConfigText}
+                onInput={(event) => setState("providerConfigText", event.currentTarget.value)}
+              />
+              <div class="flex flex-wrap gap-2">
+                <Button type="button" size="small" variant="secondary" onClick={() => void saveProviderConfig()} disabled={state.pending || !state.providerID.trim()}>
+                  保存供应商配置
+                </Button>
+                <Button type="button" size="small" variant="secondary" onClick={() => void saveProviderControl()} disabled={state.pending}>
+                  保存默认模型配置
+                </Button>
+              </div>
             </div>
             <div class="flex justify-end gap-2">
               <Button type="button" variant="secondary" onClick={closeProvider} disabled={state.pending}>

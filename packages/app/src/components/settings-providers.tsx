@@ -43,10 +43,8 @@ export const SettingsProviders: Component = () => {
   }
 
   const connected = createMemo(() => {
-    const disabled = new Set(globalSync.data.config.disabled_providers ?? [])
     return providers
       .connected()
-      .filter((p) => !disabled.has(p.id))
       .filter((p) => p.id !== "opencode" || Object.values(p.models).find((m) => m.cost?.input))
   })
 
@@ -102,6 +100,7 @@ export const SettingsProviders: Component = () => {
   const note = (id: string) => PROVIDER_NOTES.find((item) => item.match(id))?.key
 
   const isConfigCustom = (providerID: string) => {
+    if (auth.enabled()) return false
     const provider = globalSync.data.config.provider?.[providerID]
     if (!provider) return false
     if (provider.npm !== "@ai-sdk/openai-compatible") return false
@@ -110,6 +109,27 @@ export const SettingsProviders: Component = () => {
   }
 
   const disableProvider = async (providerID: string, name: string) => {
+    if (auth.enabled()) {
+      const response = await accountRequest({
+        method: "PATCH",
+        path: `/account/me/providers/${encodeURIComponent(providerID)}/disabled`,
+        body: { disabled: true },
+      }).catch(() => undefined)
+      if (!response?.ok) {
+        const message = await parseAccountError(response)
+        showToast({ title: language.t("common.requestFailed"), description: message })
+        return
+      }
+      await globalSDK.client.global.dispose().catch(() => undefined)
+      showToast({
+        variant: "success",
+        icon: "circle-check",
+        title: language.t("provider.disconnect.toast.disconnected.title", { provider: name }),
+        description: language.t("provider.disconnect.toast.disconnected.description", { provider: name }),
+      })
+      return
+    }
+
     const before = globalSync.data.config.disabled_providers ?? []
     const next = before.includes(providerID) ? before : [...before, providerID]
     globalSync.set("config", "disabled_providers", next)
@@ -136,18 +156,11 @@ export const SettingsProviders: Component = () => {
     const providerID = item.id
     const name = item.name
     const current = source(item)
-    const manager = auth.has("provider:config_global")
 
     await globalSDK.client.auth.remove({ providerID }).catch(() => undefined)
-    if (manager && !auth.enabled()) {
-      const response = await accountRequest({
-        path: `/account/admin/provider/${encodeURIComponent(providerID)}/global`,
-        method: "DELETE",
-      }).catch(() => undefined)
-      if (response && !response.ok && response.status !== 404) {
-        const message = await parseAccountError(response)
-        showToast({ title: language.t("common.requestFailed"), description: message })
-      }
+    if (auth.enabled()) {
+      await disableProvider(providerID, name)
+      return
     }
 
     if (current === "config" || current === "custom" || isConfigCustom(providerID)) {

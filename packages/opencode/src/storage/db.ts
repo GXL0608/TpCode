@@ -10,6 +10,8 @@ import path from "path"
 import { readFileSync, readdirSync, existsSync } from "fs"
 import * as schema from "./schema"
 import { QueryTrack } from "./query-track"
+import { Installation } from "../installation"
+import { pgSource, pgUrl } from "./pg-url"
 
 declare const OPENCODE_MIGRATIONS: { sql: string; timestamp: number }[] | undefined
 
@@ -21,12 +23,9 @@ export const NotFoundError = NamedError.create(
 )
 
 const log = Log.create({ service: "db" })
-const seed = "postgres://opencode:opencode@182.92.74.187:9124/opencode"
 
 function dbSource() {
-  if (process.env.OPENCODE_DATABASE_URL) return "OPENCODE_DATABASE_URL"
-  if (process.env.OPENCODE_PG_URL) return "OPENCODE_PG_URL"
-  return "DEFAULT_SEED"
+  return pgSource(process.env, Installation.isLocal())
 }
 
 function dbLocation(value: string) {
@@ -100,9 +99,7 @@ export namespace Database {
   }
 
   export function url() {
-    const value = process.env.OPENCODE_DATABASE_URL ?? process.env.OPENCODE_PG_URL
-    if (value) return value
-    return seed
+    return pgUrl(process.env, Installation.isLocal())
   }
 
   export function source() {
@@ -204,7 +201,7 @@ export namespace Database {
       source,
       location,
     })
-    if (source === "DEFAULT_SEED") {
+    if (source.startsWith("DEFAULT_SEED")) {
       log.warn("database using default fallback url", {
         action: "set OPENCODE_DATABASE_URL",
         postgres: masked(),

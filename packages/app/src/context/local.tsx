@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { batch, createMemo } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useSDK } from "./sdk"
 import { useSync } from "./sync"
@@ -7,6 +7,8 @@ import { base64Encode } from "@opencode-ai/util/encode"
 import { useProviders } from "@/hooks/use-providers"
 import { useModels } from "@/context/models"
 import { cycleModelVariant, getConfiguredAgentVariant, resolveModelVariant } from "./model-variant"
+import { useAccountAuth } from "./account-auth"
+import { useAccountRequest } from "@/components/settings-account-api"
 
 export type ModelKey = { providerID: string; modelID: string }
 
@@ -16,7 +18,34 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sdk = useSDK()
     const sync = useSync()
     const providers = useProviders()
+    const account = useAccountAuth()
+    const accountRequest = useAccountRequest()
+    const [accountModel, setAccountModel] = createSignal<string | undefined>()
     const connected = createMemo(() => new Set(providers.connected().map((provider) => provider.id)))
+
+    createEffect(() => {
+      if (!account.enabled()) {
+        setAccountModel(undefined)
+        return
+      }
+      const user = account.user()
+      if (!user?.id) return
+      let done = false
+      void accountRequest({ path: "/account/me/provider-control" })
+        .then((response) => {
+          if (!response?.ok) return
+          return response.json().catch(() => undefined)
+        })
+        .then((row) => {
+          if (done) return
+          if (!row || typeof row !== "object" || Array.isArray(row)) return
+          const model = (row as { model?: unknown }).model
+          setAccountModel(typeof model === "string" ? model : undefined)
+        })
+      onCleanup(() => {
+        done = true
+      })
+    })
 
     function isModelValid(model: ModelKey) {
       const provider = providers.all().find((x) => x.id === model.providerID)
@@ -98,8 +127,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       })
 
       const resolveConfigured = () => {
-        if (!sync.data.config.model) return
-        const [providerID, modelID] = sync.data.config.model.split("/")
+        const value = account.enabled() ? accountModel() : sync.data.config.model
+        if (!value) return
+        const [providerID, ...rest] = value.split("/")
+        const modelID = rest.join("/")
+        if (!providerID || !modelID) return
         const key = { providerID, modelID }
         if (isModelValid(key)) return key
       }
@@ -174,6 +206,14 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (currentAgent) setEphemeral("model", currentAgent.name, next)
           if (model) models.setVisibility(model, true)
           if (options?.recent && model) models.recent.push(model)
+        })
+        if (!model || !account.enabled()) return
+        void accountRequest({
+          method: "PUT",
+          path: "/account/me/provider-control",
+          body: {
+            model: `${model.providerID}/${model.modelID}`,
+          },
         })
       }
 
