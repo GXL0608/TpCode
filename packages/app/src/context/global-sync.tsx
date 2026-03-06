@@ -9,17 +9,7 @@ import type {
 } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@opencode-ai/ui/toast"
 import { getFilename } from "@opencode-ai/util/path"
-import {
-  createContext,
-  createEffect,
-  getOwner,
-  Match,
-  onCleanup,
-  type ParentProps,
-  Switch,
-  untrack,
-  useContext,
-} from "solid-js"
+import { createContext, createEffect, getOwner, onCleanup, type ParentProps, untrack, useContext } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useLanguage } from "@/context/language"
 import type { InitError } from "../pages/error"
@@ -487,13 +477,7 @@ const GlobalSyncContext = createContext<ReturnType<typeof createGlobalSync>>()
 
 export function GlobalSyncProvider(props: ParentProps) {
   const value = createGlobalSync()
-  return (
-    <Switch>
-      <Match when={value.ready}>
-        <GlobalSyncContext.Provider value={value}>{props.children}</GlobalSyncContext.Provider>
-      </Match>
-    </Switch>
-  )
+  return <GlobalSyncContext.Provider value={value}>{props.children}</GlobalSyncContext.Provider>
 }
 
 export function useGlobalSync() {

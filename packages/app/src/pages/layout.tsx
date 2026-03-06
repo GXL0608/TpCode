@@ -1285,14 +1285,6 @@ export default function Layout(props: ParentProps) {
       })
       return
     }
-    const activated = await accountProject.activate(target.project_id, true)
-    if (!activated.ok) {
-      showToast({
-        title: "找不到文件夹",
-        description: "请联系管理员检查项目路径",
-      })
-      return
-    }
     await navigateToProject(target.worktree)
   }
 

@@ -141,31 +141,33 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
     }) => {
       const endpoint = url(input.path)
       if (!endpoint) throw new Error("server_missing")
-      const headers = new Headers()
-      headers.set("content-type", "application/json")
-      if (input.auth !== "none") {
-        const token = AccountToken.access()
-        if (token) headers.set("authorization", `Bearer ${token}`)
+      const send = (auth?: string) => {
+        const headers = new Headers()
+        headers.set("content-type", "application/json")
+        if (auth) headers.set("authorization", `Bearer ${auth}`)
+        headers.set("accept", "application/json")
+        return fetcher(endpoint, {
+          method: input.method ?? "GET",
+          headers,
+          body: input.body ? JSON.stringify(input.body) : undefined,
+        })
       }
-      headers.set("accept", "application/json")
-      const response = await fetcher(endpoint, {
-        method: input.method ?? "GET",
-        headers,
-        body: input.body ? JSON.stringify(input.body) : undefined,
-      })
+      const token = input.auth === "none" ? undefined : AccountToken.access()
+      const response = await send(token)
       if (response.status === 401 && input.auth !== "none") {
+        const replaced = AccountToken.replacedAccess(token)
+        if (replaced) {
+          const retry = await send(replaced)
+          if (retry.ok && !isJSON(retry)) return invalidAPIResponse()
+          return retry
+        }
         const refreshed = await AccountToken.refreshIfNeeded({
           baseUrl: current()?.http.url ?? endpoint,
           fetcher,
         })
-        if (refreshed) {
-          const retryHeaders = new Headers(headers)
-          retryHeaders.set("authorization", `Bearer ${refreshed}`)
-          const retry = await fetcher(endpoint, {
-            method: input.method ?? "GET",
-            headers: retryHeaders,
-            body: input.body ? JSON.stringify(input.body) : undefined,
-          })
+        const access = refreshed ?? AccountToken.replacedAccess(token)
+        if (access) {
+          const retry = await send(access)
           if (retry.ok && !isJSON(retry)) return invalidAPIResponse()
           return retry
         }

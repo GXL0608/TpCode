@@ -48,7 +48,10 @@ async function login(username: string, password: string) {
   const body = (await response.json()) as Record<string, unknown>
   const token = typeof body.access_token === "string" ? body.access_token : undefined
   expect(!!token).toBe(true)
-  return token!
+  return {
+    access_token: token!,
+    refresh_token: typeof body.refresh_token === "string" ? body.refresh_token : undefined,
+  }
 }
 
 beforeAll(async () => {
@@ -58,7 +61,8 @@ beforeAll(async () => {
 
 describe("account context state", () => {
   test.skipIf(!on)("sanitizes stored project ui state against current account scope", async () => {
-    const admin = await login("admin", "TpCode@2026")
+    const loginResult = await login("admin", "TpCode@2026")
+    const admin = loginResult.access_token
     const projects = await req({
       path: "/account/context/projects",
       token: admin,
@@ -169,5 +173,35 @@ describe("account context state", () => {
     expect(fetched.status).toBe(200)
     const persisted = (await fetched.json()) as { open_project_ids: string[] }
     expect(persisted.open_project_ids).toEqual([project.id])
+  })
+
+  test.skipIf(!on)("keeps the previous access token valid while selecting a new project context", async () => {
+    const loginResult = await login("admin", "TpCode@2026")
+    const admin = loginResult.access_token
+    const projects = await req({
+      path: "/account/context/projects",
+      token: admin,
+    })
+    expect(projects.status).toBe(200)
+    const payload = (await projects.json()) as {
+      projects?: Array<{ id: string }>
+    }
+    const project = payload.projects?.[0]
+    expect(!!project?.id).toBe(true)
+    if (!project?.id) throw new Error("project_missing")
+
+    const selected = await req({
+      path: "/account/context/select",
+      method: "POST",
+      token: admin,
+      body: { project_id: project.id },
+    })
+    expect(selected.status).toBe(200)
+
+    const me = await req({
+      path: "/account/me",
+      token: admin,
+    })
+    expect(me.status).toBe(200)
   })
 })

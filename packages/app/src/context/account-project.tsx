@@ -10,6 +10,43 @@ import {
 import { useGlobalSync } from "./global-sync"
 import { projectDirectories, resolveProjectByDirectory, sanitizeProjectWorkspaceOrder } from "./project-resolver"
 
+export function visibleProjectIDs(input: {
+  projects: readonly Pick<Project, "id">[]
+  open_project_ids: string[]
+  current_project_id?: string
+}) {
+  const ids = input.projects.map((project) => project.id)
+  const open = [...new Set(input.open_project_ids.filter((project_id) => ids.includes(project_id)))]
+  if (!input.current_project_id) return open
+  if (!ids.includes(input.current_project_id)) return open
+  if (open.includes(input.current_project_id)) return open
+  return [...open, input.current_project_id]
+}
+
+export function nextOpenProjectIDs(input: {
+  open_project_ids: string[]
+  project_id: string
+}) {
+  if (input.open_project_ids.includes(input.project_id)) return input.open_project_ids
+  return [...input.open_project_ids, input.project_id]
+}
+
+export function repairProjectID(input: {
+  ready: boolean
+  hydrated: boolean
+  authenticated: boolean
+  pending: boolean
+  projects: readonly Pick<Project, "id">[]
+  open_project_ids: string[]
+  current_project_id?: string
+}) {
+  if (!input.ready || !input.hydrated || !input.authenticated || input.pending) return
+  if (!input.current_project_id) return
+  if (!input.projects.some((project) => project.id === input.current_project_id)) return
+  if (input.open_project_ids.includes(input.current_project_id)) return
+  return input.current_project_id
+}
+
 function empty(current_project_id?: string): AccountProjectState {
   return {
     current_project_id,
@@ -29,20 +66,26 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
     const auth = useAccountAuth()
     const globalSync = useGlobalSync()
     const [ready, setReady] = createSignal(false)
+    const [hydrated, setHydrated] = createSignal(false)
     const [store, setStore] = createStore({
       data: empty(),
       pending: false,
     })
 
     const projects = createMemo(() => globalSync.data.project)
+    const currentID = createMemo(() => store.data.current_project_id ?? auth.user()?.context_project_id)
     const list = createMemo(() =>
-      store.data.open_project_ids
+      visibleProjectIDs({
+        projects: projects(),
+        open_project_ids: store.data.open_project_ids,
+        current_project_id: currentID(),
+      })
         .map((project_id) => projects().find((project) => project.id === project_id))
         .filter((project): project is Project => !!project)
         .map((project) => ({ ...project, expanded: true })),
     )
 
-    const current = createMemo(() => projects().find((project) => project.id === store.data.current_project_id))
+    const current = createMemo(() => projects().find((project) => project.id === currentID()))
 
     const replace = (next?: AccountProjectState) => {
       setStore("data", next ?? empty(auth.user()?.context_project_id))
@@ -52,12 +95,19 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       if (!auth.ready()) return store.data
       if (!auth.enabled() || !auth.authenticated()) {
         replace(empty(auth.user()?.context_project_id))
+        setHydrated(false)
         setReady(true)
         return store.data
       }
       setReady(false)
       const next = await auth.contextState()
-      replace(next)
+      if (next) {
+        replace(next)
+        setHydrated(true)
+      }
+      if (!next) {
+        setHydrated(false)
+      }
       setReady(true)
       return next ?? store.data
     }
@@ -78,10 +128,12 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       })
 
     const open = async (project_id: string) => {
-      const next = [project_id, ...store.data.open_project_ids.filter((item) => item !== project_id)]
       return patch({
         last_project_id: project_id,
-        open_project_ids: next,
+        open_project_ids: nextOpenProjectIDs({
+          open_project_ids: store.data.open_project_ids,
+          project_id,
+        }),
       })
     }
 
@@ -182,6 +234,21 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       auth.authenticated()
       auth.user()?.context_project_id
       void reload()
+    })
+
+    createEffect(() => {
+      if (!auth.ready()) return
+      const project_id = repairProjectID({
+        ready: ready(),
+        hydrated: hydrated(),
+        authenticated: auth.enabled() && auth.authenticated(),
+        pending: store.pending,
+        projects: projects(),
+        open_project_ids: store.data.open_project_ids,
+        current_project_id: currentID(),
+      })
+      if (!project_id) return
+      void open(project_id)
     })
 
     return {

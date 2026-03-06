@@ -24,33 +24,35 @@ export function createSdkForServer({
 
   const delegated = config.fetch ?? globalThis.fetch
   const wrappedFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const headers = requestHeaders(input, init)
-    const token = AccountToken.access()
-    if (token) {
-      headers.set("authorization", `Bearer ${token}`)
-    } else if (fallbackAuth && !headers.has("authorization")) {
-      headers.set("authorization", fallbackAuth)
+    const send = (auth?: string) => {
+      const headers = requestHeaders(input, init)
+      if (auth) {
+        headers.set("authorization", `Bearer ${auth}`)
+      } else if (fallbackAuth && !headers.has("authorization")) {
+        headers.set("authorization", fallbackAuth)
+      }
+      return delegated(input, {
+        ...init,
+        headers,
+      })
     }
-    const response = await delegated(input, {
-      ...init,
-      headers,
-    })
+
+    const token = AccountToken.access()
+    const response = await send(token)
     if (response.status !== 401) return response
+    const replaced = AccountToken.replacedAccess(token)
+    if (replaced) return send(replaced)
     if (!token) return response
     const refreshed = await AccountToken.refreshIfNeeded({
       baseUrl: server.url,
       fetcher: delegated,
     })
-    if (!refreshed) {
+    const access = refreshed ?? AccountToken.replacedAccess(token)
+    if (!access) {
       AccountToken.handleUnauthorized()
       return response
     }
-    const retry = requestHeaders(input, init)
-    retry.set("authorization", `Bearer ${refreshed}`)
-    return delegated(input, {
-      ...init,
-      headers: retry,
-    })
+    return send(access)
   }
 
   return createOpencodeClient({

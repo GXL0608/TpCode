@@ -55,6 +55,12 @@ export namespace AccountToken {
     return get(ACCESS)
   }
 
+  export function replacedAccess(token?: string) {
+    const next = access()
+    if (!token || !next || next === token) return
+    return next
+  }
+
   export function refresh() {
     return get(REFRESH)
   }

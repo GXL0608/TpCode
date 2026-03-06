@@ -3,6 +3,7 @@ import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
+import { nextOpenProjectIDs } from "@/context/account-project"
 
 type Row = {
   id: string
@@ -83,7 +84,10 @@ export default function AccountProjectSelect() {
     const current = await auth.contextState()
     const next = await auth.updateContextState({
       last_project_id: target.project_id,
-      open_project_ids: [target.project_id, ...(current?.open_project_ids ?? []).filter((item) => item !== target.project_id)],
+      open_project_ids: nextOpenProjectIDs({
+        open_project_ids: current?.open_project_ids ?? [],
+        project_id: target.project_id,
+      }),
     })
     if (!next) {
       setPending(false)

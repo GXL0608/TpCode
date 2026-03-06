@@ -1,9 +1,10 @@
 import type { Event } from "@opencode-ai/sdk/v2/client"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
-import { batch, onCleanup } from "solid-js"
+import { batch, createEffect, onCleanup } from "solid-js"
 import z from "zod"
 import { createSdkForServer } from "@/utils/server"
+import { useAccountAuth } from "./account-auth"
 import { usePlatform } from "./platform"
 import { useServer } from "./server"
 
@@ -14,6 +15,7 @@ const abortError = z.object({
 export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleContext({
   name: "GlobalSDK",
   init: () => {
+    const auth = useAccountAuth()
     const server = useServer()
     const platform = usePlatform()
     const abort = new AbortController()
@@ -202,6 +204,18 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", onVisibility)
     }
+
+    let context = auth.user()?.context_project_id
+    createEffect(() => {
+      const next = auth.user()?.context_project_id
+      if (context === undefined) {
+        context = next
+        return
+      }
+      if (context === next) return
+      context = next
+      attempt?.abort()
+    })
 
     onCleanup(() => {
       if (typeof document !== "undefined") {

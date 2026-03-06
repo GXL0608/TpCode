@@ -1043,7 +1043,6 @@ export namespace UserService {
     if (!allowed) return { ok: false as const, code: "project_forbidden" }
     const project = await Project.get(input.project_id)
     if (!project || !(await Filesystem.isDir(project.worktree))) return { ok: false as const, code: "project_missing" }
-    await revokeAll({ user_id: input.user_id })
     await AccountContextService.remember({ user_id: input.user_id, project_id: input.project_id })
     const roles = await rolesByUser(input.user_id)
     const permissions = await permissionsByUser(input.user_id)
