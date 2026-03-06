@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test"
+import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test"
 import path from "path"
 import { Identifier } from "../../src/id/id"
 import { Session } from "../../src/session"
@@ -11,6 +11,29 @@ import { Flag } from "../../src/flag/flag"
 const root = path.join(__dirname, "../..")
 Log.init({ print: false })
 const on = Flag.TPCODE_ACCOUNT_ENABLED
+const feedback = {
+  calls: [] as {
+    vho_feedback_no: string
+    plan_id: string
+    session_id: string
+    message_id: string
+  }[],
+  error: undefined as Error | undefined,
+}
+
+mock.module("../../src/plan/task-feedback", () => ({
+  TaskFeedbackService: {
+    markAiPlanLater(input: (typeof feedback.calls)[number]) {
+      feedback.calls.push(input)
+      if (!feedback.error) return Promise.resolve()
+      return Promise.resolve()
+        .then(() => {
+          throw feedback.error
+        })
+        .catch(() => undefined)
+    },
+  },
+}))
 
 async function boot() {
   const [{ Server }, { UserService }] = await Promise.all([
@@ -140,6 +163,11 @@ beforeAll(async () => {
   mem.user = ready.user
 })
 
+afterEach(() => {
+  feedback.calls.length = 0
+  feedback.error = undefined
+})
+
 describe("account plan save", () => {
   test.skipIf(!on)("saves plan with vho feedback and writes audit", async () => {
     const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
@@ -179,6 +207,13 @@ describe("account plan save", () => {
     expect(row?.message_id).toBe(plan.messageID)
     expect(row?.part_id).toBe(plan.partID)
     expect(row?.vho_feedback_no).toBe("VHO-12345")
+    expect(feedback.calls).toHaveLength(1)
+    expect(feedback.calls[0]).toMatchObject({
+      vho_feedback_no: "VHO-12345",
+      plan_id: body.id,
+      session_id: sessionID,
+      message_id: plan.messageID,
+    })
 
     await new Promise((resolve) => setTimeout(resolve, 20))
     const audit = await Database.use((db) =>
@@ -220,6 +255,43 @@ describe("account plan save", () => {
     const body = (await response.json()) as { id?: string }
     const row = await Database.use((db) => db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, body.id!)).get())
     expect(row?.vho_feedback_no ?? null).toBeNull()
+    expect(feedback.calls).toHaveLength(0)
+  })
+
+  test.skipIf(!on)("oracle update failure does not block save", async () => {
+    feedback.error = new Error("oracle_down")
+    const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
+    const sessionID = await createSession(admin.token)
+    const plan = await createMessage({
+      sessionID,
+      agent: "plan",
+      text: "# plan",
+    })
+
+    const response = await req({
+      path: "/account/plan/save",
+      method: "POST",
+      token: admin.token,
+      body: {
+        session_id: sessionID,
+        message_id: plan.messageID,
+        part_id: plan.partID,
+        vho_feedback_no: "VHO-ERR-1",
+      },
+    })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { ok?: boolean; id?: string }
+    expect(body.ok).toBe(true)
+    const row = await Database.use((db) => db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, body.id!)).get())
+    expect(!!row).toBe(true)
+    expect(row?.vho_feedback_no).toBe("VHO-ERR-1")
+    expect(feedback.calls).toHaveLength(1)
+    expect(feedback.calls[0]).toMatchObject({
+      vho_feedback_no: "VHO-ERR-1",
+      plan_id: body.id,
+      session_id: sessionID,
+      message_id: plan.messageID,
+    })
   })
 
   test.skipIf(!on)("saving same plan twice creates two rows", async () => {

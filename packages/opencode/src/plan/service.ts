@@ -4,6 +4,7 @@ import { Session } from "@/session"
 import { Database } from "@/storage/db"
 import { ulid } from "ulid"
 import { TpSavedPlanTable } from "./saved-plan.sql"
+import { TaskFeedbackService } from "./task-feedback"
 
 type Actor = {
   id: string
@@ -88,6 +89,14 @@ export namespace PlanService {
         })
         .run()
     })
+    if (vho_feedback_no) {
+      void TaskFeedbackService.markAiPlanLater({
+        vho_feedback_no,
+        plan_id: id,
+        session_id: input.session_id,
+        message_id: input.message_id,
+      })
+    }
     return {
       ok: true as const,
       id,
