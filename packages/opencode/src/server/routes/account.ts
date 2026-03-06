@@ -6,6 +6,7 @@ import { UserService } from "@/user/service"
 import { UserRbac } from "@/user/rbac"
 import { AccountContextService } from "@/user/context"
 import { AccountProjectCatalogService } from "@/user/project-catalog"
+import { AccountProjectStateService } from "@/user/project-state"
 import { AccountSystemSettingService } from "@/user/system-setting"
 import { AccountProductService } from "@/user/product"
 import { errors } from "../error"
@@ -85,6 +86,35 @@ const ProviderControlBody = z.object({
   model: z.string().optional(),
   small_model: z.string().optional(),
   model_prefs: ModelPrefsBody.optional(),
+})
+
+const AccountProjectStateLastSession = z.object({
+  session_id: z.string().min(1),
+  directory: z.string().min(1),
+  time_updated: z.number(),
+})
+
+const AccountProjectState = z
+  .object({
+    current_project_id: z.string().optional(),
+    last_project_id: z.string().optional(),
+    open_project_ids: z.array(z.string()),
+    last_session_by_project: z.record(z.string(), AccountProjectStateLastSession),
+    workspace_mode_by_project: z.record(z.string(), z.boolean()),
+    workspace_order_by_project: z.record(z.string(), z.array(z.string())),
+    workspace_expanded_by_directory: z.record(z.string(), z.boolean()),
+    workspace_alias_by_project_branch: z.record(z.string(), z.record(z.string(), z.string())),
+  })
+  .meta({ ref: "AccountProjectState" })
+
+const AccountProjectStatePatch = z.object({
+  last_project_id: z.string().nullable().optional(),
+  open_project_ids: z.array(z.string()).optional(),
+  last_session_by_project: z.record(z.string(), AccountProjectStateLastSession).optional(),
+  workspace_mode_by_project: z.record(z.string(), z.boolean()).optional(),
+  workspace_order_by_project: z.record(z.string(), z.array(z.string())).optional(),
+  workspace_expanded_by_directory: z.record(z.string(), z.boolean()).optional(),
+  workspace_alias_by_project_branch: z.record(z.string(), z.record(z.string(), z.string())).optional(),
 })
 
 function requireLogin(c: Context) {
@@ -459,6 +489,64 @@ export const AccountRoutes = lazy(() =>
           context_project_id,
           last_project_id: await AccountContextService.lastProject(user_id),
         })
+      },
+    )
+    .get(
+      "/context/state",
+      describeRoute({
+        summary: "Current account project UI state",
+        description: "Get the database-backed, account-scoped project UI state.",
+        operationId: "account.context.state",
+        responses: {
+          200: {
+            description: "Project state",
+            content: {
+              "application/json": {
+                schema: resolver(AccountProjectState),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        return c.json(await AccountProjectStateService.get({ user_id, current_project_id: context_project_id }))
+      },
+    )
+    .patch(
+      "/context/state",
+      describeRoute({
+        summary: "Update current account project UI state",
+        description: "Patch the database-backed, account-scoped project UI state.",
+        operationId: "account.context.state.update",
+        responses: {
+          200: {
+            description: "Project state",
+            content: {
+              "application/json": {
+                schema: resolver(AccountProjectState),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator("json", AccountProjectStatePatch),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        const body = c.req.valid("json")
+        return c.json(
+          await AccountProjectStateService.update({
+            user_id,
+            current_project_id: context_project_id,
+            patch: body,
+          }),
+        )
       },
     )
     .post(

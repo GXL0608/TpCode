@@ -37,6 +37,27 @@ type ContextProduct = {
   last_selected: boolean
 }
 
+export type AccountProjectStateLastSession = {
+  session_id: string
+  directory: string
+  time_updated: number
+}
+
+export type AccountProjectState = {
+  current_project_id?: string
+  last_project_id?: string
+  open_project_ids: string[]
+  last_session_by_project: Record<string, AccountProjectStateLastSession>
+  workspace_mode_by_project: Record<string, boolean>
+  workspace_order_by_project: Record<string, string[]>
+  workspace_expanded_by_directory: Record<string, boolean>
+  workspace_alias_by_project_branch: Record<string, Record<string, string>>
+}
+
+export type AccountProjectStatePatch = Partial<Omit<AccountProjectState, "current_project_id">> & {
+  last_project_id?: string | null
+}
+
 type LoginResult = {
   access_token: string
   refresh_token: string
@@ -132,6 +153,23 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         headers,
         body: input.body ? JSON.stringify(input.body) : undefined,
       })
+      if (response.status === 401 && input.auth !== "none") {
+        const refreshed = await AccountToken.refreshIfNeeded({
+          baseUrl: current()?.http.url ?? endpoint,
+          fetcher,
+        })
+        if (refreshed) {
+          const retryHeaders = new Headers(headers)
+          retryHeaders.set("authorization", `Bearer ${refreshed}`)
+          const retry = await fetcher(endpoint, {
+            method: input.method ?? "GET",
+            headers: retryHeaders,
+            body: input.body ? JSON.stringify(input.body) : undefined,
+          })
+          if (retry.ok && !isJSON(retry)) return invalidAPIResponse()
+          return retry
+        }
+      }
       if (response.ok && !isJSON(response)) return invalidAPIResponse()
       return response
     }
@@ -436,6 +474,41 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         }>(await response.json().catch(() => undefined))
         if (!payload) {
           setState("last_error", "context_products_failed")
+          return
+        }
+        return payload
+      },
+      async contextState() {
+        const response = await request({
+          path: "/account/context/state",
+          method: "GET",
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) {
+          setState("last_error", (await responseCode(response)) ?? "context_state_failed")
+          return
+        }
+        const payload = json<AccountProjectState>(await response.json().catch(() => undefined))
+        if (!payload) {
+          setState("last_error", "context_state_failed")
+          return
+        }
+        return payload
+      },
+      async updateContextState(input: AccountProjectStatePatch) {
+        const response = await request({
+          path: "/account/context/state",
+          method: "PATCH",
+          body: input,
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) {
+          setState("last_error", (await responseCode(response)) ?? "context_state_update_failed")
+          return
+        }
+        const payload = json<AccountProjectState>(await response.json().catch(() => undefined))
+        if (!payload) {
+          setState("last_error", "context_state_update_failed")
           return
         }
         return payload

@@ -1,23 +1,23 @@
 import { createMemo, For, Match, Switch } from "solid-js"
 import { Button } from "@opencode-ai/ui/button"
 import { Logo } from "@opencode-ai/ui/logo"
-import { useLayout } from "@/context/layout"
+import { useAccountAuth } from "@/context/account-auth"
+import { useAccountProject } from "@/context/account-project"
 import { useNavigate } from "@solidjs/router"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { Icon } from "@opencode-ai/ui/icon"
-import { usePlatform } from "@/context/platform"
 import { DateTime } from "luxon"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
-import { DialogSelectDirectory } from "@/components/dialog-select-directory"
+import { DialogSelectAssignedProject } from "@/components/dialog-select-assigned-project"
 import { DialogSelectServer } from "@/components/dialog-select-server"
 import { useServer } from "@/context/server"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 
 export default function Home() {
+  const auth = useAccountAuth()
+  const accountProject = useAccountProject()
   const sync = useGlobalSync()
-  const layout = useLayout()
-  const platform = usePlatform()
   const dialog = useDialog()
   const navigate = useNavigate()
   const server = useServer()
@@ -37,35 +37,32 @@ export default function Home() {
     return "bg-border-weak-base"
   })
 
-  function openProject(directory: string) {
-    layout.projects.open(directory)
-    server.projects.touch(directory)
-    navigate(`/${base64Encode(directory)}`)
+  async function openProject(directory: string) {
+    const project = sync.data.project.find((item) => item.worktree === directory || item.sandboxes?.includes(directory))
+    if (!project?.id) return
+    const activated = await accountProject.activate(project.id, true)
+    if (!activated.ok) return
+    const last = activated.state.last_session_by_project[project.id]
+    navigate(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(project.worktree)}/session`)
   }
 
   async function chooseProject() {
-    function resolve(result: string | string[] | null) {
-      if (Array.isArray(result)) {
-        for (const directory of result) {
-          openProject(directory)
-        }
-      } else if (result) {
-        openProject(result)
-      }
-    }
-
-    if (platform.openDirectoryPickerDialog && server.isLocal()) {
-      const result = await platform.openDirectoryPickerDialog?.({
-        title: language.t("command.project.open"),
-        multiple: true,
-      })
-      resolve(result)
-    } else {
+    const payload = await auth.contextProducts()
+    const projects = payload?.products ?? []
+    if (projects.length === 0) return
+    const productID = await new Promise<string | null>((resolve) => {
       dialog.show(
-        () => <DialogSelectDirectory multiple={true} onSelect={resolve} />,
+        () => <DialogSelectAssignedProject projects={projects} onSelect={resolve} />,
         () => resolve(null),
       )
-    }
+    })
+    if (!productID) return
+    const target = projects.find((item) => item.id === productID)
+    if (!target?.worktree) return
+    const activated = await accountProject.activate(target.project_id, true)
+    if (!activated.ok) return
+    const last = activated.state.last_session_by_project[target.project_id]
+    navigate(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(target.worktree)}/session`)
   }
 
   return (
@@ -101,7 +98,7 @@ export default function Home() {
                     size="large"
                     variant="ghost"
                     class="text-14-mono text-left justify-between px-3"
-                    onClick={() => openProject(project.worktree)}
+                    onClick={() => void openProject(project.worktree)}
                   >
                     {project.worktree.replace(homedir(), "~")}
                     <div class="text-14-regular text-text-weak">
@@ -120,7 +117,7 @@ export default function Home() {
               <div class="text-14-medium text-text-strong">{language.t("home.empty.title")}</div>
               <div class="text-12-regular text-text-weak">{language.t("home.empty.description")}</div>
             </div>
-            <Button class="px-3 mt-1" onClick={chooseProject}>
+            <Button class="px-3 mt-1" onClick={() => void chooseProject()}>
               {language.t("command.project.open")}
             </Button>
           </div>

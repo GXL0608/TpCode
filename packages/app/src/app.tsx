@@ -10,6 +10,7 @@ import { MetaProvider } from "@solidjs/meta"
 import { Navigate, Route, Router } from "@solidjs/router"
 import { ErrorBoundary, type JSX, lazy, type ParentProps, Show, Suspense } from "solid-js"
 import { AccountAuthProvider, useAccountAuth } from "@/context/account-auth"
+import { AccountProjectProvider } from "@/context/account-project"
 import { CommandProvider } from "@/context/command"
 import { CommentsProvider } from "@/context/comments"
 import { FileProvider } from "@/context/file"
@@ -146,17 +147,6 @@ function ContextProtectedRoute(props: ParentProps) {
   )
 }
 
-function ContextSelectRoute(props: ParentProps) {
-  const auth = useAccountAuth()
-  return (
-    <Show when={auth.ready()} fallback={<Loading />}>
-      <Show when={!auth.enabled() || auth.needsProjectContext()} fallback={<Navigate href="/" />}>
-        {props.children}
-      </Show>
-    </Show>
-  )
-}
-
 function UiI18nBridge(props: ParentProps) {
   const language = useLanguage()
   return <I18nProvider value={{ locale: language.locale, t: language.t }}>{props.children}</I18nProvider>
@@ -181,17 +171,19 @@ function AppShellProviders(props: ParentProps) {
   return (
     <SettingsProvider>
       <PermissionProvider>
-        <LayoutProvider>
-          <NotificationProvider>
-            <ModelsProvider>
-              <CommandProvider>
-                <HighlightsProvider>
-                  <Layout>{props.children}</Layout>
-                </HighlightsProvider>
-              </CommandProvider>
-            </ModelsProvider>
-          </NotificationProvider>
-        </LayoutProvider>
+        <AccountProjectProvider>
+          <LayoutProvider>
+            <NotificationProvider>
+              <ModelsProvider>
+                <CommandProvider>
+                  <HighlightsProvider>
+                    <Layout>{props.children}</Layout>
+                  </HighlightsProvider>
+                </CommandProvider>
+              </ModelsProvider>
+            </NotificationProvider>
+          </LayoutProvider>
+        </AccountProjectProvider>
       </PermissionProvider>
     </SettingsProvider>
   )
@@ -255,23 +247,17 @@ export function AppInterface(props: {
 }) {
   const ProtectedShell = (shellProps: ParentProps) => (
     <ProtectedRoute>
-      <GlobalSDKProvider>
-        <GlobalSyncProvider>
-          <ContextProtectedRoute>
+      <ContextProtectedRoute>
+        <GlobalSDKProvider>
+          <GlobalSyncProvider>
             <RouterRoot appChildren={props.children}>{shellProps.children}</RouterRoot>
-          </ContextProtectedRoute>
-        </GlobalSyncProvider>
-      </GlobalSDKProvider>
+          </GlobalSyncProvider>
+        </GlobalSDKProvider>
+      </ContextProtectedRoute>
     </ProtectedRoute>
   )
 
-  const SelectShell = (shellProps: ParentProps) => (
-    <ProtectedRoute>
-      <ContextSelectRoute>
-        {shellProps.children}
-      </ContextSelectRoute>
-    </ProtectedRoute>
-  )
+  const SelectShell = (shellProps: ParentProps) => <ProtectedRoute>{shellProps.children}</ProtectedRoute>
 
   const AccountOnlyShell = (shellProps: ParentProps) => (
     <ProtectedRoute>

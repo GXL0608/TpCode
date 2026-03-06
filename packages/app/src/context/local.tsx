@@ -24,12 +24,15 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const connected = createMemo(() => new Set(providers.connected().map((provider) => provider.id)))
 
     createEffect(() => {
-      if (!account.enabled()) {
+      if (!account.enabled() || !account.authenticated()) {
         setAccountModel(undefined)
         return
       }
       const user = account.user()
-      if (!user?.id) return
+      if (!user?.id) {
+        setAccountModel(undefined)
+        return
+      }
       let done = false
       void accountRequest({ path: "/account/me/provider-control" })
         .then((response) => {
@@ -207,7 +210,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (model) models.setVisibility(model, true)
           if (options?.recent && model) models.recent.push(model)
         })
-        if (!model || !account.enabled()) return
+        if (!model || !account.enabled() || !account.authenticated()) return
         void accountRequest({
           method: "PUT",
           path: "/account/me/provider-control",

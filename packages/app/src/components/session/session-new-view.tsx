@@ -2,7 +2,9 @@ import { Show, createMemo } from "solid-js"
 import { DateTime } from "luxon"
 import { useSync } from "@/context/sync"
 import { useSDK } from "@/context/sdk"
+import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
+import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { Icon } from "@opencode-ai/ui/icon"
 import { getDirectory, getFilename } from "@opencode-ai/util/path"
 
@@ -19,20 +21,22 @@ interface NewSessionViewProps {
 export function NewSessionView(props: NewSessionViewProps) {
   const sync = useSync()
   const sdk = useSDK()
+  const globalSync = useGlobalSync()
   const language = useLanguage()
+  const project = createMemo(() => resolveProjectByDirectory(globalSync.data.project, sdk.directory))
 
-  const sandboxes = createMemo(() => sync.project?.sandboxes ?? [])
+  const sandboxes = createMemo(() => project()?.sandboxes ?? [])
   const options = createMemo(() => [MAIN_WORKTREE, ...sandboxes(), CREATE_WORKTREE])
   const current = createMemo(() => {
     const selection = props.worktree
     if (options().includes(selection)) return selection
     return MAIN_WORKTREE
   })
-  const projectRoot = createMemo(() => sync.project?.worktree ?? sdk.directory)
+  const projectRoot = createMemo(() => project()?.worktree ?? sdk.directory)
   const isWorktree = createMemo(() => {
-    const project = sync.project
-    if (!project) return false
-    return sdk.directory !== project.worktree
+    const current = project()
+    if (!current) return false
+    return sdk.directory !== current.worktree
   })
 
   const label = (value: string) => {
@@ -62,14 +66,14 @@ export function NewSessionView(props: NewSessionViewProps) {
         <Icon name="branch" size="small" />
         <div class="text-12-medium text-text-weak select-text ml-2">{label(current())}</div>
       </div>
-      <Show when={sync.project}>
-        {(project) => (
+      <Show when={project()}>
+        {(item) => (
           <div class="flex justify-center items-center gap-3">
             <Icon name="pencil-line" size="small" />
             <div class="text-12-medium text-text-weak">
               {language.t("session.new.lastModified")}&nbsp;
               <span class="text-text-strong">
-                {DateTime.fromMillis(project().time.updated ?? project().time.created)
+                {DateTime.fromMillis(item().time.updated ?? item().time.created)
                   .setLocale(language.locale())
                   .toRelative()}
               </span>

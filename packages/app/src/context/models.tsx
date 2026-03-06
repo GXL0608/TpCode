@@ -120,12 +120,15 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
     }
 
     createEffect(() => {
-      if (!auth.enabled()) {
+      if (!auth.enabled() || !auth.authenticated()) {
         setLoaded(false)
         return
       }
       const user = auth.user()
-      if (!user?.id) return
+      if (!user?.id) {
+        setLoaded(false)
+        return
+      }
       let done = false
       void accountRequest({
         path: "/account/me/model-prefs",
@@ -149,7 +152,7 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
     })
 
     createEffect(() => {
-      if (!auth.enabled()) return
+      if (!auth.enabled() || !auth.authenticated()) return
       if (!loaded()) return
       const body = encode()
       const timer = setTimeout(() => {

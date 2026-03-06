@@ -11,6 +11,7 @@ import { Mark } from "@opencode-ai/ui/logo"
 
 import { useSync } from "@/context/sync"
 import { useLayout } from "@/context/layout"
+import { useGlobalSync } from "@/context/global-sync"
 import { checksum, base64Encode } from "@opencode-ai/util/encode"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useLanguage } from "@/context/language"
@@ -19,6 +20,7 @@ import { UserMessage } from "@opencode-ai/sdk/v2"
 import { useSDK } from "@/context/sdk"
 import { usePrompt } from "@/context/prompt"
 import { useComments } from "@/context/comments"
+import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { SessionHeader, NewSessionView } from "@/components/session"
 import { same } from "@/utils/same"
 import { createOpenReviewFile } from "@/pages/session/helpers"
@@ -44,6 +46,8 @@ export default function Page() {
   const sdk = useSDK()
   const prompt = usePrompt()
   const comments = useComments()
+  const globalSync = useGlobalSync()
+  const project = createMemo(() => resolveProjectByDirectory(globalSync.data.project, sdk.directory))
 
   const [ui, setUi] = createStore({
     pendingMessage: undefined as string | undefined,
@@ -246,8 +250,8 @@ export default function Page() {
 
   const newSessionWorktree = createMemo(() => {
     if (store.newSessionWorktree === "create") return "create"
-    const project = sync.project
-    if (project && sdk.directory !== project.worktree) return sdk.directory
+    const current = project()
+    if (current && sdk.directory !== current.worktree) return sdk.directory
     return "main"
   })
 
@@ -286,8 +290,8 @@ export default function Page() {
     return sync.data.session_diff[id] !== undefined
   })
   const reviewEmptyKey = createMemo(() => {
-    const project = sync.project
-    if (!project || project.vcs) return "session.review.empty"
+    const current = project()
+    if (!current || current.vcs) return "session.review.empty"
     return "session.review.noVcs"
   })
 
@@ -1137,7 +1141,7 @@ export default function Page() {
 
                     setStore("newSessionWorktree", "main")
 
-                    const target = value === "main" ? sync.project?.worktree : value
+                    const target = value === "main" ? project()?.worktree : value
                     if (!target) return
                     if (target === sdk.directory) return
                     layout.projects.open(target)

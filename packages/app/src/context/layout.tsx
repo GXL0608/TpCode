@@ -2,29 +2,21 @@ import { createStore, produce } from "solid-js/store"
 import { batch, createEffect, createMemo, onCleanup, onMount, type Accessor } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useAccountAuth } from "./account-auth"
+import { useAccountProject } from "./account-project"
 import { useGlobalSync } from "./global-sync"
 import { useGlobalSDK } from "./global-sdk"
-import { useServer } from "./server"
 import { usePlatform } from "./platform"
 import { Project } from "@opencode-ai/sdk/v2"
 import { Persist, persisted, removePersisted } from "@/utils/persist"
 import { same } from "@/utils/same"
 import { createScrollPersistence, type SessionScroll } from "./layout-scroll"
+import { resolveProjectByDirectory } from "./project-resolver"
 
 const AVATAR_COLOR_KEYS = ["pink", "mint", "orange", "purple", "cyan", "lime"] as const
 const DEFAULT_PANEL_WIDTH = 344
 const DEFAULT_SESSION_WIDTH = 600
 const DEFAULT_TERMINAL_HEIGHT = 280
 export type AvatarColorKey = (typeof AVATAR_COLOR_KEYS)[number]
-
-function flag(key: string, fallback = true) {
-  if (typeof window !== "object") return fallback
-  const value = window.localStorage.getItem(key)?.toLowerCase()
-  if (!value) return fallback
-  if (value === "1" || value === "true" || value === "on") return true
-  if (value === "0" || value === "false" || value === "off") return false
-  return fallback
-}
 
 export function getAvatarColors(key?: string) {
   if (key && AVATAR_COLOR_KEYS.includes(key as AvatarColorKey)) {
@@ -111,9 +103,9 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
   init: () => {
     const auth = useAccountAuth()
     const accountID = auth.user()?.id ?? "anonymous"
+    const accountProject = useAccountProject()
     const globalSdk = useGlobalSDK()
     const globalSync = useGlobalSync()
-    const server = useServer()
     const platform = usePlatform()
 
     const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -123,16 +115,6 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       if (!isRecord(value)) return value
 
       const sidebar = value.sidebar
-      const migratedSidebar = (() => {
-        if (!isRecord(sidebar)) return sidebar
-        if (typeof sidebar.workspaces !== "boolean") return sidebar
-        return {
-          ...sidebar,
-          workspaces: {},
-          workspacesDefault: sidebar.workspaces,
-        }
-      })()
-
       const review = value.review
       const fileTree = value.fileTree
       const migratedFileTree = (() => {
@@ -159,10 +141,10 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         }
       })()
 
-      if (migratedSidebar === sidebar && migratedReview === review && migratedFileTree === fileTree) return value
+      if (migratedReview === review && migratedFileTree === fileTree) return value
       return {
         ...value,
-        sidebar: migratedSidebar,
+        sidebar,
         review: migratedReview,
         fileTree: migratedFileTree,
       }
@@ -175,8 +157,6 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         sidebar: {
           opened: false,
           width: DEFAULT_PANEL_WIDTH,
-          workspaces: {} as Record<string, boolean>,
-          workspacesDefault: false,
         },
         terminal: {
           height: DEFAULT_TERMINAL_HEIGHT,
@@ -328,130 +308,18 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       return available[Math.floor(Math.random() * available.length)]
     }
 
-    function enrich(project: { worktree: string; expanded: boolean }) {
-      const [childStore] = globalSync.child(project.worktree, { bootstrap: false })
-      const projectID = childStore.project
-      const metadata = projectID
-        ? globalSync.data.project.find((x) => x.id === projectID)
-        : globalSync.data.project.find((x) => x.worktree === project.worktree)
-
-      const local = childStore.projectMeta
-      const localOverride =
-        local?.name !== undefined ||
-        local?.commands?.start !== undefined ||
-        local?.icon?.override !== undefined ||
-        local?.icon?.color !== undefined
-
-      const base = {
-        ...(metadata ?? {}),
-        ...project,
-        icon: {
-          url: metadata?.icon?.url,
-          override: metadata?.icon?.override ?? childStore.icon,
-          color: metadata?.icon?.color,
-        },
-      }
-
-      const isGlobal = projectID === "global" || (metadata?.id === undefined && localOverride)
-      if (!isGlobal) return base
-
-      return {
-        ...base,
-        id: base.id ?? "global",
-        name: local?.name,
-        commands: local?.commands,
-        icon: {
-          url: base.icon?.url,
-          override: local?.icon?.override,
-          color: local?.icon?.color,
-        },
-      }
-    }
-
-    const roots = createMemo(() => {
-      const map = new Map<string, string>()
-      for (const project of globalSync.data.project) {
-        const sandboxes = project.sandboxes ?? []
-        for (const sandbox of sandboxes) {
-          map.set(sandbox, project.worktree)
-        }
-      }
-      return map
-    })
-
-    const rootFor = (directory: string) => {
-      const map = roots()
-      if (map.size === 0) return directory
-
-      const visited = new Set<string>()
-      const chain = [directory]
-
-      while (chain.length) {
-        const current = chain[chain.length - 1]
-        if (!current) return directory
-
-        const next = map.get(current)
-        if (!next) return current
-
-        if (visited.has(next)) return directory
-        visited.add(next)
-        chain.push(next)
-      }
-
-      return directory
-    }
-
-    createEffect(() => {
-      const projects = server.projects.list()
-      const seen = new Set(projects.map((project) => project.worktree))
-
-      batch(() => {
-        for (const project of projects) {
-          const root = rootFor(project.worktree)
-          if (root === project.worktree) continue
-
-          server.projects.close(project.worktree)
-
-          if (!seen.has(root)) {
-            server.projects.open(root)
-            seen.add(root)
-          }
-
-          if (project.expanded) server.projects.expand(root)
-        }
-      })
-    })
-
-    const enriched = createMemo(() => server.projects.list().map(enrich))
-    const allowedWorktrees = createMemo(() => {
-      if (!auth.enabled()) return
-      if (!globalSync.ready) return
-      return new Set(globalSync.data.project.flatMap((project) => [project.worktree, ...(project.sandboxes ?? [])]))
-    })
     const list = createMemo(() => {
-      const projects = enriched()
+      const projects = accountProject.list()
       return projects.map((project) => {
         const color = project.icon?.color ?? colors[project.worktree]
-        if (!color) return project
+        if (!color) return { ...project, expanded: true as const }
         const icon = project.icon ? { ...project.icon, color } : { color }
-        return { ...project, icon }
+        return { ...project, expanded: true as const, icon }
       })
     })
 
     createEffect(() => {
-      const projects = enriched()
-      if (projects.length === 0) return
-      if (!globalSync.ready) return
-
-      for (const project of projects) {
-        if (!project.id) continue
-        if (project.id === "global") continue
-        globalSync.project.icon(project.worktree, project.icon?.override)
-      }
-    })
-
-    createEffect(() => {
-      const projects = enriched()
+      const projects = accountProject.list()
       if (projects.length === 0) return
 
       for (const project of projects) {
@@ -479,11 +347,6 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         if (requested === color) continue
         colorRequested.set(worktree, color)
 
-        if (project.id === "global") {
-          globalSync.project.meta(worktree, { icon: { color } })
-          continue
-        }
-
         void globalSdk.client.project
           .update({ projectID: project.id, directory: worktree, icon: { color } })
           .catch(() => {
@@ -493,79 +356,13 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     })
 
     createEffect(() => {
-      const allowed = allowedWorktrees()
-      if (!allowed) return
-      for (const project of server.projects.list()) {
-        if (allowed.has(project.worktree)) continue
-        server.projects.close(project.worktree)
-      }
-    })
-
-    onMount(() => {
-      if (!flag("opencode.perf.layout.session_queue", true)) {
-        const allowed = allowedWorktrees()
-        Promise.all(
-          server.projects.list().map((project) => {
-            if (allowed && !allowed.has(project.worktree)) return
-            return globalSync.project.loadSessions(project.worktree)
-          }),
-        )
-        return
-      }
-      const allowed = allowedWorktrees()
-      const all = server.projects.list().filter((project) => {
-        if (!allowed) return true
-        return allowed.has(project.worktree)
-      })
-      if (all.length === 0) return
-
-      const last = server.projects.last()
-      const prioritized = [...all].sort((a, b) => {
-        if (a.worktree === last && b.worktree !== last) return -1
-        if (b.worktree === last && a.worktree !== last) return 1
-        if (a.expanded && !b.expanded) return -1
-        if (b.expanded && !a.expanded) return 1
-        return 0
-      })
-
-      const first = prioritized[0]
-      if (first) void globalSync.project.loadSessions(first.worktree)
-      const queue = prioritized.slice(1)
-      if (queue.length === 0) return
-
-      let idle: number | undefined
-      let stop = false
-      const run = () => {
-        if (stop) return
-        const project = queue.shift()
-        if (!project) return
-        void globalSync.project.loadSessions(project.worktree).finally(() => {
-          if (stop) return
-          schedule()
-        })
-      }
-      const schedule = () => {
-        if (typeof window.requestIdleCallback === "function") {
-          idle = window.requestIdleCallback(run, { timeout: 1000 })
-          return
-        }
-        idle = window.setTimeout(run, 200)
-      }
-
-      schedule()
-      onCleanup(() => {
-        stop = true
-        if (idle === undefined) return
-        if (typeof window.cancelIdleCallback === "function") {
-          window.cancelIdleCallback(idle)
-          return
-        }
-        clearTimeout(idle)
-      })
+      const project = accountProject.current()
+      if (!project) return
+      void globalSync.project.loadSessions(project.worktree)
     })
 
     return {
-      ready,
+      ready: createMemo(() => ready() && accountProject.ready()),
       handoff: {
         tabs: createMemo(() => store.handoff?.tabs),
         setTabs(dir: string, id: string) {
@@ -579,25 +376,29 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       projects: {
         list,
         open(directory: string) {
-          const allowed = allowedWorktrees()
-          if (allowed && !allowed.has(directory)) return
-          const root = rootFor(directory)
-          if (allowed && !allowed.has(root)) return
-          if (server.projects.list().find((x) => x.worktree === root)) return
-          globalSync.project.loadSessions(root)
-          server.projects.open(root)
+          const project = resolveProjectByDirectory(globalSync.data.project, directory)
+          if (!project?.id) return
+          void accountProject.open(project.id)
         },
         close(directory: string) {
-          server.projects.close(directory)
+          const project = resolveProjectByDirectory(globalSync.data.project, directory)
+          if (!project?.id) return
+          void accountProject.close(project.id)
         },
         expand(directory: string) {
-          server.projects.expand(directory)
+          const project = resolveProjectByDirectory(globalSync.data.project, directory)
+          if (!project?.id) return
+          void accountProject.touch(project.id)
         },
         collapse(directory: string) {
-          server.projects.collapse(directory)
+          const project = resolveProjectByDirectory(globalSync.data.project, directory)
+          if (!project?.id) return
+          void accountProject.touch(project.id)
         },
         move(directory: string, toIndex: number) {
-          server.projects.move(directory, toIndex)
+          const project = resolveProjectByDirectory(globalSync.data.project, directory)
+          if (!project?.id) return
+          void accountProject.move(project.id, toIndex)
         },
       },
       sidebar: {
@@ -616,14 +417,22 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           setStore("sidebar", "width", width)
         },
         workspaces(directory: string) {
-          return () => store.sidebar.workspaces[directory] ?? store.sidebar.workspacesDefault ?? false
+          return () => {
+            const project = resolveProjectByDirectory(globalSync.data.project, directory)
+            if (!project?.id) return false
+            return accountProject.data().workspace_mode_by_project[project.id] ?? false
+          }
         },
         setWorkspaces(directory: string, value: boolean) {
-          setStore("sidebar", "workspaces", directory, value)
+          const project = resolveProjectByDirectory(globalSync.data.project, directory)
+          if (!project?.id) return
+          void accountProject.setWorkspaceMode(project.id, value)
         },
         toggleWorkspaces(directory: string) {
-          const current = store.sidebar.workspaces[directory] ?? store.sidebar.workspacesDefault ?? false
-          setStore("sidebar", "workspaces", directory, !current)
+          const project = resolveProjectByDirectory(globalSync.data.project, directory)
+          if (!project?.id) return
+          const current = accountProject.data().workspace_mode_by_project[project.id] ?? false
+          void accountProject.setWorkspaceMode(project.id, !current)
         },
       },
       terminal: {

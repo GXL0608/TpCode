@@ -150,7 +150,6 @@ export async function bootstrapDirectory(input: {
   if (input.store.status !== "complete") input.setStore("status", "loading")
 
   const blockingRequests = {
-    project: () => input.sdk.project.current().then((x) => input.setStore("project", x.data!.id)),
     provider: () =>
       input.sdk.provider.list().then((x) => {
         input.setStore("provider", normalizeProviderList(x.data!))

@@ -4,6 +4,7 @@ import { Binary } from "@opencode-ai/util/binary"
 import { retry } from "@opencode-ai/util/retry"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useGlobalSync } from "./global-sync"
+import { resolveProjectByDirectory } from "./project-resolver"
 import { useSDK } from "./sdk"
 import type { Message, Part } from "@opencode-ai/sdk/v2/client"
 
@@ -185,10 +186,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         return current()[0].status !== "loading"
       },
       get project() {
-        const store = current()[0]
-        const match = Binary.search(globalSync.data.project, store.project, (p) => p.id)
-        if (match.found) return globalSync.data.project[match.index]
-        return undefined
+        return resolveProjectByDirectory(globalSync.data.project, sdk.directory)
       },
       session: {
         get: getSession,

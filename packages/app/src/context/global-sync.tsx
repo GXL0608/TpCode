@@ -22,7 +22,6 @@ import {
 } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useLanguage } from "@/context/language"
-import { Persist, persisted } from "@/utils/persist"
 import type { InitError } from "../pages/error"
 import { useGlobalSDK } from "./global-sdk"
 import { bootstrapDirectory, bootstrapGlobal } from "./global-sync/bootstrap"
@@ -33,7 +32,6 @@ import { estimateRootSessionTotal, loadRootSessionsWithFallback } from "./global
 import { trimSessions } from "./global-sync/session-trim"
 import type { ProjectMeta } from "./global-sync/types"
 import { SESSION_RECENT_LIMIT } from "./global-sync/types"
-import { sanitizeProject } from "./global-sync/utils"
 import { usePlatform } from "./platform"
 import { useAccountAuth } from "./account-auth"
 import { formatServerError } from "@/utils/server-errors"
@@ -54,7 +52,6 @@ type GlobalStore = {
 
 function createGlobalSync() {
   const auth = useAccountAuth()
-  const accountID = auth.user()?.id ?? "anonymous"
   const globalSDK = useGlobalSDK()
   const platform = usePlatform()
   const language = useLanguage()
@@ -74,15 +71,10 @@ function createGlobalSync() {
   const STALLED_BUSY_MS = 60_000
   const STALLED_POLL_MS = 15_000
 
-  const [projectCache, setProjectCache, , projectCacheReady] = persisted(
-    Persist.global(`acct:${accountID}:globalSync.project`),
-    createStore({ value: [] as Project[] }),
-  )
-
   const [globalStore, setGlobalStore] = createStore<GlobalStore>({
     ready: false,
     path: { state: "", config: "", worktree: "", directory: "", home: "" },
-    project: projectCache.value,
+    project: [],
     session_todo: {},
     provider: { all: [], connected: [], default: {} },
     provider_auth: {},
@@ -217,24 +209,6 @@ function createGlobalSync() {
       void refreshStatus(directory, setStore, "busy_stalled")
     }
   }
-
-  createEffect(() => {
-    if (!projectCacheReady()) return
-    if (globalStore.project.length !== 0) return
-    const cached = projectCache.value
-    if (cached.length === 0) return
-    setGlobalStore("project", cached)
-  })
-
-  createEffect(() => {
-    if (!projectCacheReady()) return
-    const projects = globalStore.project
-    if (projects.length === 0) {
-      const cachedLength = untrack(() => projectCache.value.length)
-      if (cachedLength !== 0) return
-    }
-    setProjectCache("value", projects.map(sanitizeProject))
-  })
 
   createEffect(() => {
     if (globalStore.reload !== "complete") return
