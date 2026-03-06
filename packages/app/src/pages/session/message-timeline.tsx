@@ -340,184 +340,179 @@ export function MessageTimeline(props: {
       fallback={<div class="relative h-full overflow-hidden">{props.mobileFallback}</div>}
     >
       <div class="relative w-full h-full min-w-0">
-        <div
-          class="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] pointer-events-none transition-all duration-200 ease-out"
-          classList={{
-            "opacity-100 translate-y-0 scale-100": props.scroll.overflow && !props.scroll.bottom,
-            "opacity-0 translate-y-2 scale-95 pointer-events-none": !props.scroll.overflow || props.scroll.bottom,
-          }}
+      <div
+        class="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] pointer-events-none transition-all duration-200 ease-out"
+        classList={{
+          "opacity-100 translate-y-0 scale-100": props.scroll.overflow && !props.scroll.bottom,
+          "opacity-0 translate-y-2 scale-95 pointer-events-none": !props.scroll.overflow || props.scroll.bottom,
+        }}
+      >
+        <button
+          class="pointer-events-auto size-8 flex items-center justify-center rounded-full bg-background-base border border-border-base shadow-sm text-text-base hover:bg-background-stronger transition-colors"
+          onClick={props.onResumeScroll}
         >
-          <button
-            class="pointer-events-auto size-8 flex items-center justify-center rounded-full bg-background-base border border-border-base shadow-sm text-text-base hover:bg-background-stronger transition-colors"
-            onClick={props.onResumeScroll}
+          <Icon name="arrow-down-to-line" />
+        </button>
+      </div>
+      <ScrollView
+        viewportRef={props.setScrollRef}
+        onWheel={(e) => {
+          const root = e.currentTarget
+          const delta = normalizeWheelDelta({
+            deltaY: e.deltaY,
+            deltaMode: e.deltaMode,
+            rootHeight: root.clientHeight,
+          })
+          if (!delta) return
+          markBoundaryGesture({ root, target: e.target, delta, onMarkScrollGesture: props.onMarkScrollGesture })
+        }}
+        onTouchStart={(e) => {
+          touchGesture = e.touches[0]?.clientY
+        }}
+        onTouchMove={(e) => {
+          const next = e.touches[0]?.clientY
+          const prev = touchGesture
+          touchGesture = next
+          if (next === undefined || prev === undefined) return
+
+          const delta = prev - next
+          if (!delta) return
+
+          const root = e.currentTarget
+          markBoundaryGesture({ root, target: e.target, delta, onMarkScrollGesture: props.onMarkScrollGesture })
+        }}
+        onTouchEnd={() => {
+          touchGesture = undefined
+        }}
+        onTouchCancel={() => {
+          touchGesture = undefined
+        }}
+        onPointerDown={(e) => {
+          if (e.target !== e.currentTarget) return
+          props.onMarkScrollGesture(e.currentTarget)
+        }}
+        onScroll={(e) => {
+          props.onScheduleScrollState(e.currentTarget)
+          if (!props.hasScrollGesture()) return
+          props.onAutoScrollHandleScroll()
+          props.onMarkScrollGesture(e.currentTarget)
+          if (props.isDesktop) props.onScrollSpyScroll()
+        }}
+        onClick={props.onAutoScrollInteraction}
+        class="relative min-w-0 w-full h-full"
+        style={{
+          "--session-title-height": showHeader() ? "40px" : "0px",
+          "--sticky-accordion-top": showHeader() ? "48px" : "0px",
+        }}
+      >
+        <Show when={showHeader()}>
+          <div
+            data-session-title
+            classList={{
+              "sticky top-0 z-30 bg-[linear-gradient(to_bottom,var(--background-stronger)_48px,transparent)]": true,
+              "w-full": true,
+              "pb-4": true,
+              "pl-2 pr-3 md:pl-4 md:pr-3": true,
+              "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": props.centered,
+            }}
           >
-            <Icon name="arrow-down-to-line" />
-          </button>
-        </div>
-        <ScrollView
-          viewportRef={props.setScrollRef}
-          onWheel={(e) => {
-            const root = e.currentTarget
-            const delta = normalizeWheelDelta({
-              deltaY: e.deltaY,
-              deltaMode: e.deltaMode,
-              rootHeight: root.clientHeight,
-            })
-            if (!delta) return
-            markBoundaryGesture({ root, target: e.target, delta, onMarkScrollGesture: props.onMarkScrollGesture })
-          }}
-          onTouchStart={(e) => {
-            touchGesture = e.touches[0]?.clientY
-          }}
-          onTouchMove={(e) => {
-            const next = e.touches[0]?.clientY
-            const prev = touchGesture
-            touchGesture = next
-            if (next === undefined || prev === undefined) return
-
-            const delta = prev - next
-            if (!delta) return
-
-            const root = e.currentTarget
-            markBoundaryGesture({ root, target: e.target, delta, onMarkScrollGesture: props.onMarkScrollGesture })
-          }}
-          onTouchEnd={() => {
-            touchGesture = undefined
-          }}
-          onTouchCancel={() => {
-            touchGesture = undefined
-          }}
-          onPointerDown={(e) => {
-            if (e.target !== e.currentTarget) return
-            props.onMarkScrollGesture(e.currentTarget)
-          }}
-          onScroll={(e) => {
-            props.onScheduleScrollState(e.currentTarget)
-            if (!props.hasScrollGesture()) return
-            props.onAutoScrollHandleScroll()
-            props.onMarkScrollGesture(e.currentTarget)
-            if (props.isDesktop) props.onScrollSpyScroll()
-          }}
-          onClick={props.onAutoScrollInteraction}
-          class="relative min-w-0 w-full h-full"
-          style={{
-            "--session-title-height": showHeader() ? "40px" : "0px",
-            "--sticky-accordion-top": showHeader() ? "48px" : "0px",
-          }}
-        >
-          <Show when={showHeader()}>
-            <div
-              data-session-title
-              classList={{
-                "sticky top-0 z-30 bg-[linear-gradient(to_bottom,var(--background-stronger)_48px,transparent)]": true,
-                "w-full": true,
-                "pb-4": true,
-                "pl-2 pr-3 md:pl-4 md:pr-3": true,
-                "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": props.centered,
-              }}
-            >
-              <div class="h-12 w-full flex items-center justify-between gap-2">
-                <div class="flex items-center gap-1 min-w-0 flex-1 pr-3">
-                  <Show when={parentID()}>
-                    <IconButton
-                      tabIndex={-1}
-                      icon="arrow-left"
-                      variant="ghost"
-                      onClick={navigateParent}
-                      aria-label={language.t("common.goBack")}
+            <div class="h-12 w-full flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1 min-w-0 flex-1 pr-3">
+                <Show when={parentID()}>
+                  <IconButton
+                    tabIndex={-1}
+                    icon="arrow-left"
+                    variant="ghost"
+                    onClick={navigateParent}
+                    aria-label={language.t("common.goBack")}
+                  />
+                </Show>
+                <Show when={titleValue() || title.editing}>
+                  <Show
+                    when={title.editing}
+                    fallback={
+                      <h1 class="text-14-medium text-text-strong truncate grow-1 min-w-0 pl-2" onDblClick={openTitleEditor}>
+                        {titleValue()}
+                      </h1>
+                    }
+                  >
+                    <InlineInput
+                      ref={(el) => {
+                        titleRef = el
+                      }}
+                      value={title.draft}
+                      disabled={title.saving}
+                      class="text-14-medium text-text-strong grow-1 min-w-0 pl-2 rounded-[6px]"
+                      style={{ "--inline-input-shadow": "var(--shadow-xs-border-select)" }}
+                      onInput={(event) => setTitle("draft", event.currentTarget.value)}
+                      onKeyDown={(event) => {
+                        event.stopPropagation()
+                        if (event.key === "Enter") {
+                          event.preventDefault()
+                          void saveTitleEditor()
+                          return
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault()
+                          closeTitleEditor()
+                        }
+                      }}
+                      onBlur={closeTitleEditor}
                     />
                   </Show>
-                  <Show when={titleValue() || title.editing}>
-                    <Show
-                      when={title.editing}
-                      fallback={
-                        <h1
-                          class="text-14-medium text-text-strong truncate grow-1 min-w-0 pl-2"
-                          onDblClick={openTitleEditor}
-                        >
-                          {titleValue()}
-                        </h1>
-                      }
-                    >
-                      <InlineInput
-                        ref={(el) => {
-                          titleRef = el
-                        }}
-                        value={title.draft}
-                        disabled={title.saving}
-                        class="text-14-medium text-text-strong grow-1 min-w-0 pl-2 rounded-[6px]"
-                        style={{ "--inline-input-shadow": "var(--shadow-xs-border-select)" }}
-                        onInput={(event) => setTitle("draft", event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          event.stopPropagation()
-                          if (event.key === "Enter") {
-                            event.preventDefault()
-                            void saveTitleEditor()
-                            return
-                          }
-                          if (event.key === "Escape") {
-                            event.preventDefault()
-                            closeTitleEditor()
-                          }
-                        }}
-                        onBlur={closeTitleEditor}
-                      />
-                    </Show>
-                  </Show>
-                </div>
-                <Show when={sessionID()}>
-                  {(id) => (
-                    <div class="shrink-0 flex items-center gap-3">
-                      <SessionContextUsage placement="bottom" />
-                      <DropdownMenu
-                        gutter={4}
-                        placement="bottom-end"
-                        open={title.menuOpen}
-                        onOpenChange={(open) => setTitle("menuOpen", open)}
-                      >
-                        <DropdownMenu.Trigger
-                          as={IconButton}
-                          icon="dot-grid"
-                          variant="ghost"
-                          class="size-6 rounded-md data-[expanded]:bg-surface-base-active"
-                          aria-label={language.t("common.moreOptions")}
-                        />
-                        <DropdownMenu.Portal>
-                          <DropdownMenu.Content
-                            style={{ "min-width": "104px" }}
-                            onCloseAutoFocus={(event) => {
-                              if (!title.pendingRename) return
-                              event.preventDefault()
-                              setTitle("pendingRename", false)
-                              openTitleEditor()
-                            }}
-                          >
-                            <DropdownMenu.Item
-                              onSelect={() => {
-                                setTitle("pendingRename", true)
-                                setTitle("menuOpen", false)
-                              }}
-                            >
-                              <DropdownMenu.ItemLabel>{language.t("common.rename")}</DropdownMenu.ItemLabel>
-                            </DropdownMenu.Item>
-                            <DropdownMenu.Item onSelect={() => void archiveSession(id())}>
-                              <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
-                            </DropdownMenu.Item>
-                            <DropdownMenu.Separator />
-                            <DropdownMenu.Item
-                              onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id()} />)}
-                            >
-                              <DropdownMenu.ItemLabel>{language.t("common.delete")}</DropdownMenu.ItemLabel>
-                            </DropdownMenu.Item>
-                          </DropdownMenu.Content>
-                        </DropdownMenu.Portal>
-                      </DropdownMenu>
-                    </div>
-                  )}
                 </Show>
               </div>
+              <Show when={sessionID()}>
+                {(id) => (
+                  <div class="shrink-0 flex items-center gap-3">
+                    <SessionContextUsage placement="bottom" />
+                    <DropdownMenu
+                      gutter={4}
+                      placement="bottom-end"
+                      open={title.menuOpen}
+                      onOpenChange={(open) => setTitle("menuOpen", open)}
+                    >
+                      <DropdownMenu.Trigger
+                        as={IconButton}
+                        icon="dot-grid"
+                        variant="ghost"
+                        class="size-6 rounded-md data-[expanded]:bg-surface-base-active"
+                        aria-label={language.t("common.moreOptions")}
+                      />
+                      <DropdownMenu.Portal>
+                        <DropdownMenu.Content
+                          style={{ "min-width": "104px" }}
+                          onCloseAutoFocus={(event) => {
+                            if (!title.pendingRename) return
+                            event.preventDefault()
+                            setTitle("pendingRename", false)
+                            openTitleEditor()
+                          }}
+                        >
+                          <DropdownMenu.Item
+                            onSelect={() => {
+                              setTitle("pendingRename", true)
+                              setTitle("menuOpen", false)
+                            }}
+                          >
+                            <DropdownMenu.ItemLabel>{language.t("common.rename")}</DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item onSelect={() => void archiveSession(id())}>
+                            <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Separator />
+                          <DropdownMenu.Item onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id()} />)}>
+                            <DropdownMenu.ItemLabel>{language.t("common.delete")}</DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Portal>
+                    </DropdownMenu>
+                  </div>
+                )}
+              </Show>
             </div>
-          </Show>
+          </div>
+        </Show>
 
           <div
             ref={props.setContentRef}
