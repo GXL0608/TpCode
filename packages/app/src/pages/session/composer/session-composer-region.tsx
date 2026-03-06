@@ -33,6 +33,7 @@ export function SessionComposerRegion(props: {
         if (part.type === "file") return `[file:${part.path}]`
         if (part.type === "agent") return `@${part.name}`
         if (part.type === "image") return `[image:${part.filename}]`
+        if (part.type === "voice") return `[voice:${part.filename}]`
         return part.content
       })
       .join("")

@@ -748,14 +748,19 @@ export function UserMessageDisplay(props: { message: UserMessage; parts: PartTyp
   const attachments = createMemo(() =>
     files()?.filter((f) => {
       const mime = f.mime
-      return mime.startsWith("image/") || mime === "application/pdf"
+      return mime.startsWith("image/") || mime.startsWith("audio/") || mime === "application/pdf"
     }),
   )
 
   const inlineFiles = createMemo(() =>
     files().filter((f) => {
       const mime = f.mime
-      return !mime.startsWith("image/") && mime !== "application/pdf" && f.source?.text?.start !== undefined
+      return (
+        !mime.startsWith("image/") &&
+        !mime.startsWith("audio/") &&
+        mime !== "application/pdf" &&
+        f.source?.text?.start !== undefined
+      )
     }),
   )
 
@@ -794,6 +799,24 @@ export function UserMessageDisplay(props: { message: UserMessage; parts: PartTyp
     dialog.show(() => <ImagePreview src={url} alt={alt} />)
   }
 
+  const audioUrl = (url?: string) => {
+    if (!url) return url
+    if (!url.startsWith("/session/")) return url
+    if (typeof window === "undefined") return url
+    const token = window.localStorage.getItem("tpcode.account.access_token")
+    if (!token) return url
+    try {
+      const parsed = new URL(url, window.location.origin)
+      if (!parsed.searchParams.has("access_token")) {
+        parsed.searchParams.set("access_token", token)
+      }
+      return `${parsed.pathname}${parsed.search}`
+    } catch {
+      const separator = url.includes("?") ? "&" : "?"
+      return `${url}${separator}access_token=${encodeURIComponent(token)}`
+    }
+  }
+
   const handleCopy = async () => {
     const content = text()
     if (!content) return
@@ -810,27 +833,30 @@ export function UserMessageDisplay(props: { message: UserMessage; parts: PartTyp
             {(file) => (
               <div
                 data-slot="user-message-attachment"
-                data-type={file.mime.startsWith("image/") ? "image" : "file"}
+                data-type={file.mime.startsWith("image/") ? "image" : file.mime.startsWith("audio/") ? "audio" : "file"}
                 onClick={() => {
                   if (file.mime.startsWith("image/") && file.url) {
                     openImagePreview(file.url, file.filename)
                   }
                 }}
               >
-                <Show
-                  when={file.mime.startsWith("image/") && file.url}
-                  fallback={
+                <Switch>
+                  <Match when={file.mime.startsWith("image/") && file.url}>
+                    <img
+                      data-slot="user-message-attachment-image"
+                      src={file.url}
+                      alt={file.filename ?? i18n.t("ui.message.attachment.alt")}
+                    />
+                  </Match>
+                  <Match when={file.mime.startsWith("audio/") && file.url}>
+                    <audio data-slot="user-message-attachment-audio" controls preload="metadata" src={audioUrl(file.url)} />
+                  </Match>
+                  <Match when={true}>
                     <div data-slot="user-message-attachment-icon">
                       <Icon name="folder" />
                     </div>
-                  }
-                >
-                  <img
-                    data-slot="user-message-attachment-image"
-                    src={file.url}
-                    alt={file.filename ?? i18n.t("ui.message.attachment.alt")}
-                  />
-                </Show>
+                  </Match>
+                </Switch>
               </div>
             )}
           </For>

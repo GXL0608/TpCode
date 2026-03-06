@@ -2,7 +2,7 @@ import { getFilename } from "@opencode-ai/util/path"
 import { type AgentPartInput, type FilePartInput, type Part, type TextPartInput } from "@opencode-ai/sdk/v2/client"
 import type { FileSelection } from "@/context/file"
 import { encodeFilePath } from "@/context/file/path"
-import type { AgentPart, FileAttachmentPart, ImageAttachmentPart, Prompt } from "@/context/prompt"
+import type { AgentPart, FileAttachmentPart, ImageAttachmentPart, Prompt, VoiceAttachmentPart } from "@/context/prompt"
 import { Identifier } from "@/utils/id"
 import { createCommentMetadata, formatCommentNote } from "@/utils/comment-note"
 
@@ -41,6 +41,7 @@ const fileQuery = (selection: FileSelection | undefined) =>
 
 const isFileAttachment = (part: Prompt[number]): part is FileAttachmentPart => part.type === "file"
 const isAgentAttachment = (part: Prompt[number]): part is AgentPart => part.type === "agent"
+const isVoiceAttachment = (part: Prompt[number]): part is VoiceAttachmentPart => part.type === "voice"
 
 const toOptimisticPart = (part: PromptRequestPart, sessionID: string, messageID: string): Part => {
   if (part.type === "text") {
@@ -63,6 +64,7 @@ const toOptimisticPart = (part: PromptRequestPart, sessionID: string, messageID:
       mime: part.mime,
       filename: part.filename,
       url: part.url,
+      forModel: part.forModel,
       source: part.source,
       sessionID,
       messageID,
@@ -166,7 +168,19 @@ export function buildRequestParts(input: BuildRequestPartsInput) {
     } satisfies PromptRequestPart
   })
 
-  requestParts.push(...files, ...context, ...agents, ...images)
+  const voices = input.prompt.filter(isVoiceAttachment).map((attachment) => {
+    return {
+      id: Identifier.ascending("part"),
+      type: "file",
+      mime: attachment.mime,
+      url: attachment.dataUrl,
+      filename: attachment.filename,
+      duration_ms: attachment.duration_ms,
+      forModel: false,
+    } satisfies PromptRequestPart
+  })
+
+  requestParts.push(...files, ...context, ...agents, ...images, ...voices)
 
   return {
     requestParts,

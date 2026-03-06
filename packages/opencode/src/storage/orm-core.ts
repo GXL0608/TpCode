@@ -1,4 +1,12 @@
-import { bigint as pgbigint, customType, index, pgTable as table, primaryKey, text as pgtext, uniqueIndex } from "drizzle-orm/pg-core"
+import {
+  bigint as pgbigint,
+  customType,
+  index,
+  pgTable as table,
+  primaryKey,
+  text as pgtext,
+  uniqueIndex,
+} from "drizzle-orm/pg-core"
 
 const json = customType<{ data: unknown; driverData: string }>({
   dataType() {
@@ -34,6 +42,24 @@ const bool = customType<{ data: boolean; driverData: number | string | boolean }
   },
 })
 
+const bytesType = customType<{ data: Buffer; driverData: Buffer | Uint8Array | string }>({
+  dataType() {
+    return "bytea"
+  },
+  toDriver(value) {
+    return value
+  },
+  fromDriver(value) {
+    if (Buffer.isBuffer(value)) return value
+    if (value instanceof Uint8Array) return Buffer.from(value)
+    if (typeof value === "string") {
+      if (value.startsWith("\\x")) return Buffer.from(value.slice(2), "hex")
+      return Buffer.from(value, "binary")
+    }
+    return Buffer.from([])
+  },
+})
+
 export function text(): ReturnType<typeof pgtext>
 export function text(config: { mode: "json" }): ReturnType<typeof json>
 export function text(config?: { mode?: "json" }) {
@@ -47,6 +73,10 @@ export function integer() {
 
 export function boolean_int() {
   return bool()
+}
+
+export function bytes() {
+  return bytesType()
 }
 
 export { index, primaryKey, table, uniqueIndex }

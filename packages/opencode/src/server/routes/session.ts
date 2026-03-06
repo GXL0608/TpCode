@@ -9,6 +9,7 @@ import { SessionCompaction } from "../../session/compaction"
 import { SessionRevert } from "../../session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionVoice } from "@/session/voice"
 import { Todo } from "../../session/todo"
 import { Agent } from "../../agent/agent"
 import { Snapshot } from "@/snapshot"
@@ -214,6 +215,38 @@ export const SessionRoutes = lazy(() =>
     )
     .use("/:sessionID", requireSessionReadable)
     .use("/:sessionID/*", requireSessionReadable)
+    .get(
+      "/:sessionID/voice/:voiceID",
+      describeRoute({
+        summary: "Get session voice audio",
+        description: "Retrieve a stored voice recording for a specific session.",
+        operationId: "session.voice",
+        responses: {
+          200: {
+            description: "Audio stream",
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string(),
+          voiceID: z.string(),
+        }),
+      ),
+      async (c) => {
+        const { sessionID, voiceID } = c.req.valid("param")
+        const row = await SessionVoice.get({ session_id: sessionID, voice_id: voiceID })
+        if (!row) return c.json({ error: "not_found" }, 404)
+
+        c.header("Content-Type", row.mime || "application/octet-stream")
+        c.header("Content-Length", String(row.size_bytes))
+        c.header("Content-Disposition", `inline; filename=\"${encodeURIComponent(row.filename)}\"`)
+        c.header("Cache-Control", "private, max-age=31536000, immutable")
+        return c.body(new Uint8Array(row.audio_bytes))
+      },
+    )
     .get(
       "/:sessionID",
       describeRoute({

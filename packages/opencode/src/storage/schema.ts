@@ -3,6 +3,7 @@ export {
   SessionTable,
   MessageTable,
   PartTable,
+  SessionVoiceTable,
   TodoTable,
   PermissionTable,
   SyncQueueTable,

@@ -46,6 +46,7 @@ import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
 import { TokenUsageService } from "@/usage/service"
+import { SessionVoice } from "./voice"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1088,6 +1089,16 @@ export namespace SessionPrompt {
       ...part,
       id: part.id ?? Identifier.ascending("part"),
     })
+    const firstText = input.parts
+      .find(
+        (part): part is Extract<PromptInput["parts"][number], { type: "text" }> =>
+          part.type === "text" && part.text.trim().length > 0,
+      )
+      ?.text.trim()
+    const audioFilename = (mime: string, now = Date.now()) => {
+      const subtype = mime.split("/")[1]?.split(";")[0]
+      return `voice-${now}.${subtype || "webm"}`
+    }
 
     const parts = await Promise.all(
       input.parts.map(async (part): Promise<Draft<MessageV2.Part>[]> => {
@@ -1162,6 +1173,31 @@ export namespace SessionPrompt {
           const url = new URL(part.url)
           switch (url.protocol) {
             case "data:":
+              if (part.mime.startsWith("audio/") && part.forModel === false) {
+                const id = part.id ?? Identifier.ascending("part")
+                const filename = part.filename ?? audioFilename(part.mime)
+                const saved = await SessionVoice.saveDataFile({
+                  session_id: input.sessionID,
+                  message_id: info.id,
+                  part_id: id,
+                  mime: part.mime,
+                  filename,
+                  duration_ms: part.duration_ms,
+                  stt_text: firstText,
+                  stt_engine: "browser_speech_recognition",
+                  data_url: part.url,
+                })
+                return [
+                  {
+                    ...part,
+                    id,
+                    messageID: info.id,
+                    sessionID: input.sessionID,
+                    filename,
+                    url: SessionVoice.url(input.sessionID, saved.id),
+                  },
+                ]
+              }
               if (part.mime === "text/plain") {
                 return [
                   {

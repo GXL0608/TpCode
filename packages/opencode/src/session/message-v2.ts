@@ -172,6 +172,8 @@ export namespace MessageV2 {
     mime: z.string(),
     filename: z.string().optional(),
     url: z.string(),
+    duration_ms: z.number().int().nonnegative().optional(),
+    forModel: z.boolean().optional(),
     source: FilePartSource.optional(),
   }).meta({
     ref: "FilePart",
@@ -562,7 +564,12 @@ export namespace MessageV2 {
               text: part.text,
             })
           // text/plain and directory files are converted into text parts, ignore them
-          if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory")
+          if (
+            part.type === "file" &&
+            part.forModel !== false &&
+            part.mime !== "text/plain" &&
+            part.mime !== "application/x-directory"
+          )
             userMessage.parts.push({
               type: "file",
               url: part.url,

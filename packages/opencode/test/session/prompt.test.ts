@@ -5,6 +5,8 @@ import { Instance } from "../../src/project/instance"
 import { Session } from "../../src/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionVoiceTable } from "../../src/session/session.sql"
+import { Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
 
@@ -207,6 +209,75 @@ describe("session.prompt agent variant", () => {
       if (prev === undefined) delete process.env.OPENAI_API_KEY
       else process.env.OPENAI_API_KEY = prev
     }
+  })
+})
+
+describe("session.prompt voice", () => {
+  test("stores data audio attachment and rewrites part url", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const payload = Buffer.from("voice-data", "utf-8").toString("base64")
+
+        const message = await SessionPrompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: "voice text",
+            },
+            {
+              type: "file",
+              mime: "audio/webm",
+              filename: "voice.webm",
+              url: `data:audio/webm;base64,${payload}`,
+              duration_ms: 4200,
+              forModel: false,
+            },
+          ],
+        })
+
+        if (message.info.role !== "user") throw new Error("expected user message")
+        const audio = message.parts.find((part): part is MessageV2.FilePart => part.type === "file")
+        expect(audio).toBeDefined()
+        if (!audio) return
+
+        expect(audio.url).toMatch(new RegExp(`^/session/${session.id}/voice/voice_`))
+        expect(audio.forModel).toBe(false)
+
+        const row = await Database.use((db) =>
+          db.select().from(SessionVoiceTable).where(eq(SessionVoiceTable.part_id, audio.id)).get(),
+        )
+        expect(row).toBeDefined()
+        if (!row) return
+
+        expect(row.session_id).toBe(session.id)
+        expect(row.message_id).toBe(message.info.id)
+        expect(row.mime).toBe("audio/webm")
+        expect(row.filename).toBe("voice.webm")
+        expect(row.duration_ms).toBe(4200)
+        expect(row.stt_text).toBe("voice text")
+        expect(row.stt_engine).toBe("browser_speech_recognition")
+        expect(row.size_bytes).toBe(Buffer.from("voice-data", "utf-8").length)
+        expect(Buffer.from(row.audio_bytes).toString("utf-8")).toBe("voice-data")
+
+        await Session.remove(session.id)
+      },
+    })
   })
 })
 

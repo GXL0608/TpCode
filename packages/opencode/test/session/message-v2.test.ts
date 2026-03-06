@@ -241,6 +241,14 @@ describe("session.message-v2.toModelMessage", () => {
             description: "desc",
             agent: "agent",
           },
+          {
+            ...basePart(messageID, "p8"),
+            type: "file",
+            mime: "audio/webm",
+            filename: "voice.webm",
+            url: "https://example.com/voice.webm",
+            forModel: false,
+          },
         ] as MessageV2.Part[],
       },
     ]

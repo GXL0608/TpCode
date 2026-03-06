@@ -15,6 +15,14 @@ describe("buildRequestParts", () => {
         selection: { startLine: 4, startChar: 1, endLine: 6, endChar: 1 },
       },
       { type: "agent", name: "planner", content: "@planner", start: 16, end: 24 },
+      {
+        type: "voice",
+        id: "voice_1",
+        filename: "voice.webm",
+        mime: "audio/webm",
+        dataUrl: "data:audio/webm;base64,AAA",
+        duration_ms: 3200,
+      },
     ]
 
     const result = buildRequestParts({
@@ -42,6 +50,21 @@ describe("buildRequestParts", () => {
           part.synthetic &&
           part.metadata?.opencodeComment &&
           (part.metadata.opencodeComment as { comment?: string }).comment === "check this",
+      ),
+    ).toBe(true)
+    expect(
+      result.requestParts.some(
+        (part) =>
+          part.type === "file" &&
+          part.mime === "audio/webm" &&
+          part.url.startsWith("data:audio/webm;base64,") &&
+          part.duration_ms === 3200 &&
+          part.forModel === false,
+      ),
+    ).toBe(true)
+    expect(
+      result.optimisticParts.some(
+        (part) => part.type === "file" && part.mime === "audio/webm" && part.forModel === false,
       ),
     ).toBe(true)
 

@@ -11,6 +11,7 @@ import {
   Prompt,
   usePrompt,
   ImageAttachmentPart,
+  VoiceAttachmentPart,
   AgentPart,
   FileAttachmentPart,
 } from "@/context/prompt"
@@ -27,12 +28,14 @@ import type { IconName } from "@opencode-ai/ui/icons/provider"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Select } from "@opencode-ai/ui/select"
+import { showToast } from "@opencode-ai/ui/toast"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { DialogSelectModelUnpaid } from "@/components/dialog-select-model-unpaid"
 import { useProviders } from "@/hooks/use-providers"
 import { useCommand } from "@/context/command"
 import { Persist, persisted } from "@/utils/persist"
+import { uuid } from "@/utils/uuid"
 import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
@@ -52,9 +55,11 @@ import { createPromptSubmit } from "./prompt-input/submit"
 import { PromptPopover, type AtOption, type SlashCommand } from "./prompt-input/slash-popover"
 import { PromptContextItems } from "./prompt-input/context-items"
 import { PromptImageAttachments } from "./prompt-input/image-attachments"
+import { PromptVoiceAttachments } from "./prompt-input/voice-attachments"
 import { PromptDragOverlay } from "./prompt-input/drag-overlay"
 import { promptPlaceholder } from "./prompt-input/placeholder"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
+import { createSpeechRecognition } from "@/utils/speech"
 
 interface PromptInputProps {
   class?: string
@@ -93,6 +98,28 @@ const EXAMPLES = [
 ] as const
 
 const NON_EMPTY_TEXT = /[^\s\u200B]/
+const MAX_VOICE_DURATION_MS = 60_000
+const MAX_VOICE_BYTES = 3 * 1024 * 1024
+const VOICE_MIME_FALLBACK = "audio/webm"
+const SPEECH_LOCALE: Record<string, string> = {
+  en: "en-US",
+  zh: "zh-CN",
+  zht: "zh-TW",
+  ko: "ko-KR",
+  de: "de-DE",
+  es: "es-ES",
+  fr: "fr-FR",
+  da: "da-DK",
+  ja: "ja-JP",
+  pl: "pl-PL",
+  ru: "ru-RU",
+  ar: "ar-SA",
+  no: "nb-NO",
+  br: "pt-BR",
+  th: "th-TH",
+  bs: "bs-BA",
+  tr: "tr-TR",
+}
 
 export const PromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
@@ -115,9 +142,16 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   let fileInputRef: HTMLInputElement | undefined
   let scrollRef!: HTMLDivElement
   let slashPopoverRef!: HTMLDivElement
+  let recorder: MediaRecorder | undefined
+  let stream: MediaStream | undefined
+  let chunks: Blob[] = []
+  let timer: number | undefined
+  let startedAt = 0
+  let finalizing = false
 
   const mirror = { input: false }
   const inset = 44
+  const speech = createSpeechRecognition()
 
   const scrollCursorIntoView = () => {
     const container = scrollRef
@@ -128,7 +162,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (!editorRef.contains(range.startContainer)) return
 
     const cursor = getCursorPosition(editorRef)
-    const length = promptLength(prompt.current().filter((part) => part.type !== "image"))
+    const length = promptLength(prompt.current().filter((part) => part.type !== "image" && part.type !== "voice"))
     if (cursor >= length) {
       container.scrollTop = container.scrollHeight
       return
@@ -237,6 +271,52 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const imageAttachments = createMemo(() =>
     prompt.current().filter((part): part is ImageAttachmentPart => part.type === "image"),
   )
+  const voiceAttachments = createMemo(() =>
+    prompt.current().filter((part): part is VoiceAttachmentPart => part.type === "voice"),
+  )
+  const [voicePhase, setVoicePhase] = createSignal<"idle" | "recording" | "transcribing" | "failed">("idle")
+  const [voiceError, setVoiceError] = createSignal("")
+  const supportsVoiceCapture = () =>
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices &&
+    typeof navigator.mediaDevices.getUserMedia === "function" &&
+    typeof MediaRecorder !== "undefined"
+  const supportsSpeech = () => speech.isSupported()
+  const clearVoiceTimer = () => {
+    if (timer === undefined) return
+    clearTimeout(timer)
+    timer = undefined
+  }
+  const clearVoiceStream = () => {
+    if (!stream) return
+    for (const track of stream.getTracks()) {
+      track.stop()
+    }
+    stream = undefined
+  }
+  const pickVoiceMime = () => {
+    if (typeof MediaRecorder === "undefined") return
+    const preferred = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4",
+      "audio/mpeg",
+      "audio/ogg;codecs=opus",
+      "audio/ogg",
+    ]
+    return preferred.find((item) => MediaRecorder.isTypeSupported(item))
+  }
+  const voiceFilename = (mime: string, now = Date.now()) => {
+    const subtype = mime.split("/")[1]?.split(";")[0] || "webm"
+    return `voice-${now}.${subtype}`
+  }
+  const voiceStatus = createMemo(() => {
+    if (voicePhase() === "recording") return language.t("prompt.voice.status.recording")
+    if (voicePhase() === "transcribing") return language.t("prompt.voice.status.transcribing")
+    if (voicePhase() === "failed") return voiceError() || language.t("prompt.voice.status.failed")
+    return ""
+  })
+  const speechLocale = () => SPEECH_LOCALE[language.locale()] ?? (typeof navigator !== "undefined" ? navigator.language : "en-US")
 
   const [store, setStore] = createStore<{
     popover: "at" | "slash" | null
@@ -668,7 +748,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     on(
       () => prompt.current(),
       (currentParts) => {
-        const inputParts = currentParts.filter((part) => part.type !== "image")
+        const inputParts = currentParts.filter((part) => part.type !== "image" && part.type !== "voice")
 
         if (mirror.input) {
           mirror.input = false
@@ -771,13 +851,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const handleInput = () => {
     const rawParts = parseFromDOM()
     const images = imageAttachments()
+    const voices = voiceAttachments()
     const cursorPosition = getCursorPosition(editorRef)
     const rawText =
       rawParts.length === 1 && rawParts[0]?.type === "text"
         ? rawParts[0].content
         : rawParts.map((p) => ("content" in p ? p.content : "")).join("")
     const hasNonText = rawParts.some((part) => part.type !== "text")
-    const shouldReset = !NON_EMPTY_TEXT.test(rawText) && !hasNonText && images.length === 0
+    const shouldReset = !NON_EMPTY_TEXT.test(rawText) && !hasNonText && images.length === 0 && voices.length === 0
 
     if (shouldReset) {
       closePopover()
@@ -812,12 +893,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     resetHistoryNavigation()
 
     mirror.input = true
-    prompt.set([...rawParts, ...images], cursorPosition)
+    prompt.set([...rawParts, ...images, ...voices], cursorPosition)
     queueScroll()
   }
 
   const addPart = (part: ContentPart) => {
-    if (part.type === "image") return false
+    if (part.type === "image" || part.type === "voice") return false
 
     const selection = window.getSelection()
     if (!selection) return false
@@ -934,6 +1015,205 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     readClipboardImage: platform.readClipboardImage,
   })
 
+  const removeVoiceAttachment = (id: string) => {
+    const next = prompt.current().filter((part) => part.type !== "voice" || part.id !== id)
+    prompt.set(next, prompt.cursor())
+  }
+
+  const voiceDataUrl = (blob: Blob) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result ?? ""))
+      reader.onerror = () => reject(new Error("read_failed"))
+      reader.readAsDataURL(blob)
+    })
+
+  const failVoice = (title: string, description?: string) => {
+    setVoicePhase("failed")
+    setVoiceError(description ?? title)
+    showToast({ title, description })
+  }
+
+  const completeVoice = async () => {
+    if (finalizing) return
+    finalizing = true
+
+    const active = recorder
+    recorder = undefined
+
+    clearVoiceTimer()
+    clearVoiceStream()
+
+    const elapsed = Math.max(0, Date.now() - startedAt)
+    const duration = Math.min(elapsed, MAX_VOICE_DURATION_MS)
+    const mime = active?.mimeType || pickVoiceMime() || VOICE_MIME_FALLBACK
+    const blob = new Blob(chunks, { type: mime })
+    chunks = []
+
+    if (blob.size <= 0) {
+      finalizing = false
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      return
+    }
+
+    if (blob.size > MAX_VOICE_BYTES) {
+      finalizing = false
+      failVoice(language.t("prompt.toast.voiceTooLarge.title"), language.t("prompt.toast.voiceTooLarge.description"))
+      return
+    }
+
+    const dataUrl = await voiceDataUrl(blob).catch(() => "")
+    if (!dataUrl) {
+      finalizing = false
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      return
+    }
+
+    const attachment: VoiceAttachmentPart = {
+      type: "voice",
+      id: uuid(),
+      filename: voiceFilename(mime),
+      mime,
+      dataUrl,
+      duration_ms: duration,
+    }
+    await speech.settle()
+    const cursorPosition = prompt.cursor() ?? getCursorPosition(editorRef)
+    prompt.set([...prompt.current(), attachment], cursorPosition)
+
+    const transcript = speech.committed().trim()
+    if (transcript) {
+      editorRef.focus()
+      addPart({
+        type: "text",
+        content: transcript,
+        start: 0,
+        end: 0,
+      })
+    } else if (!supportsSpeech()) {
+      showToast({
+        title: language.t("prompt.toast.voiceRecognitionUnsupported.title"),
+        description: language.t("prompt.toast.voiceRecognitionUnsupported.description"),
+      })
+    } else {
+      showToast({
+        title: language.t("prompt.toast.voiceNoSpeech.title"),
+        description: language.t("prompt.toast.voiceNoSpeech.description"),
+      })
+    }
+
+    setVoiceError("")
+    setVoicePhase("idle")
+    finalizing = false
+  }
+
+  const stopVoiceInput = () => {
+    if (voicePhase() !== "recording") return
+    setVoicePhase("transcribing")
+    clearVoiceTimer()
+    speech.stop()
+
+    if (!recorder || recorder.state === "inactive") {
+      void completeVoice()
+      return
+    }
+    recorder.stop()
+  }
+
+  const startVoiceInput = async () => {
+    if (!supportsVoiceCapture()) {
+      failVoice(language.t("prompt.toast.voiceUnsupported.title"), language.t("prompt.toast.voiceUnsupported.description"))
+      return
+    }
+    if (voicePhase() === "recording" || voicePhase() === "transcribing") return
+
+    const media = await navigator.mediaDevices.getUserMedia({ audio: true }).catch((error) => error)
+    if (!(typeof MediaStream !== "undefined" && media instanceof MediaStream)) {
+      const blocked = media instanceof DOMException && media.name === "NotAllowedError"
+      if (blocked) {
+        failVoice(
+          language.t("prompt.toast.voicePermissionDenied.title"),
+          language.t("prompt.toast.voicePermissionDenied.description"),
+        )
+        return
+      }
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      return
+    }
+
+    stream = media
+    chunks = []
+    finalizing = false
+    startedAt = Date.now()
+
+    const mime = pickVoiceMime()
+    const next = (() => {
+      if (!mime) return new MediaRecorder(media)
+      return new MediaRecorder(media, { mimeType: mime })
+    })()
+
+    recorder = next
+    next.ondataavailable = (event) => {
+      if (event.data.size <= 0) return
+      chunks.push(event.data)
+    }
+    next.onerror = () => {
+      clearVoiceTimer()
+      clearVoiceStream()
+      speech.stop()
+      recorder = undefined
+      chunks = []
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+    }
+    next.onstop = () => {
+      void completeVoice()
+    }
+
+    speech.reset()
+    speech.setLang(speechLocale())
+    setVoiceError("")
+    setVoicePhase("recording")
+    if (supportsSpeech()) {
+      speech.start()
+    }
+    const started = (() => {
+      try {
+        next.start(200)
+        return true
+      } catch {
+        return false
+      }
+    })()
+    if (!started) {
+      speech.stop()
+      clearVoiceStream()
+      recorder = undefined
+      chunks = []
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      return
+    }
+    timer = window.setTimeout(() => {
+      showToast({
+        title: language.t("prompt.toast.voiceTooLong.title"),
+        description: language.t("prompt.toast.voiceTooLong.description"),
+      })
+      stopVoiceInput()
+    }, MAX_VOICE_DURATION_MS)
+  }
+
+  onCleanup(() => {
+    clearVoiceTimer()
+    speech.stop()
+    if (recorder && recorder.state !== "inactive") {
+      recorder.onstop = null
+      recorder.onerror = null
+      recorder.stop()
+    }
+    recorder = undefined
+    chunks = []
+    clearVoiceStream()
+  })
+
   const { abort, handleSubmit } = createPromptSubmit({
     info,
     imageAttachments,
@@ -983,6 +1263,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (event.key === "Escape") {
       if (store.popover) {
         closePopover()
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+
+      if (voicePhase() === "recording") {
+        stopVoiceInput()
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+
+      if (voicePhase() === "transcribing") {
         event.preventDefault()
         event.stopPropagation()
         return
@@ -1134,6 +1427,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           onRemove={removeImageAttachment}
           removeLabel={language.t("prompt.attachment.remove")}
         />
+        <PromptVoiceAttachments
+          attachments={voiceAttachments()}
+          onRemove={removeVoiceAttachment}
+          removeLabel={language.t("prompt.attachment.remove")}
+        />
         <div
           class="relative"
           onMouseDown={(e) => {
@@ -1141,7 +1439,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             if (!(target instanceof HTMLElement)) return
             if (
               target.closest(
-                '[data-action="prompt-attach"], [data-action="prompt-submit"], [data-action="prompt-permissions"]',
+                '[data-action="prompt-voice"], [data-action="prompt-attach"], [data-action="prompt-submit"], [data-action="prompt-permissions"]',
               )
             ) {
               return
@@ -1208,6 +1506,56 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 "opacity-0 translate-y-2 scale-95 pointer-events-none": store.mode !== "normal",
               }}
             >
+              <Show when={voiceStatus()}>
+                <span
+                  class="mr-1 px-1.5 py-0.5 rounded bg-surface-base text-10-regular text-text-weak max-w-36 truncate"
+                  classList={{
+                    "text-icon-info-active": voicePhase() === "recording",
+                    "text-icon-warning-base": voicePhase() === "failed",
+                  }}
+                  title={voiceStatus()}
+                >
+                  {voiceStatus()}
+                </span>
+              </Show>
+
+              <Tooltip
+                placement="top"
+                value={
+                  voicePhase() === "recording"
+                    ? language.t("prompt.action.voiceStop")
+                    : language.t("prompt.action.voiceInput")
+                }
+              >
+                <Button
+                  data-action="prompt-voice"
+                  type="button"
+                  variant="ghost"
+                  class="size-8 p-0"
+                  classList={{
+                    "text-icon-info-active": voicePhase() === "recording",
+                    "animate-pulse": voicePhase() === "recording",
+                  }}
+                  onClick={() => {
+                    if (voicePhase() === "recording") {
+                      stopVoiceInput()
+                      return
+                    }
+                    if (voicePhase() === "transcribing") return
+                    void startVoiceInput()
+                  }}
+                  disabled={store.mode !== "normal" || !supportsVoiceCapture()}
+                  tabIndex={store.mode === "normal" ? undefined : -1}
+                  aria-label={
+                    voicePhase() === "recording"
+                      ? language.t("prompt.action.voiceStop")
+                      : language.t("prompt.action.voiceInput")
+                  }
+                >
+                  <Icon name={voicePhase() === "recording" ? "stop" : "microphone"} class="size-4.5" />
+                </Button>
+              </Tooltip>
+
               <TooltipKeybind
                 placement="top"
                 title={language.t("prompt.action.attachFile")}

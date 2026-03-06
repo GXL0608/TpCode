@@ -9,7 +9,7 @@ import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { useLocal } from "@/context/local"
-import { type ImageAttachmentPart, type Prompt, usePrompt } from "@/context/prompt"
+import { type ImageAttachmentPart, type Prompt, type VoiceAttachmentPart, usePrompt } from "@/context/prompt"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
 import { Identifier } from "@/utils/id"
@@ -144,9 +144,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const currentPrompt = prompt.current()
     const text = currentPrompt.map((part) => ("content" in part ? part.content : "")).join("")
     const images = input.imageAttachments().slice()
+    const voices = currentPrompt.filter((part): part is VoiceAttachmentPart => part.type === "voice")
     const mode = input.mode()
 
-    if (text.trim().length === 0 && images.length === 0 && input.commentCount() === 0) {
+    if (text.trim().length === 0 && images.length === 0 && voices.length === 0 && input.commentCount() === 0) {
       if (input.working()) abort()
       return
     }
@@ -306,13 +307,24 @@ export function createPromptSubmit(input: PromptSubmitInput) {
             agent,
             model: `${model.providerID}/${model.modelID}`,
             variant,
-            parts: images.map((attachment) => ({
-              id: Identifier.ascending("part"),
-              type: "file" as const,
-              mime: attachment.mime,
-              url: attachment.dataUrl,
-              filename: attachment.filename,
-            })),
+            parts: [
+              ...images.map((attachment) => ({
+                id: Identifier.ascending("part"),
+                type: "file" as const,
+                mime: attachment.mime,
+                url: attachment.dataUrl,
+                filename: attachment.filename,
+              })),
+              ...voices.map((attachment) => ({
+                id: Identifier.ascending("part"),
+                type: "file" as const,
+                mime: attachment.mime,
+                url: attachment.dataUrl,
+                filename: attachment.filename,
+                duration_ms: attachment.duration_ms,
+                forModel: false,
+              })),
+            ],
           })
           .catch((err) => {
             showToast({

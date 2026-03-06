@@ -35,6 +35,7 @@ export function clonePromptParts(prompt: Prompt): Prompt {
   return prompt.map((part) => {
     if (part.type === "text") return { ...part }
     if (part.type === "image") return { ...part }
+    if (part.type === "voice") return { ...part }
     if (part.type === "agent") return { ...part }
     return {
       ...part,
@@ -86,9 +87,9 @@ export function prependHistoryEntry(
     .map((part) => ("content" in part ? part.content : ""))
     .join("")
     .trim()
-  const hasImages = prompt.some((part) => part.type === "image")
+  const hasMedia = prompt.some((part) => part.type === "image" || part.type === "voice")
   const hasComments = comments.some((comment) => !!comment.comment.trim())
-  if (!text && !hasImages && !hasComments) return entries
+  if (!text && !hasMedia && !hasComments) return entries
 
   const entry = {
     prompt: clonePromptParts(prompt),
@@ -137,6 +138,7 @@ function isPromptEqual(promptA: PromptHistoryStoredEntry, promptB: PromptHistory
     }
     if (partA.type === "agent" && partA.name !== (partB.type === "agent" ? partB.name : "")) return false
     if (partA.type === "image" && partA.id !== (partB.type === "image" ? partB.id : "")) return false
+    if (partA.type === "voice" && partA.id !== (partB.type === "voice" ? partB.id : "")) return false
   }
   if (entryA.comments.length !== entryB.comments.length) return false
   for (let i = 0; i < entryA.comments.length; i++) {

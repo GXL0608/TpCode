@@ -1,4 +1,4 @@
-import { table, text, integer, index, primaryKey } from "../storage/orm-core"
+import { table, text, integer, bytes, index, primaryKey, uniqueIndex } from "../storage/orm-core"
 import { ProjectTable } from "../project/project.sql"
 import type { MessageV2 } from "./message-v2"
 import type { Snapshot } from "@/snapshot"
@@ -85,6 +85,33 @@ export const PartTable = table(
     data: text({ mode: "json" }).notNull().$type<PartData>(),
   },
   (table) => [index("part_message_idx").on(table.message_id), index("part_session_idx").on(table.session_id)],
+)
+
+export const SessionVoiceTable = table(
+  "session_voice",
+  {
+    id: text().primaryKey(),
+    session_id: text()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    message_id: text()
+      .notNull()
+      .references(() => MessageTable.id, { onDelete: "cascade" }),
+    part_id: text().notNull(),
+    mime: text().notNull(),
+    filename: text().notNull(),
+    duration_ms: integer(),
+    size_bytes: integer().notNull(),
+    stt_text: text(),
+    stt_engine: text(),
+    audio_bytes: bytes().notNull(),
+    ...Timestamps,
+  },
+  (table) => [
+    index("session_voice_session_time_idx").on(table.session_id, table.time_created),
+    index("session_voice_message_idx").on(table.message_id),
+    uniqueIndex("session_voice_part_uidx").on(table.part_id),
+  ],
 )
 
 export const TodoTable = table(

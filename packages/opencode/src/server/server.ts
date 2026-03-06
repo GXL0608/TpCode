@@ -303,7 +303,11 @@ export namespace Server {
                 accountSeeded = true
               }
               const auth = c.req.header("authorization")
-              const token = UserService.parseBearer(auth)
+              const queryToken =
+                c.req.method === "GET" && /^\/session\/[^/]+\/voice\/[^/]+$/.test(path)
+                  ? c.req.query("access_token")
+                  : undefined
+              const token = UserService.parseBearer(auth) ?? queryToken
               if (!token) {
                 if (debug) {
                   log.warn("account auth missing bearer", {

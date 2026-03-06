@@ -356,6 +356,8 @@ export type FilePart = {
   mime: string
   filename?: string
   url: string
+  duration_ms?: number
+  forModel?: boolean
   source?: FilePartSource
 }
 
@@ -1749,6 +1751,8 @@ export type FilePartInput = {
   mime: string
   filename?: string
   url: string
+  duration_ms?: number
+  forModel?: boolean
   source?: FilePartSource
 }
 
