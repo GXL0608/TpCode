@@ -81,23 +81,17 @@ export default function AccountProjectSelect() {
       setError("找不到文件夹，请联系管理员检查项目路径")
       return
     }
-    const current = await auth.contextState()
-    const next = await auth.updateContextState({
-      last_project_id: target.project_id,
-      open_project_ids: nextOpenProjectIDs({
+    void auth.contextState().then((current) => {
+      const open_project_ids = nextOpenProjectIDs({
         open_project_ids: current?.open_project_ids ?? [],
         project_id: target.project_id,
-      }),
+      })
+      void auth.updateContextState({
+        last_project_id: target.project_id,
+        open_project_ids,
+      })
     })
-    if (!next) {
-      setPending(false)
-      setError("项目状态同步失败，请稍后重试")
-      return
-    }
-    const last = next?.last_session_by_project[target.project_id]
-    const href = last
-      ? `/${base64Encode(last.directory)}/session/${last.session_id}`
-      : `/${base64Encode(target.worktree)}/session`
+    const href = `/${base64Encode(target.worktree)}/session`
     navigate(href, { replace: true })
   }
 

@@ -60,6 +60,24 @@ function empty(current_project_id?: string): AccountProjectState {
   }
 }
 
+function optimisticState(input: {
+  state: AccountProjectState
+  project_id: string
+  ensure_open: boolean
+}) {
+  return {
+    ...input.state,
+    current_project_id: input.project_id,
+    last_project_id: input.project_id,
+    open_project_ids: input.ensure_open
+      ? nextOpenProjectIDs({
+          open_project_ids: input.state.open_project_ids,
+          project_id: input.project_id,
+        })
+      : input.state.open_project_ids,
+  }
+}
+
 export const { use: useAccountProject, provider: AccountProjectProvider } = createSimpleContext({
   name: "AccountProject",
   init: () => {
@@ -91,6 +109,11 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       setStore("data", next ?? empty(auth.user()?.context_project_id))
     }
 
+    const apply = (next: AccountProjectState) => {
+      setStore("data", next)
+      return next
+    }
+
     const reload = async () => {
       if (!auth.ready()) return store.data
       if (!auth.enabled() || !auth.authenticated()) {
@@ -99,7 +122,6 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
         setReady(true)
         return store.data
       }
-      setReady(false)
       const next = await auth.contextState()
       if (next) {
         replace(next)
@@ -122,18 +144,27 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       return next ?? store.data
     }
 
-    const touch = async (project_id: string) =>
-      patch({
+    const touch = async (project_id: string) => {
+      if (store.data.last_project_id === project_id) return store.data
+      apply({
+        ...store.data,
         last_project_id: project_id,
       })
-
-    const open = async (project_id: string) => {
       return patch({
         last_project_id: project_id,
-        open_project_ids: nextOpenProjectIDs({
-          open_project_ids: store.data.open_project_ids,
-          project_id,
-        }),
+      })
+    }
+
+    const open = async (project_id: string) => {
+      const next = optimisticState({
+        state: store.data,
+        project_id,
+        ensure_open: true,
+      })
+      apply(next)
+      return patch({
+        last_project_id: project_id,
+        open_project_ids: next.open_project_ids,
       })
     }
 
@@ -217,14 +248,31 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
         const result = await auth.selectContext(project_id)
         if (!result.ok) return { ok: false as const }
       }
-      await globalSync.bootstrap()
-      const next = await reload()
-      if (ensure_open) {
-        await open(project_id)
-      }
+      const state = apply(
+        optimisticState({
+          state: store.data,
+          project_id,
+          ensure_open,
+        }),
+      )
+      const sync = (async () => {
+        void globalSync.bootstrap()
+        const next = await reload()
+        if (!ensure_open) return next
+        const open_project_ids = nextOpenProjectIDs({
+          open_project_ids: next.open_project_ids,
+          project_id,
+        })
+        if (next.last_project_id === project_id && open_project_ids === next.open_project_ids) return next
+        return patch({
+          last_project_id: project_id,
+          open_project_ids,
+        })
+      })()
       return {
         ok: true as const,
-        state: next,
+        state,
+        sync,
       }
     }
 

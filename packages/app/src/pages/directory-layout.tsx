@@ -1,4 +1,4 @@
-import { createEffect, createMemo, Show, type ParentProps } from "solid-js"
+import { createEffect, createMemo, createSignal, Show, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useNavigate, useParams } from "@solidjs/router"
 import { SDKProvider } from "@/context/sdk"
@@ -58,13 +58,19 @@ export default function Layout(props: ParentProps) {
   const navigate = useNavigate()
   const language = useLanguage()
   const [store, setStore] = createStore({ invalid: "" })
-  const directory = createMemo(() => {
-    return decode64(params.dir) ?? ""
+  const [last, setLast] = createSignal("")
+  const decoded = createMemo(() => decode64(params.dir))
+  const directory = createMemo(() => decoded() ?? last())
+
+  createEffect(() => {
+    const next = decoded()
+    if (!next) return
+    setLast(next)
   })
 
   createEffect(() => {
     if (!params.dir) return
-    if (directory()) return
+    if (decoded()) return
     if (store.invalid === params.dir) return
     setStore("invalid", params.dir)
     showToast({

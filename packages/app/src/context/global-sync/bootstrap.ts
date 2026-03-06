@@ -120,11 +120,12 @@ export async function bootstrapGlobal(input: {
       }),
     ),
   ]
-  const deferredResults = await Promise.allSettled(deferredTasks)
-  const deferredErrors = deferredResults
-    .filter((r): r is PromiseRejectedResult => r.status === "rejected")
-    .map((r) => r.reason)
-  notifyErrors(deferredErrors)
+  void Promise.allSettled(deferredTasks).then((deferredResults) => {
+    const deferredErrors = deferredResults
+      .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+      .map((r) => r.reason)
+    notifyErrors(deferredErrors)
+  })
 }
 
 function groupBySession<T extends { id: string; sessionID: string }>(input: T[]) {

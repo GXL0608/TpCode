@@ -1124,48 +1124,22 @@ export default function Layout(props: ParentProps) {
     const project = resolveProjectByDirectory(globalSync.data.project, initial.worktree) ?? initial
     const root = project.worktree
     const dirs = Array.from(new Set(workspaceOrderFor(root)))
-    const openSession = async (target: { directory: string; id?: string; session_id?: string }) => {
+    const openSession = (target: { directory: string; id?: string; session_id?: string }) => {
       const sessionID = target.id ?? target.session_id
       if (!sessionID) return false
-      const resolved = await globalSDK.client.session
-        .get({ directory: target.directory, sessionID })
-        .then((x) => x.data)
-        .catch(() => undefined)
-      if (!resolved?.id || !resolved.directory) return false
-      const next = resolved
-      rememberSessionForRoot(root, { directory: next.directory, id: next.id, at: Date.now() })
-      navigateWithSidebarReset(`/${base64Encode(next.directory)}/session/${next.id}`)
+      rememberSessionForRoot(root, { directory: target.directory, id: sessionID, at: Date.now() })
+      navigateWithSidebarReset(`/${base64Encode(target.directory)}/session/${sessionID}`)
       return true
     }
 
-    const projectSession = lastSessionFor(root)
-    if (projectSession?.session_id) {
-      if (await openSession(projectSession)) return
-    }
+    const projectSession = activated.state.last_session_by_project[project.id] ?? lastSessionFor(root)
+    if (projectSession?.session_id && openSession(projectSession)) return
 
     const latest = latestRootSession(
       dirs.map((item) => globalSync.child(item, { bootstrap: false })[0]),
       Date.now(),
     )
-    if (latest) {
-      if (await openSession(latest)) return
-    }
-
-    const fetched = latestRootSession(
-      await Promise.all(
-        dirs.map(async (item) => ({
-          path: { directory: item },
-          session: await globalSDK.client.session
-            .list({ directory: item })
-            .then((x) => x.data ?? [])
-            .catch(() => []),
-        })),
-      ),
-      Date.now(),
-    )
-    if (fetched) {
-      if (await openSession(fetched)) return
-    }
+    if (latest && openSession(latest)) return
 
     navigateWithSidebarReset(`/${base64Encode(root)}/session`)
   }
@@ -2133,9 +2107,7 @@ export default function Layout(props: ParentProps) {
             "xl:border-l xl:rounded-tl-[12px]": !layout.sidebar.opened(),
           }}
         >
-          <Show when={!autoselecting()} fallback={<div class="size-full" />}>
-            {props.children}
-          </Show>
+          {props.children}
         </main>
       </div>
       <Toast.Region />

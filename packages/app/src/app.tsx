@@ -7,8 +7,8 @@ import { MarkedProvider } from "@opencode-ai/ui/context/marked"
 import { Font } from "@opencode-ai/ui/font"
 import { ThemeProvider } from "@opencode-ai/ui/theme"
 import { MetaProvider } from "@solidjs/meta"
-import { Navigate, Route, Router } from "@solidjs/router"
-import { ErrorBoundary, type JSX, lazy, type ParentProps, Show, Suspense } from "solid-js"
+import { Navigate, Route, Router, useIsRouting } from "@solidjs/router"
+import { children, createEffect, createSignal, ErrorBoundary, type JSX, lazy, type ParentProps, Show, Suspense } from "solid-js"
 import { AccountAuthProvider, useAccountAuth } from "@/context/account-auth"
 import { AccountProjectProvider } from "@/context/account-project"
 import { CommandProvider } from "@/context/command"
@@ -42,7 +42,13 @@ const AccountAdmin = lazy(() => import("@/pages/account-admin"))
 const AccountApiKeys = lazy(() => import("@/pages/account-apikeys"))
 const AccountPasswordChange = lazy(() => import("@/pages/account-password-change"))
 const ApprovalWorkflow = lazy(() => import("@/pages/approval-workflow"))
-const Loading = () => <div class="size-full" />
+const Loading = () => (
+  <div class="size-full min-h-dvh flex items-center justify-center bg-background-base">
+    <div class="rounded-xl border border-border-weak-base bg-surface-base px-4 py-3 text-12-regular text-text-weak shadow-lg">
+      加载中...
+    </div>
+  </div>
+)
 
 const HomeRoute = () => (
   <Suspense fallback={<Loading />}>
@@ -143,6 +149,23 @@ function ContextProtectedRoute(props: ParentProps) {
       <Show when={!auth.enabled() || !auth.needsProjectContext()} fallback={<Navigate href="/project-select" />}>
         {props.children}
       </Show>
+    </Show>
+  )
+}
+
+function RouteFrame(props: ParentProps) {
+  const routing = useIsRouting()
+  const content = children(() => props.children)
+  const [last, setLast] = createSignal<JSX.Element>()
+  createEffect(() => {
+    const next = content()
+    if (!next) return
+    if (routing()) return
+    setLast(() => next)
+  })
+  return (
+    <Show when={!routing() && content()} fallback={last()}>
+      {content()}
     </Show>
   )
 }
@@ -269,7 +292,7 @@ export function AppInterface(props: {
     <ServerProvider defaultServer={props.defaultServer} servers={props.servers}>
       <ServerKey>
         <AccountAuthProvider>
-          <Router>
+          <Router root={RouteFrame}>
             <Route
               path="/login"
               component={() => (
