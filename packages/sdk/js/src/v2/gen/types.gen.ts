@@ -4,6 +4,14 @@ export type ClientOptions = {
   baseUrl: `${string}://${string}` | (string & {})
 }
 
+export type BadRequestError = {
+  data: unknown
+  errors: Array<{
+    [key: string]: unknown
+  }>
+  success: false
+}
+
 export type EventInstallationUpdated = {
   type: "installation.updated"
   properties: {
@@ -730,7 +738,6 @@ export type EventTuiCommandExecute = {
     command:
       | "session.list"
       | "session.new"
-      | "session.share"
       | "session.interrupt"
       | "session.compact"
       | "session.page.up"
@@ -919,6 +926,17 @@ export type EventWorkspaceFailed = {
   }
 }
 
+export type EventServerDegraded = {
+  type: "server.degraded"
+  properties: {
+    reason: string
+    check: string
+    pending?: number
+    dropped_delta?: number
+    at: number
+  }
+}
+
 export type Pty = {
   id: string
   title: string
@@ -1000,6 +1018,7 @@ export type Event =
   | EventWorktreeFailed
   | EventWorkspaceReady
   | EventWorkspaceFailed
+  | EventServerDegraded
   | EventPtyCreated
   | EventPtyUpdated
   | EventPtyExited
@@ -1039,6 +1058,36 @@ export type ServerConfig = {
    * Additional domains to allow for CORS
    */
   cors?: Array<string>
+  gateway?: {
+    /**
+     * Enable gateway write protection and drain mode
+     */
+    enabled?: boolean
+    /**
+     * Node ID exposed for gateway routing and observability
+     */
+    nodeId?: string
+    /**
+     * Mark server not-ready for gateway health checks
+     */
+    drain?: boolean
+    /**
+     * Maximum concurrent write requests
+     */
+    maxWriteInflight?: number
+    /**
+     * Reject write requests when maxWriteInflight is exceeded
+     */
+    rejectWriteOnOverload?: boolean
+    /**
+     * Enable bundled web defaulting to configured gateway web url
+     */
+    webEnabled?: boolean
+    /**
+     * Gateway url used by bundled web as default api endpoint
+     */
+    webUrl?: string
+  }
 }
 
 export type PermissionActionConfig = "ask" | "allow" | "deny"
@@ -1309,6 +1358,10 @@ export type Config = {
    * JSON schema reference for configuration validation
    */
   $schema?: string
+  /**
+   * Enable TpCode account system
+   */
+  TPCODE_ACCOUNT_ENABLED?: boolean
   logLevel?: LogLevel
   server?: ServerConfig
   /**
@@ -1498,14 +1551,51 @@ export type Config = {
      */
     mcp_timeout?: number
   }
-}
-
-export type BadRequestError = {
-  data: unknown
-  errors: Array<{
-    [key: string]: unknown
-  }>
-  success: false
+  /**
+   * Conversation data synchronization configuration
+   */
+  sync?: {
+    /**
+     * Enable conversation data synchronization to central server
+     */
+    enabled?: boolean
+    /**
+     * Central server API endpoint URL
+     */
+    endpoint: string
+    /**
+     * API key for authentication
+     */
+    apiKey?: string
+    /**
+     * Request timeout in milliseconds (default: 30000)
+     */
+    timeout?: number
+    /**
+     * Maximum number of retry attempts for failed sync (default: 5)
+     */
+    retryAttempts?: number
+    /**
+     * Initial retry delay in milliseconds (default: 5000)
+     */
+    retryDelay?: number
+    /**
+     * Number of tasks to process in each retry batch (default: 10)
+     */
+    batchSize?: number
+    /**
+     * History backfill mode: startup runs once after startup, periodic replays at intervals
+     */
+    backfillMode?: "startup" | "periodic"
+    /**
+     * History backfill replay interval in milliseconds when backfillMode=periodic (default: 21600000)
+     */
+    backfillInterval?: number
+    /**
+     * Number of sessions per history backfill batch (default: 25)
+     */
+    backfillBatchSize?: number
+  }
 }
 
 export type OAuth = {
@@ -1543,9 +1633,58 @@ export type AccountLoginResult = {
     org_id: string
     department_id?: string
     force_password_reset: boolean
+    context_project_id?: string
     roles: Array<string>
     permissions: Array<string>
   }
+}
+
+export type AccountProjectState = {
+  current_project_id?: string
+  last_project_id?: string
+  open_project_ids: Array<string>
+  last_session_by_project: {
+    [key: string]: {
+      session_id: string
+      directory: string
+      time_updated: number
+    }
+  }
+  workspace_mode_by_project: {
+    [key: string]: boolean
+  }
+  workspace_order_by_project: {
+    [key: string]: Array<string>
+  }
+  workspace_expanded_by_directory: {
+    [key: string]: boolean
+  }
+  workspace_alias_by_project_branch: {
+    [key: string]: {
+      [key: string]: string
+    }
+  }
+}
+
+export type AccountPlanSaveSuccess = {
+  ok: true
+  id: string
+  saved_at: number
+  session_id: string
+  message_id: string
+  part_id: string
+}
+
+export type AccountPlanSaveFailure = {
+  ok: false
+  code:
+    | "session_missing"
+    | "message_missing"
+    | "plan_message_required"
+    | "part_missing"
+    | "plan_text_missing"
+    | "forbidden"
+  permission?: string
 }
 
 export type NotFoundError = {
@@ -1938,10 +2077,135 @@ export type GlobalHealthResponses = {
   200: {
     healthy: true
     version: string
+    degraded?: boolean
+    checks?: {
+      [key: string]: {
+        degraded: boolean
+        active?: number
+        reason?: string
+        since?: number
+        last: number
+        details?: {
+          [key: string]: unknown
+        }
+      }
+    }
+    ready: boolean
+    node: {
+      id: string
+      host: string
+      port: number
+      pid: number
+      started_at: number
+      drain: boolean
+      write_inflight: number
+      max_write_inflight: number
+      reject_write_on_overload: boolean
+      updated_at: number
+      ready: boolean
+      reason?: string
+    }
   }
 }
 
 export type GlobalHealthResponse = GlobalHealthResponses[keyof GlobalHealthResponses]
+
+export type GlobalReadyData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/ready"
+}
+
+export type GlobalReadyErrors = {
+  /**
+   * Not ready
+   */
+  503: {
+    ready: boolean
+    reason?: string
+    node_id: string
+    timestamp: number
+  }
+}
+
+export type GlobalReadyError = GlobalReadyErrors[keyof GlobalReadyErrors]
+
+export type GlobalReadyResponses = {
+  /**
+   * Ready
+   */
+  200: {
+    ready: boolean
+    reason?: string
+    node_id: string
+    timestamp: number
+  }
+}
+
+export type GlobalReadyResponse = GlobalReadyResponses[keyof GlobalReadyResponses]
+
+export type GlobalNodeData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/node"
+}
+
+export type GlobalNodeResponses = {
+  /**
+   * Node state
+   */
+  200: {
+    id: string
+    host: string
+    port: number
+    pid: number
+    started_at: number
+    drain: boolean
+    write_inflight: number
+    max_write_inflight: number
+    reject_write_on_overload: boolean
+    updated_at: number
+    ready: boolean
+    reason?: string
+  }
+}
+
+export type GlobalNodeResponse = GlobalNodeResponses[keyof GlobalNodeResponses]
+
+export type GlobalDrainData = {
+  body?: {
+    enabled: boolean
+    reason?: string
+  }
+  path?: never
+  query?: never
+  url: "/global/drain"
+}
+
+export type GlobalDrainErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalDrainError = GlobalDrainErrors[keyof GlobalDrainErrors]
+
+export type GlobalDrainResponses = {
+  /**
+   * Drain updated
+   */
+  200: {
+    ok: true
+    drain: boolean
+    reason?: string
+    updated_at: number
+  }
+}
+
+export type GlobalDrainResponse = GlobalDrainResponses[keyof GlobalDrainResponses]
 
 export type GlobalEventData = {
   body?: never
@@ -2237,12 +2501,163 @@ export type AccountMeResponses = {
     org_id: string
     department_id?: string
     force_password_reset: boolean
+    context_project_id?: string
     roles: Array<string>
     permissions: Array<string>
   }
 }
 
 export type AccountMeResponse = AccountMeResponses[keyof AccountMeResponses]
+
+export type GetAccountMeVhoBindData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/account/me/vho-bind"
+}
+
+export type GetAccountMeVhoBindResponses = {
+  200: unknown
+}
+
+export type PostAccountMeVhoBindData = {
+  body?: {
+    phone: string
+  }
+  path?: never
+  query?: never
+  url: "/account/me/vho-bind"
+}
+
+export type PostAccountMeVhoBindResponses = {
+  200: unknown
+}
+
+export type AccountContextStateData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/account/context/state"
+}
+
+export type AccountContextStateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountContextStateError = AccountContextStateErrors[keyof AccountContextStateErrors]
+
+export type AccountContextStateResponses = {
+  /**
+   * Project state
+   */
+  200: AccountProjectState
+}
+
+export type AccountContextStateResponse = AccountContextStateResponses[keyof AccountContextStateResponses]
+
+export type AccountContextStateUpdateData = {
+  body?: {
+    last_project_id?: string | null
+    open_project_ids?: Array<string>
+    last_session_by_project?: {
+      [key: string]: {
+        session_id: string
+        directory: string
+        time_updated: number
+      }
+    }
+    workspace_mode_by_project?: {
+      [key: string]: boolean
+    }
+    workspace_order_by_project?: {
+      [key: string]: Array<string>
+    }
+    workspace_expanded_by_directory?: {
+      [key: string]: boolean
+    }
+    workspace_alias_by_project_branch?: {
+      [key: string]: {
+        [key: string]: string
+      }
+    }
+  }
+  path?: never
+  query?: never
+  url: "/account/context/state"
+}
+
+export type AccountContextStateUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountContextStateUpdateError = AccountContextStateUpdateErrors[keyof AccountContextStateUpdateErrors]
+
+export type AccountContextStateUpdateResponses = {
+  /**
+   * Project state
+   */
+  200: AccountProjectState
+}
+
+export type AccountContextStateUpdateResponse =
+  AccountContextStateUpdateResponses[keyof AccountContextStateUpdateResponses]
+
+export type PostAccountContextSelectData = {
+  body?: {
+    project_id: string
+  }
+  path?: never
+  query?: never
+  url: "/account/context/select"
+}
+
+export type PostAccountContextSelectResponses = {
+  200: unknown
+}
+
+export type AccountPlanSaveData = {
+  body?: {
+    session_id: string
+    message_id: string
+    part_id?: string
+    vho_feedback_no?: string
+  }
+  path?: never
+  query?: never
+  url: "/account/plan/save"
+}
+
+export type AccountPlanSaveErrors = {
+  /**
+   * Validation failed
+   */
+  400: AccountPlanSaveFailure
+  /**
+   * Forbidden
+   */
+  403: AccountPlanSaveFailure
+  /**
+   * Not found
+   */
+  404: AccountPlanSaveFailure
+}
+
+export type AccountPlanSaveError = AccountPlanSaveErrors[keyof AccountPlanSaveErrors]
+
+export type AccountPlanSaveResponses = {
+  /**
+   * Saved
+   */
+  200: AccountPlanSaveSuccess
+}
+
+export type AccountPlanSaveResponse = AccountPlanSaveResponses[keyof AccountPlanSaveResponses]
 
 export type AccountMeProviderData = {
   body?: never
@@ -2268,11 +2683,282 @@ export type AccountMeProviderResponses = {
    */
   200: {
     provider_id: string
-    auth: Auth | null
+    configured: boolean
+    source: "none" | "user"
+    auth_type?: string
   }
 }
 
 export type AccountMeProviderResponse = AccountMeProviderResponses[keyof AccountMeProviderResponses]
+
+export type PutAccountMeProviderControlData = {
+  body?: {
+    enabled_providers?: Array<string>
+    disabled_providers?: Array<string>
+    model?: string
+    small_model?: string
+    model_prefs?: {
+      visibility?: {
+        [key: string]: "show" | "hide"
+      }
+      favorite?: Array<string>
+      recent?: Array<string>
+      variant?: {
+        [key: string]: string
+      }
+    }
+  }
+  path?: never
+  query?: never
+  url: "/account/me/provider-control"
+}
+
+export type PutAccountMeProviderControlResponses = {
+  200: unknown
+}
+
+export type DeleteAccountMeProvidersProviderIdConfigData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/me/providers/{provider_id}/config"
+}
+
+export type DeleteAccountMeProvidersProviderIdConfigResponses = {
+  200: unknown
+}
+
+export type GetAccountMeProvidersProviderIdConfigData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/me/providers/{provider_id}/config"
+}
+
+export type GetAccountMeProvidersProviderIdConfigResponses = {
+  200: unknown
+}
+
+export type PutAccountMeProvidersProviderIdConfigData = {
+  body?: ProviderConfig
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/me/providers/{provider_id}/config"
+}
+
+export type PutAccountMeProvidersProviderIdConfigResponses = {
+  200: unknown
+}
+
+export type PatchAccountMeProvidersProviderIdDisabledData = {
+  body?: {
+    disabled: boolean
+  }
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/me/providers/{provider_id}/disabled"
+}
+
+export type PatchAccountMeProvidersProviderIdDisabledResponses = {
+  200: unknown
+}
+
+export type PutAccountMeModelPrefsData = {
+  body?: {
+    visibility?: {
+      [key: string]: "show" | "hide"
+    }
+    favorite?: Array<string>
+    recent?: Array<string>
+    variant?: {
+      [key: string]: string
+    }
+  }
+  path?: never
+  query?: never
+  url: "/account/me/model-prefs"
+}
+
+export type PutAccountMeModelPrefsResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminRolesData = {
+  body?: never
+  path?: never
+  query?: {
+    page?: number
+    page_size?: number
+  }
+  url: "/account/admin/roles"
+}
+
+export type GetAccountAdminRolesResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminRolesData = {
+  body?: {
+    code: string
+    name: string
+    scope?: "system" | "org"
+    description?: string
+    permission_codes?: Array<string>
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/roles"
+}
+
+export type PostAccountAdminRolesResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminFsDirectoriesData = {
+  body?: never
+  path?: never
+  query?: {
+    path?: string
+  }
+  url: "/account/admin/fs/directories"
+}
+
+export type GetAccountAdminFsDirectoriesResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminSettingsProjectScanRootData = {
+  body?: {
+    project_scan_root?: string
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/settings/project-scan-root"
+}
+
+export type PutAccountAdminSettingsProjectScanRootResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminProjectsCatalogData = {
+  body?: never
+  path?: never
+  query?: {
+    source?: "all" | "registered" | "scanned"
+  }
+  url: "/account/admin/projects/catalog"
+}
+
+export type GetAccountAdminProjectsCatalogResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminProductsData = {
+  body?: {
+    name: string
+    directory: string
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/products"
+}
+
+export type PostAccountAdminProductsResponses = {
+  200: unknown
+}
+
+export type DeleteAccountAdminProductsProductIdData = {
+  body?: never
+  path: {
+    product_id: string
+  }
+  query?: never
+  url: "/account/admin/products/{product_id}"
+}
+
+export type DeleteAccountAdminProductsProductIdResponses = {
+  200: unknown
+}
+
+export type PatchAccountAdminProductsProductIdData = {
+  body?: {
+    name?: string
+    directory?: string
+  }
+  path: {
+    product_id: string
+  }
+  query?: never
+  url: "/account/admin/products/{product_id}"
+}
+
+export type PatchAccountAdminProductsProductIdResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminRolesRoleCodeProductsData = {
+  body?: never
+  path: {
+    role_code: string
+  }
+  query?: never
+  url: "/account/admin/roles/{role_code}/products"
+}
+
+export type GetAccountAdminRolesRoleCodeProductsResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminRolesRoleCodeProductsData = {
+  body?: {
+    product_ids: Array<string>
+  }
+  path: {
+    role_code: string
+  }
+  query?: never
+  url: "/account/admin/roles/{role_code}/products"
+}
+
+export type PutAccountAdminRolesRoleCodeProductsResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminRolesRoleCodeProjectsData = {
+  body?: never
+  path: {
+    role_code: string
+  }
+  query?: never
+  url: "/account/admin/roles/{role_code}/projects"
+}
+
+export type GetAccountAdminRolesRoleCodeProjectsResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminRolesRoleCodeProjectsData = {
+  body?: {
+    project_ids: Array<string>
+  }
+  path: {
+    role_code: string
+  }
+  query?: never
+  url: "/account/admin/roles/{role_code}/projects"
+}
+
+export type PutAccountAdminRolesRoleCodeProjectsResponses = {
+  200: unknown
+}
 
 export type PostAccountAdminRolesRoleCodePermissionsData = {
   body?: {
@@ -2315,6 +3001,90 @@ export type PutAccountAdminProviderProviderIdGlobalResponses = {
   200: unknown
 }
 
+export type GetAccountAdminProjectAccessRoleData = {
+  body?: never
+  path?: never
+  query?: {
+    project_id?: string
+  }
+  url: "/account/admin/project-access/role"
+}
+
+export type GetAccountAdminProjectAccessRoleResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminProjectAccessRoleData = {
+  body?: {
+    project_id: string
+    role_codes: Array<string>
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/project-access/role"
+}
+
+export type PostAccountAdminProjectAccessRoleResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminProjectAccessUserData = {
+  body?: never
+  path?: never
+  query?: {
+    project_id?: string
+    user_id?: string
+  }
+  url: "/account/admin/project-access/user"
+}
+
+export type GetAccountAdminProjectAccessUserResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminProjectAccessUserData = {
+  body?: {
+    project_id: string
+    user_id: string
+    mode: "allow" | "deny" | "remove"
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/project-access/user"
+}
+
+export type PostAccountAdminProjectAccessUserResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminVhoBindData = {
+  body?: never
+  path?: never
+  query?: {
+    keyword?: string
+  }
+  url: "/account/admin/vho-bind"
+}
+
+export type GetAccountAdminVhoBindResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminVhoBindData = {
+  body?: {
+    user_id: string
+    vho_user_id?: string
+    phone?: string
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/vho-bind"
+}
+
+export type PostAccountAdminVhoBindResponses = {
+  200: unknown
+}
+
 export type GetAccountAdminAuditData = {
   body?: never
   path?: never
@@ -2337,6 +3107,8 @@ export type GetAccountAdminUsersData = {
     org_id?: string
     department_id?: string
     keyword?: string
+    page?: number
+    page_size?: number
   }
   url: "/account/admin/users"
 }
@@ -2383,6 +3155,180 @@ export type PatchAccountAdminUsersUserIdData = {
 }
 
 export type PatchAccountAdminUsersUserIdResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminUsersUserIdPasswordResetData = {
+  body?: never
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/password/reset"
+}
+
+export type PostAccountAdminUsersUserIdPasswordResetResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminUsersUserIdProvidersData = {
+  body?: never
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/providers"
+}
+
+export type GetAccountAdminUsersUserIdProvidersResponses = {
+  200: unknown
+}
+
+export type DeleteAccountAdminUsersUserIdProvidersProviderIdData = {
+  body?: never
+  path: {
+    user_id: string
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/providers/{provider_id}"
+}
+
+export type DeleteAccountAdminUsersUserIdProvidersProviderIdResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminUsersUserIdProvidersProviderIdData = {
+  body?: Auth
+  path: {
+    user_id: string
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/providers/{provider_id}"
+}
+
+export type PutAccountAdminUsersUserIdProvidersProviderIdResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminUsersUserIdProviderControlData = {
+  body?: never
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/provider-control"
+}
+
+export type GetAccountAdminUsersUserIdProviderControlResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminUsersUserIdProviderControlData = {
+  body?: {
+    enabled_providers?: Array<string>
+    disabled_providers?: Array<string>
+    model?: string
+    small_model?: string
+    model_prefs?: {
+      visibility?: {
+        [key: string]: "show" | "hide"
+      }
+      favorite?: Array<string>
+      recent?: Array<string>
+      variant?: {
+        [key: string]: string
+      }
+    }
+  }
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/provider-control"
+}
+
+export type PutAccountAdminUsersUserIdProviderControlResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminUsersUserIdProvidersProviderIdConfigData = {
+  body?: never
+  path: {
+    user_id: string
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/providers/{provider_id}/config"
+}
+
+export type GetAccountAdminUsersUserIdProvidersProviderIdConfigResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminUsersUserIdProvidersProviderIdConfigData = {
+  body?: ProviderConfig
+  path: {
+    user_id: string
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/providers/{provider_id}/config"
+}
+
+export type PutAccountAdminUsersUserIdProvidersProviderIdConfigResponses = {
+  200: unknown
+}
+
+export type PatchAccountAdminUsersUserIdProvidersProviderIdDisabledData = {
+  body?: {
+    disabled: boolean
+  }
+  path: {
+    user_id: string
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/providers/{provider_id}/disabled"
+}
+
+export type PatchAccountAdminUsersUserIdProvidersProviderIdDisabledResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminUsersUserIdModelPrefsData = {
+  body?: never
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/model-prefs"
+}
+
+export type GetAccountAdminUsersUserIdModelPrefsResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminUsersUserIdModelPrefsData = {
+  body?: {
+    visibility?: {
+      [key: string]: "show" | "hide"
+    }
+    favorite?: Array<string>
+    recent?: Array<string>
+    variant?: {
+      [key: string]: string
+    }
+  }
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}/model-prefs"
+}
+
+export type PutAccountAdminUsersUserIdModelPrefsResponses = {
   200: unknown
 }
 
@@ -3228,6 +4174,38 @@ export type SessionStatusResponses = {
 
 export type SessionStatusResponse = SessionStatusResponses[keyof SessionStatusResponses]
 
+export type SessionVoiceData = {
+  body?: never
+  path: {
+    sessionID: string
+    voiceID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/voice/{voiceID}"
+}
+
+export type SessionVoiceErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionVoiceError = SessionVoiceErrors[keyof SessionVoiceErrors]
+
+export type SessionVoiceResponses = {
+  /**
+   * Audio stream
+   */
+  200: unknown
+}
+
 export type SessionDeleteData = {
   body?: never
   path: {
@@ -3960,6 +4938,8 @@ export type SessionCommandData = {
       mime: string
       filename?: string
       url: string
+      duration_ms?: number
+      forModel?: boolean
       source?: FilePartSource
     }>
   }
@@ -4201,6 +5181,436 @@ export type PermissionListResponses = {
 }
 
 export type PermissionListResponse = PermissionListResponses[keyof PermissionListResponses]
+
+export type ApprovalReviewerListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/approval/reviewer"
+}
+
+export type ApprovalReviewerListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalReviewerListError = ApprovalReviewerListErrors[keyof ApprovalReviewerListErrors]
+
+export type ApprovalReviewerListResponses = {
+  /**
+   * Reviewers
+   */
+  200: Array<{
+    id: string
+    username: string
+    display_name: string
+    org_id: string
+    department_id?: string
+    roles: Array<string>
+    permissions: Array<string>
+  }>
+}
+
+export type ApprovalReviewerListResponse = ApprovalReviewerListResponses[keyof ApprovalReviewerListResponses]
+
+export type ApprovalChangeRequestListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    status?: string
+    mine?: boolean
+    reviewer_only?: boolean
+    limit?: number
+  }
+  url: "/approval/change-request"
+}
+
+export type ApprovalChangeRequestListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalChangeRequestListError = ApprovalChangeRequestListErrors[keyof ApprovalChangeRequestListErrors]
+
+export type ApprovalChangeRequestListResponses = {
+  /**
+   * Change request list
+   */
+  200: Array<{
+    [key: string]: unknown
+  }>
+}
+
+export type ApprovalChangeRequestListResponse =
+  ApprovalChangeRequestListResponses[keyof ApprovalChangeRequestListResponses]
+
+export type ApprovalChangeRequestCreateData = {
+  body?: {
+    page_id?: string
+    session_id?: string
+    title: string
+    description: string
+    ai_plan?: string
+    ai_prototype_url?: string
+    ai_score?: number
+    ai_revenue_assessment?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/approval/change-request"
+}
+
+export type ApprovalChangeRequestCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalChangeRequestCreateError =
+  ApprovalChangeRequestCreateErrors[keyof ApprovalChangeRequestCreateErrors]
+
+export type ApprovalChangeRequestCreateResponses = {
+  /**
+   * Create result
+   */
+  200: {
+    ok: boolean
+    id?: string
+    code?: string
+  }
+}
+
+export type ApprovalChangeRequestCreateResponse =
+  ApprovalChangeRequestCreateResponses[keyof ApprovalChangeRequestCreateResponses]
+
+export type ApprovalChangeRequestGetData = {
+  body?: never
+  path: {
+    change_request_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/approval/change-request/{change_request_id}"
+}
+
+export type ApprovalChangeRequestGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalChangeRequestGetError = ApprovalChangeRequestGetErrors[keyof ApprovalChangeRequestGetErrors]
+
+export type ApprovalChangeRequestGetResponses = {
+  /**
+   * Change request detail
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ApprovalChangeRequestGetResponse =
+  ApprovalChangeRequestGetResponses[keyof ApprovalChangeRequestGetResponses]
+
+export type ApprovalChangeRequestUpdateData = {
+  body?: {
+    title?: string
+    description?: string
+    ai_plan?: string
+    ai_prototype_url?: string
+    ai_score?: number
+    ai_revenue_assessment?: string
+  }
+  path: {
+    change_request_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/approval/change-request/{change_request_id}"
+}
+
+export type ApprovalChangeRequestUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalChangeRequestUpdateError =
+  ApprovalChangeRequestUpdateErrors[keyof ApprovalChangeRequestUpdateErrors]
+
+export type ApprovalChangeRequestUpdateResponses = {
+  /**
+   * Update result
+   */
+  200: {
+    ok: boolean
+    code?: string
+  }
+}
+
+export type ApprovalChangeRequestUpdateResponse =
+  ApprovalChangeRequestUpdateResponses[keyof ApprovalChangeRequestUpdateResponses]
+
+export type ApprovalChangeRequestConfirmData = {
+  body?: never
+  path: {
+    change_request_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/approval/change-request/{change_request_id}/confirm"
+}
+
+export type ApprovalChangeRequestConfirmErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalChangeRequestConfirmError =
+  ApprovalChangeRequestConfirmErrors[keyof ApprovalChangeRequestConfirmErrors]
+
+export type ApprovalChangeRequestConfirmResponses = {
+  /**
+   * Confirm result
+   */
+  200: {
+    ok: boolean
+    code?: string
+  }
+}
+
+export type ApprovalChangeRequestConfirmResponse =
+  ApprovalChangeRequestConfirmResponses[keyof ApprovalChangeRequestConfirmResponses]
+
+export type ApprovalChangeRequestSubmitData = {
+  body?: {
+    reviewer_ids?: Array<string>
+    ai_score?: number
+    ai_revenue_assessment?: string
+  }
+  path: {
+    change_request_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/approval/change-request/{change_request_id}/submit"
+}
+
+export type ApprovalChangeRequestSubmitErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalChangeRequestSubmitError =
+  ApprovalChangeRequestSubmitErrors[keyof ApprovalChangeRequestSubmitErrors]
+
+export type ApprovalChangeRequestSubmitResponses = {
+  /**
+   * Submit result
+   */
+  200: {
+    ok: boolean
+    status?: string
+    current_step?: number
+    code?: string
+  }
+}
+
+export type ApprovalChangeRequestSubmitResponse =
+  ApprovalChangeRequestSubmitResponses[keyof ApprovalChangeRequestSubmitResponses]
+
+export type ApprovalChangeRequestExecutingData = {
+  body?: never
+  path: {
+    change_request_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/approval/change-request/{change_request_id}/executing"
+}
+
+export type ApprovalChangeRequestExecutingErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalChangeRequestExecutingError =
+  ApprovalChangeRequestExecutingErrors[keyof ApprovalChangeRequestExecutingErrors]
+
+export type ApprovalChangeRequestExecutingResponses = {
+  /**
+   * Update result
+   */
+  200: {
+    ok: boolean
+    code?: string
+  }
+}
+
+export type ApprovalChangeRequestExecutingResponse =
+  ApprovalChangeRequestExecutingResponses[keyof ApprovalChangeRequestExecutingResponses]
+
+export type ApprovalChangeRequestCompletedData = {
+  body?: never
+  path: {
+    change_request_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/approval/change-request/{change_request_id}/completed"
+}
+
+export type ApprovalChangeRequestCompletedErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalChangeRequestCompletedError =
+  ApprovalChangeRequestCompletedErrors[keyof ApprovalChangeRequestCompletedErrors]
+
+export type ApprovalChangeRequestCompletedResponses = {
+  /**
+   * Update result
+   */
+  200: {
+    ok: boolean
+    code?: string
+  }
+}
+
+export type ApprovalChangeRequestCompletedResponse =
+  ApprovalChangeRequestCompletedResponses[keyof ApprovalChangeRequestCompletedResponses]
+
+export type ApprovalReviewListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    status?: "pending" | "approved" | "rejected"
+    mine?: boolean
+    limit?: number
+  }
+  url: "/approval/review"
+}
+
+export type ApprovalReviewListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalReviewListError = ApprovalReviewListErrors[keyof ApprovalReviewListErrors]
+
+export type ApprovalReviewListResponses = {
+  /**
+   * Review tasks
+   */
+  200: Array<{
+    [key: string]: unknown
+  }>
+}
+
+export type ApprovalReviewListResponse = ApprovalReviewListResponses[keyof ApprovalReviewListResponses]
+
+export type ApprovalReviewApproveData = {
+  body?: {
+    comment?: string
+  }
+  path: {
+    approval_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/approval/review/{approval_id}/approve"
+}
+
+export type ApprovalReviewApproveErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalReviewApproveError = ApprovalReviewApproveErrors[keyof ApprovalReviewApproveErrors]
+
+export type ApprovalReviewApproveResponses = {
+  /**
+   * Approve result
+   */
+  200: {
+    ok: boolean
+    status?: string
+    current_step?: number
+    code?: string
+  }
+}
+
+export type ApprovalReviewApproveResponse = ApprovalReviewApproveResponses[keyof ApprovalReviewApproveResponses]
+
+export type ApprovalReviewRejectData = {
+  body?: {
+    comment: string
+  }
+  path: {
+    approval_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/approval/review/{approval_id}/reject"
+}
+
+export type ApprovalReviewRejectErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ApprovalReviewRejectError = ApprovalReviewRejectErrors[keyof ApprovalReviewRejectErrors]
+
+export type ApprovalReviewRejectResponses = {
+  /**
+   * Reject result
+   */
+  200: {
+    ok: boolean
+    status?: string
+    current_step?: number
+    code?: string
+  }
+}
+
+export type ApprovalReviewRejectResponse = ApprovalReviewRejectResponses[keyof ApprovalReviewRejectResponses]
 
 export type QuestionListData = {
   body?: never

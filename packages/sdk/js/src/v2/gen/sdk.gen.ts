@@ -3,6 +3,10 @@
 import { client } from "./client.gen.js"
 import { buildClientParams, type Client, type Options as Options2, type TDataShape } from "./client/index.js"
 import type {
+  AccountContextStateErrors,
+  AccountContextStateResponses,
+  AccountContextStateUpdateErrors,
+  AccountContextStateUpdateResponses,
   AccountLoginErrors,
   AccountLoginResponses,
   AccountLogoutAllErrors,
@@ -19,6 +23,8 @@ import type {
   AccountPasswordForgotRequestResponses,
   AccountPasswordForgotResetErrors,
   AccountPasswordForgotResetResponses,
+  AccountPlanSaveErrors,
+  AccountPlanSaveResponses,
   AccountRegisterErrors,
   AccountRegisterResponses,
   AccountTokenRefreshErrors,
@@ -27,6 +33,30 @@ import type {
   AppAgentsResponses,
   AppLogErrors,
   AppLogResponses,
+  ApprovalChangeRequestCompletedErrors,
+  ApprovalChangeRequestCompletedResponses,
+  ApprovalChangeRequestConfirmErrors,
+  ApprovalChangeRequestConfirmResponses,
+  ApprovalChangeRequestCreateErrors,
+  ApprovalChangeRequestCreateResponses,
+  ApprovalChangeRequestExecutingErrors,
+  ApprovalChangeRequestExecutingResponses,
+  ApprovalChangeRequestGetErrors,
+  ApprovalChangeRequestGetResponses,
+  ApprovalChangeRequestListErrors,
+  ApprovalChangeRequestListResponses,
+  ApprovalChangeRequestSubmitErrors,
+  ApprovalChangeRequestSubmitResponses,
+  ApprovalChangeRequestUpdateErrors,
+  ApprovalChangeRequestUpdateResponses,
+  ApprovalReviewApproveErrors,
+  ApprovalReviewApproveResponses,
+  ApprovalReviewerListErrors,
+  ApprovalReviewerListResponses,
+  ApprovalReviewListErrors,
+  ApprovalReviewListResponses,
+  ApprovalReviewRejectErrors,
+  ApprovalReviewRejectResponses,
   AppSkillsResponses,
   Auth as Auth3,
   AuthRemoveErrors,
@@ -39,7 +69,10 @@ import type {
   ConfigProvidersResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
+  DeleteAccountAdminProductsProductIdResponses,
   DeleteAccountAdminProviderProviderIdGlobalResponses,
+  DeleteAccountAdminUsersUserIdProvidersProviderIdResponses,
+  DeleteAccountMeProvidersProviderIdConfigResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute,
   EventTuiPromptAppend,
@@ -62,13 +95,32 @@ import type {
   FindTextResponses,
   FormatterStatusResponses,
   GetAccountAdminAuditResponses,
+  GetAccountAdminFsDirectoriesResponses,
+  GetAccountAdminProjectAccessRoleResponses,
+  GetAccountAdminProjectAccessUserResponses,
+  GetAccountAdminProjectsCatalogResponses,
+  GetAccountAdminRolesResponses,
+  GetAccountAdminRolesRoleCodeProductsResponses,
+  GetAccountAdminRolesRoleCodeProjectsResponses,
   GetAccountAdminUsersResponses,
+  GetAccountAdminUsersUserIdModelPrefsResponses,
+  GetAccountAdminUsersUserIdProviderControlResponses,
+  GetAccountAdminUsersUserIdProvidersProviderIdConfigResponses,
+  GetAccountAdminUsersUserIdProvidersResponses,
+  GetAccountAdminVhoBindResponses,
+  GetAccountMeProvidersProviderIdConfigResponses,
+  GetAccountMeVhoBindResponses,
   GlobalConfigGetResponses,
   GlobalConfigUpdateErrors,
   GlobalConfigUpdateResponses,
   GlobalDisposeResponses,
+  GlobalDrainErrors,
+  GlobalDrainResponses,
   GlobalEventResponses,
   GlobalHealthResponses,
+  GlobalNodeResponses,
+  GlobalReadyErrors,
+  GlobalReadyResponses,
   InstanceDisposeResponses,
   LspStatusResponses,
   McpAddErrors,
@@ -92,7 +144,10 @@ import type {
   PartDeleteResponses,
   PartUpdateErrors,
   PartUpdateResponses,
+  PatchAccountAdminProductsProductIdResponses,
+  PatchAccountAdminUsersUserIdProvidersProviderIdDisabledResponses,
   PatchAccountAdminUsersUserIdResponses,
+  PatchAccountMeProvidersProviderIdDisabledResponses,
   PathGetResponses,
   PermissionListResponses,
   PermissionReplyErrors,
@@ -100,14 +155,23 @@ import type {
   PermissionRespondErrors,
   PermissionRespondResponses,
   PermissionRuleset,
+  PostAccountAdminProductsResponses,
+  PostAccountAdminProjectAccessRoleResponses,
+  PostAccountAdminProjectAccessUserResponses,
+  PostAccountAdminRolesResponses,
   PostAccountAdminRolesRoleCodePermissionsResponses,
   PostAccountAdminUsersResponses,
+  PostAccountAdminUsersUserIdPasswordResetResponses,
   PostAccountAdminUsersUserIdRolesResponses,
+  PostAccountAdminVhoBindResponses,
+  PostAccountContextSelectResponses,
+  PostAccountMeVhoBindResponses,
   ProjectCurrentResponses,
   ProjectListResponses,
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   ProviderAuthResponses,
+  ProviderConfig,
   ProviderListResponses,
   ProviderOauthAuthorizeErrors,
   ProviderOauthAuthorizeResponses,
@@ -125,6 +189,16 @@ import type {
   PtyUpdateErrors,
   PtyUpdateResponses,
   PutAccountAdminProviderProviderIdGlobalResponses,
+  PutAccountAdminRolesRoleCodeProductsResponses,
+  PutAccountAdminRolesRoleCodeProjectsResponses,
+  PutAccountAdminSettingsProjectScanRootResponses,
+  PutAccountAdminUsersUserIdModelPrefsResponses,
+  PutAccountAdminUsersUserIdProviderControlResponses,
+  PutAccountAdminUsersUserIdProvidersProviderIdConfigResponses,
+  PutAccountAdminUsersUserIdProvidersProviderIdResponses,
+  PutAccountMeModelPrefsResponses,
+  PutAccountMeProviderControlResponses,
+  PutAccountMeProvidersProviderIdConfigResponses,
   QuestionAnswer,
   QuestionListResponses,
   QuestionRejectErrors,
@@ -176,6 +250,8 @@ import type {
   SessionUnshareResponses,
   SessionUpdateErrors,
   SessionUpdateResponses,
+  SessionVoiceErrors,
+  SessionVoiceResponses,
   SubtaskPartInput,
   TextPartInput,
   ToolIdsErrors,
@@ -259,7 +335,7 @@ export class Config extends HeyApiClient {
   /**
    * Get global configuration
    *
-   * Retrieve the current global OpenCode configuration settings and preferences.
+   * Retrieve the current global TpCode configuration settings and preferences.
    */
   public get<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).get<GlobalConfigGetResponses, unknown, ThrowOnError>({
@@ -271,7 +347,7 @@ export class Config extends HeyApiClient {
   /**
    * Update global configuration
    *
-   * Update global OpenCode configuration settings and preferences.
+   * Update global TpCode configuration settings and preferences.
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -297,7 +373,7 @@ export class Global extends HeyApiClient {
   /**
    * Get health
    *
-   * Get health information about the OpenCode server.
+   * Get health information about the TpCode server.
    */
   public health<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).get<GlobalHealthResponses, unknown, ThrowOnError>({
@@ -307,9 +383,68 @@ export class Global extends HeyApiClient {
   }
 
   /**
+   * Get readiness
+   *
+   * Readiness endpoint for gateway health checks.
+   */
+  public ready<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<GlobalReadyResponses, GlobalReadyErrors, ThrowOnError>({
+      url: "/global/ready",
+      ...options,
+    })
+  }
+
+  /**
+   * Get node state
+   *
+   * Get local node state used by gateway operations.
+   */
+  public node<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<GlobalNodeResponses, unknown, ThrowOnError>({
+      url: "/global/node",
+      ...options,
+    })
+  }
+
+  /**
+   * Set node drain
+   *
+   * Enable or disable drain mode on this node.
+   */
+  public drain<ThrowOnError extends boolean = false>(
+    parameters?: {
+      enabled?: boolean
+      reason?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "enabled" },
+            { in: "body", key: "reason" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<GlobalDrainResponses, GlobalDrainErrors, ThrowOnError>({
+      url: "/global/drain",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
    * Get global events
    *
-   * Subscribe to global events from the OpenCode system using server-sent events.
+   * Subscribe to global events from the TpCode system using server-sent events.
    */
   public event<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).sse.get<GlobalEventResponses, unknown, ThrowOnError>({
@@ -321,7 +456,7 @@ export class Global extends HeyApiClient {
   /**
    * Dispose instance
    *
-   * Clean up and dispose all OpenCode instances, releasing all resources.
+   * Clean up and dispose all TpCode instances, releasing all resources.
    */
   public dispose<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).post<GlobalDisposeResponses, unknown, ThrowOnError>({
@@ -430,6 +565,133 @@ export class Logout extends HeyApiClient {
     return (options?.client ?? this.client).post<AccountLogoutAllResponses, AccountLogoutAllErrors, ThrowOnError>({
       url: "/account/logout-all",
       ...options,
+    })
+  }
+}
+
+export class State extends HeyApiClient {
+  /**
+   * Update current account project UI state
+   *
+   * Patch the database-backed, account-scoped project UI state.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      last_project_id?: string | null
+      open_project_ids?: Array<string>
+      last_session_by_project?: {
+        [key: string]: {
+          session_id: string
+          directory: string
+          time_updated: number
+        }
+      }
+      workspace_mode_by_project?: {
+        [key: string]: boolean
+      }
+      workspace_order_by_project?: {
+        [key: string]: Array<string>
+      }
+      workspace_expanded_by_directory?: {
+        [key: string]: boolean
+      }
+      workspace_alias_by_project_branch?: {
+        [key: string]: {
+          [key: string]: string
+        }
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "last_project_id" },
+            { in: "body", key: "open_project_ids" },
+            { in: "body", key: "last_session_by_project" },
+            { in: "body", key: "workspace_mode_by_project" },
+            { in: "body", key: "workspace_order_by_project" },
+            { in: "body", key: "workspace_expanded_by_directory" },
+            { in: "body", key: "workspace_alias_by_project_branch" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      AccountContextStateUpdateResponses,
+      AccountContextStateUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/account/context/state",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Context extends HeyApiClient {
+  /**
+   * Current account project UI state
+   *
+   * Get the database-backed, account-scoped project UI state.
+   */
+  public state<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<AccountContextStateResponses, AccountContextStateErrors, ThrowOnError>({
+      url: "/account/context/state",
+      ...options,
+    })
+  }
+
+  private _state?: State
+  get state2(): State {
+    return (this._state ??= new State({ client: this.client }))
+  }
+}
+
+export class Plan extends HeyApiClient {
+  /**
+   * Save plan
+   *
+   * Persist plan agent output into account plan records.
+   */
+  public save<ThrowOnError extends boolean = false>(
+    parameters?: {
+      session_id?: string
+      message_id?: string
+      part_id?: string
+      vho_feedback_no?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "session_id" },
+            { in: "body", key: "message_id" },
+            { in: "body", key: "part_id" },
+            { in: "body", key: "vho_feedback_no" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AccountPlanSaveResponses, AccountPlanSaveErrors, ThrowOnError>({
+      url: "/account/plan/save",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 }
@@ -683,6 +945,16 @@ export class Account extends HeyApiClient {
     return (this._logout ??= new Logout({ client: this.client }))
   }
 
+  private _context?: Context
+  get context(): Context {
+    return (this._context ??= new Context({ client: this.client }))
+  }
+
+  private _plan?: Plan
+  get plan(): Plan {
+    return (this._plan ??= new Plan({ client: this.client }))
+  }
+
   private _me?: Me
   get me2(): Me {
     return (this._me ??= new Me({ client: this.client }))
@@ -698,7 +970,7 @@ export class Project extends HeyApiClient {
   /**
    * List all projects
    *
-   * Get a list of projects that have been opened with OpenCode.
+   * Get a list of projects that have been opened with TpCode.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -717,7 +989,7 @@ export class Project extends HeyApiClient {
   /**
    * Get current project
    *
-   * Retrieve the currently active project that OpenCode is working with.
+   * Retrieve the currently active project that TpCode is working with.
    */
   public current<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -788,7 +1060,7 @@ export class Pty extends HeyApiClient {
   /**
    * List PTY sessions
    *
-   * Get a list of all active pseudo-terminal (PTY) sessions managed by OpenCode.
+   * Get a list of all active pseudo-terminal (PTY) sessions managed by TpCode.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -986,7 +1258,7 @@ export class Config2 extends HeyApiClient {
   /**
    * Get configuration
    *
-   * Retrieve the current OpenCode configuration settings and preferences.
+   * Retrieve the current TpCode configuration settings and preferences.
    */
   public get<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1005,7 +1277,7 @@ export class Config2 extends HeyApiClient {
   /**
    * Update configuration
    *
-   * Update OpenCode configuration settings and preferences.
+   * Update TpCode configuration settings and preferences.
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1341,7 +1613,7 @@ export class Session extends HeyApiClient {
   /**
    * List sessions
    *
-   * Get a list of all OpenCode sessions across projects, sorted by most recently updated. Archived sessions are excluded by default.
+   * Get a list of all TpCode sessions across projects, sorted by most recently updated. Archived sessions are excluded by default.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1421,7 +1693,7 @@ export class Session2 extends HeyApiClient {
   /**
    * List sessions
    *
-   * Get a list of all OpenCode sessions, sorted by most recently updated.
+   * Get a list of all TpCode sessions, sorted by most recently updated.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1457,7 +1729,7 @@ export class Session2 extends HeyApiClient {
   /**
    * Create session
    *
-   * Create a new OpenCode session for interacting with AI assistants and managing conversations.
+   * Create a new TpCode session for interacting with AI assistants and managing conversations.
    */
   public create<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1515,6 +1787,38 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * Get session voice audio
+   *
+   * Retrieve a stored voice recording for a specific session.
+   */
+  public voice<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      voiceID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "voiceID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionVoiceResponses, SessionVoiceErrors, ThrowOnError>({
+      url: "/session/{sessionID}/voice/{voiceID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
    * Delete session
    *
    * Delete a session and permanently remove all associated data, including messages and history.
@@ -1547,7 +1851,7 @@ export class Session2 extends HeyApiClient {
   /**
    * Get session
    *
-   * Retrieve detailed information about a specific OpenCode session.
+   * Retrieve detailed information about a specific TpCode session.
    */
   public get<ThrowOnError extends boolean = false>(
     parameters: {
@@ -2155,6 +2459,8 @@ export class Session2 extends HeyApiClient {
         mime: string
         filename?: string
         url: string
+        duration_ms?: number
+        forModel?: boolean
         source?: FilePartSource
       }>
     },
@@ -2475,6 +2781,493 @@ export class Permission extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+}
+
+export class Reviewer extends HeyApiClient {
+  /**
+   * List reviewers
+   *
+   * List candidates that can be selected as reviewers when submitting approval.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "directory" }] }])
+    return (options?.client ?? this.client).get<
+      ApprovalReviewerListResponses,
+      ApprovalReviewerListErrors,
+      ThrowOnError
+    >({
+      url: "/approval/reviewer",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class ChangeRequest extends HeyApiClient {
+  /**
+   * List change requests
+   *
+   * List approval change requests with scope isolation.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      status?: string
+      mine?: boolean
+      reviewer_only?: boolean
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "status" },
+            { in: "query", key: "mine" },
+            { in: "query", key: "reviewer_only" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ApprovalChangeRequestListResponses,
+      ApprovalChangeRequestListErrors,
+      ThrowOnError
+    >({
+      url: "/approval/change-request",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Create change request
+   *
+   * Create a draft approval change request.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      page_id?: string
+      session_id?: string
+      title?: string
+      description?: string
+      ai_plan?: string
+      ai_prototype_url?: string
+      ai_score?: number
+      ai_revenue_assessment?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "page_id" },
+            { in: "body", key: "session_id" },
+            { in: "body", key: "title" },
+            { in: "body", key: "description" },
+            { in: "body", key: "ai_plan" },
+            { in: "body", key: "ai_prototype_url" },
+            { in: "body", key: "ai_score" },
+            { in: "body", key: "ai_revenue_assessment" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ApprovalChangeRequestCreateResponses,
+      ApprovalChangeRequestCreateErrors,
+      ThrowOnError
+    >({
+      url: "/approval/change-request",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Get change request detail
+   *
+   * Get change request with approvals and timeline.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      change_request_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "change_request_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ApprovalChangeRequestGetResponses,
+      ApprovalChangeRequestGetErrors,
+      ThrowOnError
+    >({
+      url: "/approval/change-request/{change_request_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update change request
+   *
+   * Update draft/rejected/confirmed change request fields.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      change_request_id: string
+      directory?: string
+      title?: string
+      description?: string
+      ai_plan?: string
+      ai_prototype_url?: string
+      ai_score?: number
+      ai_revenue_assessment?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "change_request_id" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "title" },
+            { in: "body", key: "description" },
+            { in: "body", key: "ai_plan" },
+            { in: "body", key: "ai_prototype_url" },
+            { in: "body", key: "ai_score" },
+            { in: "body", key: "ai_revenue_assessment" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      ApprovalChangeRequestUpdateResponses,
+      ApprovalChangeRequestUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/approval/change-request/{change_request_id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Confirm prototype
+   *
+   * Confirm prototype before submit review.
+   */
+  public confirm<ThrowOnError extends boolean = false>(
+    parameters: {
+      change_request_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "change_request_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ApprovalChangeRequestConfirmResponses,
+      ApprovalChangeRequestConfirmErrors,
+      ThrowOnError
+    >({
+      url: "/approval/change-request/{change_request_id}/confirm",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Submit approval
+   *
+   * Submit change request with ordered reviewer list.
+   */
+  public submit<ThrowOnError extends boolean = false>(
+    parameters: {
+      change_request_id: string
+      directory?: string
+      reviewer_ids?: Array<string>
+      ai_score?: number
+      ai_revenue_assessment?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "change_request_id" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "reviewer_ids" },
+            { in: "body", key: "ai_score" },
+            { in: "body", key: "ai_revenue_assessment" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ApprovalChangeRequestSubmitResponses,
+      ApprovalChangeRequestSubmitErrors,
+      ThrowOnError
+    >({
+      url: "/approval/change-request/{change_request_id}/submit",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Mark executing
+   *
+   * Mark approved request as executing.
+   */
+  public executing<ThrowOnError extends boolean = false>(
+    parameters: {
+      change_request_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "change_request_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ApprovalChangeRequestExecutingResponses,
+      ApprovalChangeRequestExecutingErrors,
+      ThrowOnError
+    >({
+      url: "/approval/change-request/{change_request_id}/executing",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Mark completed
+   *
+   * Mark executing request as completed.
+   */
+  public completed<ThrowOnError extends boolean = false>(
+    parameters: {
+      change_request_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "change_request_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ApprovalChangeRequestCompletedResponses,
+      ApprovalChangeRequestCompletedErrors,
+      ThrowOnError
+    >({
+      url: "/approval/change-request/{change_request_id}/completed",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Review extends HeyApiClient {
+  /**
+   * List reviews
+   *
+   * List approval review tasks.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      status?: "pending" | "approved" | "rejected"
+      mine?: boolean
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "status" },
+            { in: "query", key: "mine" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ApprovalReviewListResponses, ApprovalReviewListErrors, ThrowOnError>({
+      url: "/approval/review",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Approve review
+   *
+   * Approve one review step.
+   */
+  public approve<ThrowOnError extends boolean = false>(
+    parameters: {
+      approval_id: string
+      directory?: string
+      comment?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "approval_id" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "comment" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ApprovalReviewApproveResponses,
+      ApprovalReviewApproveErrors,
+      ThrowOnError
+    >({
+      url: "/approval/review/{approval_id}/approve",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Reject review
+   *
+   * Reject one review step.
+   */
+  public reject<ThrowOnError extends boolean = false>(
+    parameters: {
+      approval_id: string
+      directory?: string
+      comment?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "approval_id" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "comment" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ApprovalReviewRejectResponses,
+      ApprovalReviewRejectErrors,
+      ThrowOnError
+    >({
+      url: "/approval/review/{approval_id}/reject",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Approval extends HeyApiClient {
+  private _reviewer?: Reviewer
+  get reviewer(): Reviewer {
+    return (this._reviewer ??= new Reviewer({ client: this.client }))
+  }
+
+  private _changeRequest?: ChangeRequest
+  get changeRequest(): ChangeRequest {
+    return (this._changeRequest ??= new ChangeRequest({ client: this.client }))
+  }
+
+  private _review?: Review
+  get review(): Review {
+    return (this._review ??= new Review({ client: this.client }))
   }
 }
 
@@ -3488,7 +4281,7 @@ export class Instance extends HeyApiClient {
   /**
    * Dispose instance
    *
-   * Clean up and dispose the current OpenCode instance, releasing all resources.
+   * Clean up and dispose the current TpCode instance, releasing all resources.
    */
   public dispose<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3509,7 +4302,7 @@ export class Path extends HeyApiClient {
   /**
    * Get paths
    *
-   * Retrieve the current working directory and related path information for the OpenCode instance.
+   * Retrieve the current working directory and related path information for the TpCode instance.
    */
   public get<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3551,7 +4344,7 @@ export class Command extends HeyApiClient {
   /**
    * List commands
    *
-   * Get a list of all available commands in the OpenCode system.
+   * Get a list of all available commands in the TpCode system.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3615,7 +4408,7 @@ export class App extends HeyApiClient {
   /**
    * List agents
    *
-   * Get a list of all available AI agents in the OpenCode system.
+   * Get a list of all available AI agents in the TpCode system.
    */
   public agents<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3634,7 +4427,7 @@ export class App extends HeyApiClient {
   /**
    * List skills
    *
-   * Get a list of all available skills in the OpenCode system.
+   * Get a list of all available skills in the TpCode system.
    */
   public skills<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3720,6 +4513,506 @@ export class OpencodeClient extends HeyApiClient {
   constructor(args?: { client?: Client; key?: string }) {
     super(args)
     OpencodeClient.__registry.set(this, args?.key)
+  }
+
+  public getAccountMeVhoBind<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<GetAccountMeVhoBindResponses, unknown, ThrowOnError>({
+      url: "/account/me/vho-bind",
+      ...options,
+    })
+  }
+
+  public postAccountMeVhoBind<ThrowOnError extends boolean = false>(
+    parameters?: {
+      phone?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "phone" }] }])
+    return (options?.client ?? this.client).post<PostAccountMeVhoBindResponses, unknown, ThrowOnError>({
+      url: "/account/me/vho-bind",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public postAccountContextSelect<ThrowOnError extends boolean = false>(
+    parameters?: {
+      project_id?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "project_id" }] }])
+    return (options?.client ?? this.client).post<PostAccountContextSelectResponses, unknown, ThrowOnError>({
+      url: "/account/context/select",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public putAccountMeProviderControl<ThrowOnError extends boolean = false>(
+    parameters?: {
+      enabled_providers?: Array<string>
+      disabled_providers?: Array<string>
+      model?: string
+      small_model?: string
+      model_prefs?: {
+        visibility?: {
+          [key: string]: "show" | "hide"
+        }
+        favorite?: Array<string>
+        recent?: Array<string>
+        variant?: {
+          [key: string]: string
+        }
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "enabled_providers" },
+            { in: "body", key: "disabled_providers" },
+            { in: "body", key: "model" },
+            { in: "body", key: "small_model" },
+            { in: "body", key: "model_prefs" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<PutAccountMeProviderControlResponses, unknown, ThrowOnError>({
+      url: "/account/me/provider-control",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public deleteAccountMeProvidersProviderIdConfig<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).delete<
+      DeleteAccountMeProvidersProviderIdConfigResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/me/providers/{provider_id}/config",
+      ...options,
+      ...params,
+    })
+  }
+
+  public getAccountMeProvidersProviderIdConfig<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).get<GetAccountMeProvidersProviderIdConfigResponses, unknown, ThrowOnError>({
+      url: "/account/me/providers/{provider_id}/config",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountMeProvidersProviderIdConfig<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+      providerConfig?: ProviderConfig
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "provider_id" },
+            { key: "providerConfig", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<PutAccountMeProvidersProviderIdConfigResponses, unknown, ThrowOnError>({
+      url: "/account/me/providers/{provider_id}/config",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public patchAccountMeProvidersProviderIdDisabled<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+      disabled?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "provider_id" },
+            { in: "body", key: "disabled" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      PatchAccountMeProvidersProviderIdDisabledResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/me/providers/{provider_id}/disabled",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public putAccountMeModelPrefs<ThrowOnError extends boolean = false>(
+    parameters?: {
+      visibility?: {
+        [key: string]: "show" | "hide"
+      }
+      favorite?: Array<string>
+      recent?: Array<string>
+      variant?: {
+        [key: string]: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "visibility" },
+            { in: "body", key: "favorite" },
+            { in: "body", key: "recent" },
+            { in: "body", key: "variant" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<PutAccountMeModelPrefsResponses, unknown, ThrowOnError>({
+      url: "/account/me/model-prefs",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminRoles<ThrowOnError extends boolean = false>(
+    parameters?: {
+      page?: number
+      page_size?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "page" },
+            { in: "query", key: "page_size" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GetAccountAdminRolesResponses, unknown, ThrowOnError>({
+      url: "/account/admin/roles",
+      ...options,
+      ...params,
+    })
+  }
+
+  public postAccountAdminRoles<ThrowOnError extends boolean = false>(
+    parameters?: {
+      code?: string
+      name?: string
+      scope?: "system" | "org"
+      description?: string
+      permission_codes?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "code" },
+            { in: "body", key: "name" },
+            { in: "body", key: "scope" },
+            { in: "body", key: "description" },
+            { in: "body", key: "permission_codes" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PostAccountAdminRolesResponses, unknown, ThrowOnError>({
+      url: "/account/admin/roles",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminFsDirectories<ThrowOnError extends boolean = false>(
+    parameters?: {
+      path?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "path" }] }])
+    return (options?.client ?? this.client).get<GetAccountAdminFsDirectoriesResponses, unknown, ThrowOnError>({
+      url: "/account/admin/fs/directories",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminSettingsProjectScanRoot<ThrowOnError extends boolean = false>(
+    parameters?: {
+      project_scan_root?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "project_scan_root" }] }])
+    return (options?.client ?? this.client).put<PutAccountAdminSettingsProjectScanRootResponses, unknown, ThrowOnError>(
+      {
+        url: "/account/admin/settings/project-scan-root",
+        ...options,
+        ...params,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+          ...params.headers,
+        },
+      },
+    )
+  }
+
+  public getAccountAdminProjectsCatalog<ThrowOnError extends boolean = false>(
+    parameters?: {
+      source?: "all" | "registered" | "scanned"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "source" }] }])
+    return (options?.client ?? this.client).get<GetAccountAdminProjectsCatalogResponses, unknown, ThrowOnError>({
+      url: "/account/admin/projects/catalog",
+      ...options,
+      ...params,
+    })
+  }
+
+  public postAccountAdminProducts<ThrowOnError extends boolean = false>(
+    parameters?: {
+      name?: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "name" },
+            { in: "body", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PostAccountAdminProductsResponses, unknown, ThrowOnError>({
+      url: "/account/admin/products",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public deleteAccountAdminProductsProductId<ThrowOnError extends boolean = false>(
+    parameters: {
+      product_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "product_id" }] }])
+    return (options?.client ?? this.client).delete<DeleteAccountAdminProductsProductIdResponses, unknown, ThrowOnError>(
+      {
+        url: "/account/admin/products/{product_id}",
+        ...options,
+        ...params,
+      },
+    )
+  }
+
+  public patchAccountAdminProductsProductId<ThrowOnError extends boolean = false>(
+    parameters: {
+      product_id: string
+      name?: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "product_id" },
+            { in: "body", key: "name" },
+            { in: "body", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<PatchAccountAdminProductsProductIdResponses, unknown, ThrowOnError>({
+      url: "/account/admin/products/{product_id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminRolesRoleCodeProducts<ThrowOnError extends boolean = false>(
+    parameters: {
+      role_code: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "role_code" }] }])
+    return (options?.client ?? this.client).get<GetAccountAdminRolesRoleCodeProductsResponses, unknown, ThrowOnError>({
+      url: "/account/admin/roles/{role_code}/products",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminRolesRoleCodeProducts<ThrowOnError extends boolean = false>(
+    parameters: {
+      role_code: string
+      product_ids?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "role_code" },
+            { in: "body", key: "product_ids" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<PutAccountAdminRolesRoleCodeProductsResponses, unknown, ThrowOnError>({
+      url: "/account/admin/roles/{role_code}/products",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminRolesRoleCodeProjects<ThrowOnError extends boolean = false>(
+    parameters: {
+      role_code: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "role_code" }] }])
+    return (options?.client ?? this.client).get<GetAccountAdminRolesRoleCodeProjectsResponses, unknown, ThrowOnError>({
+      url: "/account/admin/roles/{role_code}/projects",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminRolesRoleCodeProjects<ThrowOnError extends boolean = false>(
+    parameters: {
+      role_code: string
+      project_ids?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "role_code" },
+            { in: "body", key: "project_ids" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<PutAccountAdminRolesRoleCodeProjectsResponses, unknown, ThrowOnError>({
+      url: "/account/admin/roles/{role_code}/projects",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
   }
 
   public postAccountAdminRolesRoleCodePermissions<ThrowOnError extends boolean = false>(
@@ -3808,6 +5101,153 @@ export class OpencodeClient extends HeyApiClient {
     })
   }
 
+  public getAccountAdminProjectAccessRole<ThrowOnError extends boolean = false>(
+    parameters?: {
+      project_id?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "project_id" }] }])
+    return (options?.client ?? this.client).get<GetAccountAdminProjectAccessRoleResponses, unknown, ThrowOnError>({
+      url: "/account/admin/project-access/role",
+      ...options,
+      ...params,
+    })
+  }
+
+  public postAccountAdminProjectAccessRole<ThrowOnError extends boolean = false>(
+    parameters?: {
+      project_id?: string
+      role_codes?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "project_id" },
+            { in: "body", key: "role_codes" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PostAccountAdminProjectAccessRoleResponses, unknown, ThrowOnError>({
+      url: "/account/admin/project-access/role",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminProjectAccessUser<ThrowOnError extends boolean = false>(
+    parameters?: {
+      project_id?: string
+      user_id?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "project_id" },
+            { in: "query", key: "user_id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GetAccountAdminProjectAccessUserResponses, unknown, ThrowOnError>({
+      url: "/account/admin/project-access/user",
+      ...options,
+      ...params,
+    })
+  }
+
+  public postAccountAdminProjectAccessUser<ThrowOnError extends boolean = false>(
+    parameters?: {
+      project_id?: string
+      user_id?: string
+      mode?: "allow" | "deny" | "remove"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "project_id" },
+            { in: "body", key: "user_id" },
+            { in: "body", key: "mode" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PostAccountAdminProjectAccessUserResponses, unknown, ThrowOnError>({
+      url: "/account/admin/project-access/user",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminVhoBind<ThrowOnError extends boolean = false>(
+    parameters?: {
+      keyword?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "keyword" }] }])
+    return (options?.client ?? this.client).get<GetAccountAdminVhoBindResponses, unknown, ThrowOnError>({
+      url: "/account/admin/vho-bind",
+      ...options,
+      ...params,
+    })
+  }
+
+  public postAccountAdminVhoBind<ThrowOnError extends boolean = false>(
+    parameters?: {
+      user_id?: string
+      vho_user_id?: string
+      phone?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "user_id" },
+            { in: "body", key: "vho_user_id" },
+            { in: "body", key: "phone" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PostAccountAdminVhoBindResponses, unknown, ThrowOnError>({
+      url: "/account/admin/vho-bind",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
   public getAccountAdminAudit<ThrowOnError extends boolean = false>(
     parameters?: {
       actor_user_id?: string
@@ -3840,6 +5280,8 @@ export class OpencodeClient extends HeyApiClient {
       org_id?: string
       department_id?: string
       keyword?: string
+      page?: number
+      page_size?: number
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -3851,6 +5293,8 @@ export class OpencodeClient extends HeyApiClient {
             { in: "query", key: "org_id" },
             { in: "query", key: "department_id" },
             { in: "query", key: "keyword" },
+            { in: "query", key: "page" },
+            { in: "query", key: "page_size" },
           ],
         },
       ],
@@ -3936,6 +5380,327 @@ export class OpencodeClient extends HeyApiClient {
     )
     return (options?.client ?? this.client).patch<PatchAccountAdminUsersUserIdResponses, unknown, ThrowOnError>({
       url: "/account/admin/users/{user_id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public postAccountAdminUsersUserIdPasswordReset<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "user_id" }] }])
+    return (options?.client ?? this.client).post<
+      PostAccountAdminUsersUserIdPasswordResetResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/users/{user_id}/password/reset",
+      ...options,
+      ...params,
+    })
+  }
+
+  public getAccountAdminUsersUserIdProviders<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "user_id" }] }])
+    return (options?.client ?? this.client).get<GetAccountAdminUsersUserIdProvidersResponses, unknown, ThrowOnError>({
+      url: "/account/admin/users/{user_id}/providers",
+      ...options,
+      ...params,
+    })
+  }
+
+  public deleteAccountAdminUsersUserIdProvidersProviderId<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "path", key: "provider_id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      DeleteAccountAdminUsersUserIdProvidersProviderIdResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/users/{user_id}/providers/{provider_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminUsersUserIdProvidersProviderId<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      provider_id: string
+      auth?: Auth3
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "path", key: "provider_id" },
+            { key: "auth", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      PutAccountAdminUsersUserIdProvidersProviderIdResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/users/{user_id}/providers/{provider_id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminUsersUserIdProviderControl<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "user_id" }] }])
+    return (options?.client ?? this.client).get<
+      GetAccountAdminUsersUserIdProviderControlResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/users/{user_id}/provider-control",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminUsersUserIdProviderControl<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      enabled_providers?: Array<string>
+      disabled_providers?: Array<string>
+      model?: string
+      small_model?: string
+      model_prefs?: {
+        visibility?: {
+          [key: string]: "show" | "hide"
+        }
+        favorite?: Array<string>
+        recent?: Array<string>
+        variant?: {
+          [key: string]: string
+        }
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "body", key: "enabled_providers" },
+            { in: "body", key: "disabled_providers" },
+            { in: "body", key: "model" },
+            { in: "body", key: "small_model" },
+            { in: "body", key: "model_prefs" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      PutAccountAdminUsersUserIdProviderControlResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/users/{user_id}/provider-control",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminUsersUserIdProvidersProviderIdConfig<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "path", key: "provider_id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      GetAccountAdminUsersUserIdProvidersProviderIdConfigResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/users/{user_id}/providers/{provider_id}/config",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminUsersUserIdProvidersProviderIdConfig<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      provider_id: string
+      providerConfig?: ProviderConfig
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "path", key: "provider_id" },
+            { key: "providerConfig", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      PutAccountAdminUsersUserIdProvidersProviderIdConfigResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/users/{user_id}/providers/{provider_id}/config",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public patchAccountAdminUsersUserIdProvidersProviderIdDisabled<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      provider_id: string
+      disabled?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "path", key: "provider_id" },
+            { in: "body", key: "disabled" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      PatchAccountAdminUsersUserIdProvidersProviderIdDisabledResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/users/{user_id}/providers/{provider_id}/disabled",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminUsersUserIdModelPrefs<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "user_id" }] }])
+    return (options?.client ?? this.client).get<GetAccountAdminUsersUserIdModelPrefsResponses, unknown, ThrowOnError>({
+      url: "/account/admin/users/{user_id}/model-prefs",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminUsersUserIdModelPrefs<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+      visibility?: {
+        [key: string]: "show" | "hide"
+      }
+      favorite?: Array<string>
+      recent?: Array<string>
+      variant?: {
+        [key: string]: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "user_id" },
+            { in: "body", key: "visibility" },
+            { in: "body", key: "favorite" },
+            { in: "body", key: "recent" },
+            { in: "body", key: "variant" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<PutAccountAdminUsersUserIdModelPrefsResponses, unknown, ThrowOnError>({
+      url: "/account/admin/users/{user_id}/model-prefs",
       ...options,
       ...params,
       headers: {
@@ -4034,6 +5799,11 @@ export class OpencodeClient extends HeyApiClient {
   private _permission?: Permission
   get permission(): Permission {
     return (this._permission ??= new Permission({ client: this.client }))
+  }
+
+  private _approval?: Approval
+  get approval(): Approval {
+    return (this._approval ??= new Approval({ client: this.client }))
   }
 
   private _question?: Question

@@ -917,6 +917,24 @@ export namespace Config {
       mdns: z.boolean().optional().describe("Enable mDNS service discovery"),
       mdnsDomain: z.string().optional().describe("Custom domain name for mDNS service (default: opencode.local)"),
       cors: z.array(z.string()).optional().describe("Additional domains to allow for CORS"),
+      gateway: z
+        .object({
+          enabled: z.boolean().optional().describe("Enable gateway write protection and drain mode"),
+          nodeId: z.string().optional().describe("Node ID exposed for gateway routing and observability"),
+          drain: z.boolean().optional().describe("Mark server not-ready for gateway health checks"),
+          maxWriteInflight: z.number().int().positive().optional().describe("Maximum concurrent write requests"),
+          rejectWriteOnOverload: z
+            .boolean()
+            .optional()
+            .describe("Reject write requests when maxWriteInflight is exceeded"),
+          webEnabled: z
+            .boolean()
+            .optional()
+            .describe("Enable bundled web defaulting to configured gateway web url"),
+          webUrl: z.string().optional().describe("Gateway url used by bundled web as default api endpoint"),
+        })
+        .strict()
+        .optional(),
     })
     .strict()
     .meta({

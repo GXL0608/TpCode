@@ -47,6 +47,7 @@ import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
 import { AccountCurrent } from "@/user/current"
 import { ServerDegraded, ServerDegradedEvent } from "./degraded"
+import { GatewayState } from "./gateway-state"
 import {
   createEventVisibilityCache,
   eventSessionID,
@@ -56,6 +57,8 @@ import {
 import { AccountContextService } from "@/user/context"
 import { Project } from "@/project/project"
 import { Filesystem } from "@/util/filesystem"
+import { Installation } from "@/installation"
+import { resolveWebGateway, webGatewayBootstrap } from "./web-gateway"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -69,6 +72,8 @@ export namespace Server {
   let _corsWhitelist: string[] = []
   let _webRoot: string | undefined
   let _webResolved = false
+  let _webGatewayEnabled = false
+  let _webGatewayURL: string | undefined
 
   export function url(): URL {
     return _url ?? new URL("http://localhost:4096")
@@ -129,6 +134,19 @@ export namespace Server {
     return false
   }
 
+  function writeRequest(method: string) {
+    return method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE"
+  }
+
+  function bypassWrite(path: string) {
+    return (
+      path === "/global/drain" ||
+      path === "/log" ||
+      path === "/account/login" ||
+      path === "/account/token/refresh"
+    )
+  }
+
   function webRoots() {
     const roots = [
       process.env["OPENCODE_WEB_DIST"],
@@ -173,6 +191,25 @@ export namespace Server {
     return path.join(root, normalized)
   }
 
+  async function webIndex(root: string) {
+    const index = webFile(root, "index.html")
+    if (!index) return
+    const file = Bun.file(index)
+    if (!(await file.exists())) return
+    const bootstrap = webGatewayBootstrap({
+      enabled: _webGatewayEnabled,
+      url: _webGatewayURL,
+    })
+    if (!bootstrap) return new Response(file)
+    const html = await file.text()
+    const body = html.includes("</head>") ? html.replace("</head>", `${bootstrap}</head>`) : `${bootstrap}${html}`
+    return new Response(body, {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+      },
+    })
+  }
+
   async function webLocal(pathname: string) {
     const root = webRoot()
     if (!root) return
@@ -180,17 +217,16 @@ export namespace Server {
     const asset = webFile(root, request)
     if (asset) {
       const file = Bun.file(asset)
-      if (await file.exists()) return new Response(file)
+      if (await file.exists()) {
+        if (request !== "index.html") return new Response(file)
+        return webIndex(root)
+      }
     }
 
     const input = request.replace(/^\/+/, "")
     if (input && path.extname(input)) return
 
-    const index = webFile(root, "index.html")
-    if (!index) return
-    const file = Bun.file(index)
-    if (!(await file.exists())) return
-    return new Response(file)
+    return webIndex(root)
   }
 
   export const App: () => Hono = lazy(
@@ -264,6 +300,7 @@ export namespace Server {
               "/account/password/forgot/reset",
               "/account/token/refresh",
               "/global/health",
+              "/global/ready",
               "/doc",
             ]
             const protectedPaths = [
@@ -408,6 +445,7 @@ export namespace Server {
               if (
                 !path.startsWith("/account") &&
                 path !== "/global/health" &&
+                path !== "/global/ready" &&
                 path !== "/agent" &&
                 !contextOptional &&
                 !user.context_project_id &&
@@ -460,6 +498,27 @@ export namespace Server {
                 duration,
               })
             }
+          }
+        })
+        .use(async (c, next) => {
+          if (!writeRequest(c.req.method)) return next()
+          if (bypassWrite(c.req.path)) return next()
+          const attempt = GatewayState.tryEnterWrite()
+          if (!attempt.ok) {
+            c.header("Retry-After", String(Math.max(1, Math.ceil(attempt.retryAfterMs / 1000))))
+            return c.json(
+              {
+                error: "server_busy",
+                code: attempt.code,
+                retry_after_ms: attempt.retryAfterMs,
+              },
+              503,
+            )
+          }
+          try {
+            return await next()
+          } finally {
+            GatewayState.leaveWrite()
           }
         })
         .route("/global", GlobalRoutes())
@@ -1168,8 +1227,24 @@ export namespace Server {
     mdns?: boolean
     mdnsDomain?: string
     cors?: string[]
+    gateway?: {
+      enabled?: boolean
+      nodeId?: string
+      drain?: boolean
+      maxWriteInflight?: number
+      rejectWriteOnOverload?: boolean
+      webEnabled?: boolean
+      webUrl?: string
+    }
   }) {
     _corsWhitelist = opts.cors ?? []
+    const web = resolveWebGateway({
+      enabled: opts.gateway?.webEnabled,
+      url: opts.gateway?.webUrl,
+      defaultEnabled: !Installation.isLocal(),
+    })
+    _webGatewayEnabled = web.enabled
+    _webGatewayURL = web.url
     webRoot()
 
     const idleTimeout = Number(process.env.OPENCODE_SERVER_IDLE_TIMEOUT ?? "120")
@@ -1190,6 +1265,15 @@ export namespace Server {
     if (!server) throw new Error(`Failed to start server on port ${opts.port}`)
 
     _url = server.url
+    GatewayState.init({
+      enabled: opts.gateway?.enabled,
+      nodeId: opts.gateway?.nodeId,
+      drain: opts.gateway?.drain,
+      maxWriteInflight: opts.gateway?.maxWriteInflight,
+      rejectWriteOnOverload: opts.gateway?.rejectWriteOnOverload,
+      host: opts.hostname,
+      port: server.port,
+    })
 
     const shouldPublishMDNS =
       opts.mdns &&

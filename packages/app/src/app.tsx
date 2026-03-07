@@ -181,6 +181,7 @@ declare global {
       updaterEnabled?: boolean
       deepLinks?: string[]
       wsl?: boolean
+      serverUrl?: string
     }
   }
 }
