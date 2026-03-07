@@ -1258,6 +1258,13 @@ export namespace UserService {
     return "developer"
   }
 
+  function userStatus(input?: string) {
+    const value = input?.trim().toLowerCase()
+    if (!value) return "active" as const
+    if (["0", "active", "enabled", "true", "在职", "启用"].includes(value)) return "active" as const
+    return "inactive" as const
+  }
+
   async function roleIDs(codes: string[]) {
     if (codes.length === 0) return [] as string[]
     const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, codes)).all())
@@ -1828,6 +1835,172 @@ export namespace UserService {
       user_agent: input.user_agent,
     })
     return { ok: true as const, id: user_id }
+  }
+
+  export async function importVhoUsers(input: {
+    rows: {
+      user_id: string
+      username: string
+      password_hash: string
+      password_salt: string
+      display_name?: string
+      phone?: string
+      status?: string
+    }[]
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    await ensureSeed()
+    const org = await orgByCode("tp_internal")
+    if (!org) return { ok: false as const, code: "org_missing" }
+    const role_ids = await roleIDs(["developer"])
+    if (role_ids.length !== 1) return { ok: false as const, code: "role_missing" }
+    const usernames = [...new Set(input.rows.map((item) => item.username.trim()).filter(Boolean))]
+    const existing =
+      usernames.length === 0
+        ? []
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpUserTable)
+              .where(inArray(TpUserTable.username, usernames))
+              .all(),
+          )
+    const users = new Map(existing.map((item) => [item.username, item]))
+    const result = {
+      created: 0,
+      updated: 0,
+      conflict: 0,
+      invalid_password: 0,
+      invalid_phone: 0,
+      skipped: 0,
+    }
+
+    await Database.use(async (db) => {
+      for (const item of input.rows) {
+        const username = item.username.trim()
+        const user_id = item.user_id.trim()
+        if (!username || !user_id) {
+          result.skipped += 1
+          continue
+        }
+        const password_hash = UserPassword.encodeEmployee({
+          salt: item.password_salt,
+          hash: item.password_hash,
+        })
+        if (!password_hash) {
+          result.invalid_password += 1
+          continue
+        }
+        const raw_phone = item.phone?.trim()
+        const item_phone = raw_phone ? UserPhone.normalize(raw_phone) : undefined
+        const phone = item_phone ?? UserPhone.normalize(username)
+        if (raw_phone && !item_phone) {
+          result.invalid_phone += 1
+        }
+        const display_name = item.display_name?.trim() || username
+        const status = userStatus(item.status)
+        const row = users.get(username)
+        if (!row) {
+          const id = ulid()
+          await db.insert(TpUserTable)
+            .values({
+              id,
+              username,
+              password_hash,
+              display_name,
+              phone,
+              account_type: "internal",
+              org_id: org.id,
+              status,
+              force_password_reset: false,
+              external_source: "vho",
+              vho_user_id: user_id,
+            })
+            .run()
+          await db.insert(TpUserRoleTable)
+            .values({
+              user_id: id,
+              role_id: role_ids[0],
+            })
+            .onConflictDoNothing()
+            .run()
+          users.set(username, {
+            id,
+            username,
+            password_hash,
+            display_name,
+            email: null,
+            phone: phone ?? null,
+            account_type: "internal",
+            org_id: org.id,
+            department_id: null,
+            status,
+            force_password_reset: false,
+            failed_login_count: 0,
+            locked_until: null,
+            vho_user_id: user_id,
+            external_source: "vho",
+            last_login_at: null,
+            last_login_ip: null,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          })
+          result.created += 1
+          continue
+        }
+        if ((row.external_source ?? "").trim() !== "vho") {
+          result.conflict += 1
+          continue
+        }
+        const next_phone = phone ?? row.phone ?? null
+        await db.update(TpUserTable)
+          .set({
+            password_hash,
+            display_name,
+            phone: next_phone,
+            account_type: "internal",
+            org_id: org.id,
+            status,
+            force_password_reset: false,
+            external_source: "vho",
+            vho_user_id: user_id,
+            time_updated: Date.now(),
+          })
+          .where(eq(TpUserTable.id, row.id))
+          .run()
+        users.set(username, {
+          ...row,
+          password_hash,
+          display_name,
+          phone: next_phone,
+          account_type: "internal",
+          org_id: org.id,
+          status,
+          force_password_reset: false,
+          external_source: "vho",
+          vho_user_id: user_id,
+          time_updated: Date.now(),
+        })
+        invalidateByUserID(row.id)
+        result.updated += 1
+      }
+    })
+
+    auditLater({
+      actor_user_id: input.actor_user_id,
+      action: "account.user.import.vho",
+      target_type: "tp_user",
+      result: "success",
+      detail_json: result,
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return {
+      ok: true as const,
+      ...result,
+    }
   }
 
   export async function setUserRoles(input: {

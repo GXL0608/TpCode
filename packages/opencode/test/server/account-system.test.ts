@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import path from "path"
+import { pbkdf2Sync } from "crypto"
 import { Log } from "../../src/util/log"
 import { and, Database, eq } from "../../src/storage/db"
 import { TpAuditLogTable } from "../../src/user/audit-log.sql"
@@ -642,5 +643,90 @@ describe("account system", () => {
     expect(row?.detail_json?.reviewer_user_id).toBe(userID)
     expect(row?.detail_json?.executor_user_id).toBe(userID)
     expect(row?.detail_json?.review_mode).toBe("self_review_default")
+  })
+
+  test.skipIf(!accountEnabled)("imported VHO user can login with employee password and is marked bound", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("vho_user")
+    const password = "Pass1234"
+    const salt = "0123456789abcdef0123456789abcdef"
+    const password_hash = pbkdf2Sync(password, Buffer.from(salt, "hex"), 1000, 8, "sha1").toString("hex")
+    const vho_user_id = uid("vho_id")
+    const imported = await service.importVhoUsers({
+      rows: [
+        {
+          user_id: vho_user_id,
+          username,
+          password_hash,
+          password_salt: salt,
+          display_name: "VHO User",
+        },
+      ],
+    })
+    expect(imported.ok).toBe(true)
+    if (!imported.ok) throw new Error("import_failed")
+    expect(imported.created).toBe(1)
+
+    const token = await login(username, password)
+    const response = await call({
+      path: "/account/me/vho-bind",
+      token,
+    })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as Record<string, unknown>
+    expect(body.vho_user_id).toBe(vho_user_id)
+    expect(body.bound).toBe(true)
+  })
+
+  test.skipIf(!accountEnabled)("imported VHO user does not overwrite existing local account", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("vho_conflict")
+    const local_password = "TpCode@123A"
+    const local = await service.createUser({
+      username,
+      password: local_password,
+      display_name: "Local User",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(local.ok).toBe(true)
+
+    const password = "Pass1234"
+    const salt = "fedcba9876543210fedcba9876543210"
+    const password_hash = pbkdf2Sync(password, Buffer.from(salt, "hex"), 1000, 8, "sha1").toString("hex")
+    const imported = await service.importVhoUsers({
+      rows: [
+        {
+          user_id: uid("vho_conflict_id"),
+          username,
+          password_hash,
+          password_salt: salt,
+          display_name: "VHO Conflict",
+        },
+      ],
+    })
+    expect(imported.ok).toBe(true)
+    if (!imported.ok) throw new Error("import_failed")
+    expect(imported.conflict).toBe(1)
+
+    const token = await login(username, local_password)
+    const me = await call({
+      path: "/account/me",
+      token,
+    })
+    expect(me.status).toBe(200)
+
+    const denied = await call({
+      path: "/account/login",
+      method: "POST",
+      body: { username, password },
+    })
+    expect(denied.status).toBe(400)
+    const body = (await denied.json()) as Record<string, unknown>
+    expect(body.code).toBe("invalid_credentials")
   })
 })
