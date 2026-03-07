@@ -143,6 +143,7 @@ export namespace Server {
       path === "/global/drain" ||
       path === "/log" ||
       path === "/account/login" ||
+      path === "/account/login/vho" ||
       path === "/account/token/refresh"
     )
   }
@@ -295,6 +296,7 @@ export namespace Server {
             const path = c.req.path
             const publicPaths = [
               "/account/login",
+              "/account/login/vho",
               "/account/register",
               "/account/password/forgot/request",
               "/account/password/forgot/reset",

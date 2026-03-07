@@ -7,7 +7,7 @@ import { MarkedProvider } from "@opencode-ai/ui/context/marked"
 import { Font } from "@opencode-ai/ui/font"
 import { ThemeProvider } from "@opencode-ai/ui/theme"
 import { MetaProvider } from "@solidjs/meta"
-import { Navigate, Route, Router, useIsRouting } from "@solidjs/router"
+import { Navigate, Route, Router, useIsRouting, useLocation } from "@solidjs/router"
 import { children, createEffect, createSignal, ErrorBoundary, type JSX, lazy, type ParentProps, Show, Suspense } from "solid-js"
 import { AccountAuthProvider, useAccountAuth } from "@/context/account-auth"
 import { AccountProjectProvider } from "@/context/account-project"
@@ -122,9 +122,11 @@ const ApprovalWorkflowRoute = () => (
 
 function ProtectedRoute(props: ParentProps) {
   const auth = useAccountAuth()
+  const location = useLocation()
+  const redirect = () => `/login${location.search}`
   return (
     <Show when={auth.ready()} fallback={<Loading />}>
-      <Show when={!auth.enabled() || auth.authenticated()} fallback={<Navigate href="/login" />}>
+      <Show when={!auth.enabled() || auth.authenticated()} fallback={<Navigate href={redirect()} />}>
         {props.children}
       </Show>
     </Show>

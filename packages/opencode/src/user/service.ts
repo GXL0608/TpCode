@@ -796,6 +796,153 @@ export namespace UserService {
     }
   }
 
+  export async function loginVho(input: { user_id: string; login_type: string; ip?: string; user_agent?: string }) {
+    const release = await acquireLoginSlot().catch((error) => error as Error)
+    if (release instanceof Error) {
+      const code = release.message === "auth_bulkhead_timeout" ? "auth_timeout" : "auth_overloaded"
+      log.warn("vho login rejected by bulkhead", {
+        code,
+        active: loginBulkhead.active,
+        queued: loginBulkhead.queue.length,
+      })
+      auditLater({
+        action: "account.login.vho",
+        target_type: "tp_user",
+        result: "failed",
+        detail_json: {
+          code,
+          login_type: input.login_type,
+          user_id: input.user_id,
+        },
+        ip: input.ip,
+        user_agent: input.user_agent,
+      })
+      return { ok: false as const, code }
+    }
+    try {
+      if (input.login_type !== "vho") {
+        const code = "vho_login_type_invalid"
+        auditLater({
+          action: "account.login.vho",
+          target_type: "tp_user",
+          result: "failed",
+          detail_json: {
+            code,
+            login_type: input.login_type,
+            user_id: input.user_id,
+          },
+          ip: input.ip,
+          user_agent: input.user_agent,
+        })
+        return { ok: false as const, code }
+      }
+      const phone = UserPhone.normalize(input.user_id)
+      if (!phone) {
+        const code = "phone_invalid"
+        auditLater({
+          action: "account.login.vho",
+          target_type: "tp_user",
+          result: "failed",
+          detail_json: {
+            code,
+            login_type: input.login_type,
+            user_id: input.user_id,
+          },
+          ip: input.ip,
+          user_agent: input.user_agent,
+        })
+        return { ok: false as const, code }
+      }
+      const user = await Database.use((db) =>
+        db
+          .select()
+          .from(TpUserTable)
+          .where(and(eq(TpUserTable.phone, phone), eq(TpUserTable.status, "active")))
+          .orderBy(TpUserTable.id)
+          .limit(1)
+          .get(),
+      )
+      if (!user) {
+        const code = "vho_user_not_found"
+        auditLater({
+          action: "account.login.vho",
+          target_type: "tp_user",
+          result: "failed",
+          detail_json: {
+            code,
+            login_type: input.login_type,
+            user_id: input.user_id,
+            phone,
+          },
+          ip: input.ip,
+          user_agent: input.user_agent,
+        })
+        return { ok: false as const, code }
+      }
+      const now = Date.now()
+      if (user.locked_until && user.locked_until > now) {
+        const code = "user_locked"
+        auditLater({
+          actor_user_id: user.id,
+          action: "account.login.vho",
+          target_type: "tp_user",
+          target_id: user.id,
+          result: "failed",
+          detail_json: {
+            code,
+            login_type: input.login_type,
+            user_id: input.user_id,
+            phone,
+            locked_until: user.locked_until,
+          },
+          ip: input.ip,
+          user_agent: input.user_agent,
+        })
+        return { ok: false as const, code }
+      }
+      const roles = await rolesByUser(user.id)
+      const permissions = await permissionsByUser(user.id)
+      const token = await issueTokens({
+        user_id: user.id,
+        ip: input.ip,
+        user_agent: input.user_agent,
+      })
+      await Database.use((db) =>
+        db
+          .update(TpUserTable)
+          .set({
+            failed_login_count: 0,
+            locked_until: null,
+            last_login_at: now,
+            last_login_ip: input.ip,
+          })
+          .where(eq(TpUserTable.id, user.id))
+          .run(),
+      )
+      auditLater({
+        actor_user_id: user.id,
+        action: "account.login.vho",
+        target_type: "tp_user",
+        target_id: user.id,
+        result: "success",
+        detail_json: {
+          login_type: input.login_type,
+          user_id: input.user_id,
+          phone,
+        },
+        ip: input.ip,
+        user_agent: input.user_agent,
+      })
+      return {
+        ok: true as const,
+        ...token,
+        user: profile({ user, roles, permissions }),
+      }
+    } finally {
+      release()
+    }
+  }
+
   export async function refresh(input: { refresh_token: string; ip?: string; user_agent?: string }) {
     const parsed = await UserJwt.verifyRefresh(input.refresh_token)
     if (!parsed) return { ok: false as const, code: "token_invalid" }

@@ -4,6 +4,7 @@ import { pbkdf2Sync } from "crypto"
 import { Log } from "../../src/util/log"
 import { and, Database, eq } from "../../src/storage/db"
 import { TpAuditLogTable } from "../../src/user/audit-log.sql"
+import { TpUserTable } from "../../src/user/user.sql"
 import { parseSSE } from "../../src/control-plane/sse"
 import { Flag } from "../../src/flag/flag"
 
@@ -783,6 +784,177 @@ describe("account system", () => {
     const body = (await response.json()) as Record<string, unknown>
     expect(body.vho_user_id).toBe(vho_user_id)
     expect(body.bound).toBe(true)
+  })
+
+  test.skipIf(!accountEnabled)("supports VHO url login by phone", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("vho_url")
+    const phone = `13${String(Date.now()).slice(-9)}`
+    const created = await service.createUser({
+      username,
+      password: "TpCode@123A",
+      display_name: "VHO URL User",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      phone,
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+
+    const response = await call({
+      path: "/account/login/vho",
+      method: "POST",
+      body: {
+        user_id: phone,
+        login_type: "vho",
+      },
+    })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      access_token?: unknown
+      user?: {
+        username?: unknown
+      }
+    }
+    expect(typeof body.access_token).toBe("string")
+    expect(body.user?.username).toBe(username)
+  })
+
+  test.skipIf(!accountEnabled)("rejects VHO login when loginType is not vho", async () => {
+    const response = await call({
+      path: "/account/login/vho",
+      method: "POST",
+      body: {
+        user_id: `13${String(Date.now()).slice(-9)}`,
+        login_type: "VHO",
+      },
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as Record<string, unknown>
+    expect(body.code).toBe("vho_login_type_invalid")
+  })
+
+  test.skipIf(!accountEnabled)("rejects VHO login when phone does not exist", async () => {
+    const response = await call({
+      path: "/account/login/vho",
+      method: "POST",
+      body: {
+        user_id: `13${String(Date.now()).slice(-9)}`,
+        login_type: "vho",
+      },
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as Record<string, unknown>
+    expect(body.code).toBe("vho_user_not_found")
+  })
+
+  test.skipIf(!accountEnabled)("VHO login picks first active user by user id", async () => {
+    const phone = `13${String(Date.now()).slice(-9)}`
+    const base = uid("vho_dup")
+    const a = `${base}_a`
+    const b = `${base}_b`
+    const ua = uid("vho_dup_user_a")
+    const ub = uid("vho_dup_user_b")
+    await Database.use((db) =>
+      db.insert(TpUserTable)
+        .values([
+          {
+            id: a,
+            username: ua,
+            password_hash: "vho_dup_hash",
+            display_name: "VHO Dup A",
+            phone,
+            account_type: "internal",
+            org_id: "org_tp_internal",
+            status: "active",
+            force_password_reset: false,
+            external_source: "vho",
+          },
+          {
+            id: b,
+            username: ub,
+            password_hash: "vho_dup_hash",
+            display_name: "VHO Dup B",
+            phone,
+            account_type: "internal",
+            org_id: "org_tp_internal",
+            status: "active",
+            force_password_reset: false,
+            external_source: "vho",
+          },
+        ])
+        .run(),
+    )
+
+    const response = await call({
+      path: "/account/login/vho",
+      method: "POST",
+      body: {
+        user_id: phone,
+        login_type: "vho",
+      },
+    })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      user?: {
+        id?: unknown
+        username?: unknown
+      }
+    }
+    expect(body.user?.id).toBe(a)
+    expect(body.user?.username).toBe(ua)
+  })
+
+  test.skipIf(!accountEnabled)("VHO login does not fallback when first active user is locked", async () => {
+    const phone = `13${String(Date.now()).slice(-9)}`
+    const base = uid("vho_locked")
+    const a = `${base}_a`
+    const b = `${base}_b`
+    await Database.use((db) =>
+      db.insert(TpUserTable)
+        .values([
+          {
+            id: a,
+            username: uid("vho_locked_user_a"),
+            password_hash: "vho_locked_hash",
+            display_name: "VHO Locked A",
+            phone,
+            account_type: "internal",
+            org_id: "org_tp_internal",
+            status: "active",
+            force_password_reset: false,
+            locked_until: Date.now() + 60_000,
+            external_source: "vho",
+          },
+          {
+            id: b,
+            username: uid("vho_locked_user_b"),
+            password_hash: "vho_locked_hash",
+            display_name: "VHO Locked B",
+            phone,
+            account_type: "internal",
+            org_id: "org_tp_internal",
+            status: "active",
+            force_password_reset: false,
+            external_source: "vho",
+          },
+        ])
+        .run(),
+    )
+
+    const response = await call({
+      path: "/account/login/vho",
+      method: "POST",
+      body: {
+        user_id: phone,
+        login_type: "vho",
+      },
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as Record<string, unknown>
+    expect(body.code).toBe("user_locked")
   })
 
   test.skipIf(!accountEnabled)("imported VHO user does not overwrite existing local account", async () => {

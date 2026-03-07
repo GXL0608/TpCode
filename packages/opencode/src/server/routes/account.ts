@@ -289,6 +289,43 @@ export const AccountRoutes = lazy(() =>
       },
     )
     .post(
+      "/login/vho",
+      describeRoute({
+        summary: "VHO login",
+        description: "Login with VHO login type and phone user id.",
+        operationId: "account.login.vho",
+        responses: {
+          200: {
+            description: "Login result",
+            content: {
+              "application/json": {
+                schema: resolver(LoginResult),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          user_id: z.string(),
+          login_type: z.string(),
+        }),
+      ),
+      async (c) => {
+        await UserService.ensureSeedOnce()
+        const body = c.req.valid("json")
+        const result = await UserService.loginVho({
+          ...body,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
+        return c.json(result)
+      },
+    )
+    .post(
       "/token/refresh",
       describeRoute({
         summary: "Refresh access token",

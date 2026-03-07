@@ -322,6 +322,35 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         setState("ready", true)
         return true
       },
+      async loginVho(input: { userId: string; loginType: string }) {
+        const response = await request({
+          path: "/account/login/vho",
+          method: "POST",
+          body: {
+            user_id: input.userId,
+            login_type: input.loginType,
+          },
+          auth: "none",
+        })
+        if (response.status === 404) {
+          setState("enabled", false)
+          setState("last_error", "account_disabled")
+          return false
+        }
+        if (!response.ok) {
+          setState("enabled", true)
+          setState("last_error", (await responseCode(response)) ?? "vho_login_failed")
+          return false
+        }
+        const result = json<LoginResult>(await response.json().catch(() => undefined))
+        if (!result?.access_token || !result.refresh_token || !result.user) {
+          setState("last_error", "vho_login_failed")
+          return false
+        }
+        writeSession(result)
+        setState("ready", true)
+        return true
+      },
       async register(input: RegisterInput) {
         const response = await request({
           path: "/account/register",

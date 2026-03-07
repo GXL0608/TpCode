@@ -204,6 +204,13 @@ describe("server gateway routes", () => {
       })
       expect(login.status).not.toBe(503)
 
+      const vho = await Server.App().request("/account/login/vho", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user_id: "13600000000", login_type: "vho" }),
+      })
+      expect(vho.status).not.toBe(503)
+
       const refresh = await Server.App().request("/account/token/refresh", {
         method: "POST",
         headers: { "content-type": "application/json" },
