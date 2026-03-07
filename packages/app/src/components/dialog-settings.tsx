@@ -27,7 +27,7 @@ export const DialogSettings: Component = () => {
   const canViewModels = createMemo(() => auth.has("ui:settings.models:view"))
 
   return (
-    <Dialog size="x-large" transition>
+    <Dialog size="xx-large" transition>
       <Tabs orientation="vertical" variant="settings" defaultValue="general" class="h-full settings-dialog">
         <Tabs.List>
           <div class="flex flex-col justify-between h-full w-full">

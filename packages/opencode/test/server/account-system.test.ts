@@ -253,6 +253,112 @@ describe("account system", () => {
     expect(denied.status).toBe(401)
   })
 
+  test.skipIf(!accountEnabled)("user deletion invalidates auth cache immediately", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("cache_delete")
+    const password = "TpCode@123A"
+    const created = await service.createUser({
+      username,
+      password,
+      display_name: "Cache Delete",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+    if (!("id" in created) || !created.id) throw new Error("user_id_missing")
+
+    const token = await login(username, password)
+    const warm = await call({
+      path: "/account/me",
+      token,
+    })
+    expect(warm.status).toBe(200)
+
+    const admin = await login("admin", "TpCode@2026")
+    const deleted = await call({
+      path: `/account/admin/users/${encodeURIComponent(created.id)}`,
+      method: "DELETE",
+      token: admin,
+    })
+    expect(deleted.status).toBe(200)
+
+    const denied = await call({
+      path: "/account/me",
+      token,
+    })
+    expect(denied.status).toBe(401)
+  })
+
+  test.skipIf(!accountEnabled)("custom role deletion invalidates affected user permissions immediately", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const admin = await login("admin", "TpCode@2026")
+    const roleCode = uid("role_delete")
+    const createdRole = await call({
+      path: "/account/admin/roles",
+      method: "POST",
+      token: admin,
+      body: {
+        code: roleCode,
+        name: "Delete Role",
+        scope: "system",
+      },
+    })
+    expect(createdRole.status).toBe(200)
+
+    const username = uid("role_delete_user")
+    const password = "TpCode@123A"
+    const created = await service.createUser({
+      username,
+      password,
+      display_name: "Role Delete User",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: [roleCode],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+
+    const token = await login(username, password)
+    const allowedBefore = await call({
+      path: "/session?directory=" + encodeURIComponent(projectRoot),
+      method: "POST",
+      token,
+      body: { title: uid("role_delete_before") },
+    })
+    expect(allowedBefore.status).toBe(200)
+
+    const deleted = await call({
+      path: `/account/admin/roles/${encodeURIComponent(roleCode)}`,
+      method: "DELETE",
+      token: admin,
+    })
+    expect(deleted.status).toBe(200)
+
+    const deniedAfter = await call({
+      path: "/session?directory=" + encodeURIComponent(projectRoot),
+      method: "POST",
+      token,
+      body: { title: uid("role_delete_after") },
+    })
+    expect(deniedAfter.status).toBe(403)
+  })
+
+  test.skipIf(!accountEnabled)("built-in role deletion is rejected", async () => {
+    const admin = await login("admin", "TpCode@2026")
+    const response = await call({
+      path: "/account/admin/roles/developer",
+      method: "DELETE",
+      token: admin,
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as Record<string, unknown>
+    expect(body.code).toBe("role_builtin_forbidden")
+  })
+
   test.skipIf(!accountEnabled)("private session is isolated between users", async () => {
     const service = state.user
     if (!service) throw new Error("user_service_missing")

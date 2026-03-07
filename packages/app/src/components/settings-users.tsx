@@ -1,4 +1,6 @@
 import { Button } from "@opencode-ai/ui/button"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
+import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { iconNames, type IconName } from "@opencode-ai/ui/icons/provider"
 import { For, Show, createEffect, createMemo } from "solid-js"
@@ -7,7 +9,7 @@ import { useAccountAuth } from "@/context/account-auth"
 import { popularProviders, useProviders } from "@/hooks/use-providers"
 import { passwordError, passwordRule, phoneError, phoneRule } from "@/utils/account-rule"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
-import { type AccountRole, type AccountUser, accountTypeZh, roleZh, statusZh } from "./settings-rbac-zh"
+import { type AccountRole, type AccountUser, roleZh } from "./settings-rbac-zh"
 
 function list<T>(input: unknown) {
   return Array.isArray(input) ? (input as T[]) : []
@@ -30,6 +32,8 @@ function page<T>(input: unknown) {
   }
 }
 
+const pageSizes = [10, 20, 50, 100, 500] as const
+
 export const SettingsUsers = () => {
   const auth = useAccountAuth()
   const request = useAccountRequest()
@@ -45,7 +49,8 @@ export const SettingsUsers = () => {
     message: "",
     query: "",
     userPage: 1,
-    userPageSize: 15,
+    userJump: "1",
+    userPageSize: 20,
     userTotal: 0,
     users: [] as AccountUser[],
     roles: [] as AccountRole[],
@@ -96,6 +101,7 @@ export const SettingsUsers = () => {
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
   })
   const providerMap = createMemo(() => new Map(providerCatalog().map((item) => [item.id, item])))
+  const roleMap = createMemo(() => new Map(state.roles.map((item) => [item.code, item])))
   const configuredProviderIDs = createMemo(() => new Set(state.providerRows.map((item) => item.provider_id)))
   const providerPopular = createMemo(() =>
     popularProviders
@@ -120,6 +126,8 @@ export const SettingsUsers = () => {
     if (start === 0) return 0
     return start + state.users.length - 1
   })
+  const roleName = (code: string) => roleMap().get(code)?.name?.trim() || roleZh(code)
+  const roleText = (codes: string[]) => (codes.length > 0 ? codes.map(roleName).join("、") : "-")
 
   const toggleCreateRole = (code: string) => {
     if (state.createRoles.includes(code)) {
@@ -147,23 +155,24 @@ export const SettingsUsers = () => {
     setState("roleCodes", (current) => [...current, code])
   }
 
-  const pathUsers = (pageID: number) => {
+  const pathUsers = (pageID: number, pageSize: number) => {
     const keyword = state.query.trim()
     const query = new URLSearchParams({
       page: String(pageID),
-      page_size: String(state.userPageSize),
+      page_size: String(pageSize),
     })
     if (keyword) query.set("keyword", keyword)
     return `/account/admin/users?${query.toString()}`
   }
 
-  const load = async (input?: { page?: number }) => {
+  const load = async (input?: { page?: number; pageSize?: number }) => {
     if (!canManage()) return
     setState("loading", true)
     setState("error", "")
     const pageID = input?.page ?? state.userPage
+    const pageSize = input?.pageSize ?? state.userPageSize
 
-    const usersResponse = await request({ path: pathUsers(pageID) }).catch(() => undefined)
+    const usersResponse = await request({ path: pathUsers(pageID, pageSize) }).catch(() => undefined)
     const rolesResponse = canRole() ? await request({ path: "/account/admin/roles" }).catch(() => undefined) : undefined
 
     if (!usersResponse?.ok) {
@@ -181,10 +190,26 @@ export const SettingsUsers = () => {
 
     setState("users", users)
     setState("userPage", Math.max(1, usersPage?.page ?? pageID))
-    setState("userPageSize", Math.max(1, usersPage?.page_size ?? state.userPageSize))
+    setState("userJump", String(Math.max(1, usersPage?.page ?? pageID)))
+    setState("userPageSize", Math.max(1, usersPage?.page_size ?? pageSize))
     setState("userTotal", Math.max(0, usersPage?.total ?? users.length))
     setState("roles", roles)
     setState("loading", false)
+  }
+
+  const loadUserPage = async () => {
+    const next = Number(state.userJump.trim())
+    if (!Number.isFinite(next)) {
+      setState("userJump", String(state.userPage))
+      return
+    }
+    await load({ page: Math.min(userPageTotal(), Math.max(1, Math.floor(next))) })
+  }
+
+  const loadUserPageSize = async (pageSize: number) => {
+    setState("userPageSize", pageSize)
+    setState("userJump", "1")
+    await load({ page: 1, pageSize })
   }
 
   const openEdit = (item: AccountUser) => {
@@ -293,6 +318,28 @@ export const SettingsUsers = () => {
       return
     }
     setState("message", `已重置 ${item.username} 的密码为 TpCode@2026`)
+  }
+
+  const removeUser = async (item: AccountUser) => {
+    if (!canManage()) return
+    const name = item.display_name || item.username
+    const ok = globalThis.confirm(`确认删除成员「${name}」？\n\n删除后将同时移除该成员的登录账号、角色绑定、项目权限和模型配置，且无法恢复。`)
+    if (!ok) return
+    setState("pending", true)
+    setState("message", "")
+    setState("error", "")
+    const response = await request({
+      method: "DELETE",
+      path: `/account/admin/users/${encodeURIComponent(item.id)}`,
+    }).catch(() => undefined)
+    setState("pending", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    setState("message", `已删除成员 ${name}`)
+    const page = state.users.length === 1 && state.userPage > 1 ? state.userPage - 1 : state.userPage
+    await load({ page })
   }
 
   const loadUserProviders = async (userID: string) => {
@@ -569,55 +616,65 @@ export const SettingsUsers = () => {
                 <span class="text-12-regular text-text-weak">加载中...</span>
               </Show>
             </div>
-            <div class="max-h-[460px] overflow-auto">
+            <div class="max-h-[560px] overflow-auto">
               <table class="w-full text-12-regular">
                 <thead class="bg-surface-panel">
                   <tr>
                     <th class="text-left px-3 py-2">用户名</th>
-                    <th class="text-left px-3 py-2">显示名</th>
-                    <th class="text-left px-3 py-2">账号类型</th>
-                    <th class="text-left px-3 py-2">状态</th>
+                    <th class="text-left px-3 py-2">姓名</th>
                     <th class="text-left px-3 py-2">角色</th>
-                    <th class="text-left px-3 py-2">操作</th>
+                    <th class="w-16 text-center px-3 py-2">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   <For each={state.users}>
                     {(item) => (
                       <tr class="border-t border-border-weak-base hover:bg-surface-panel/45 transition-colors">
-                        <td class="px-3 py-2">{item.username}</td>
-                        <td class="px-3 py-2">{item.display_name}</td>
-                        <td class="px-3 py-2">{accountTypeZh(item.account_type)}</td>
-                        <td class="px-3 py-2">{statusZh(item.status)}</td>
+                        <td class="px-3 py-2 text-12-medium text-text-strong">{item.username}</td>
+                        <td class="px-3 py-2 text-text-weak">{item.display_name || "-"}</td>
                         <td class="px-3 py-2">
-                          <div class="flex flex-wrap gap-1.5">
-                            <For each={item.roles.length > 0 ? item.roles : ["-"]}>
-                              {(code) => (
-                                <span class="rounded-full border border-border-weak-base bg-surface-panel px-2.5 py-0.5 text-11-medium text-text-weak">
-                                  {roleZh(code)}
-                                </span>
-                              )}
-                            </For>
+                          <div class="max-w-[320px] truncate text-text-weak" title={roleText(item.roles)}>
+                            {roleText(item.roles)}
                           </div>
                         </td>
                         <td class="px-3 py-2">
-                          <div class="flex flex-wrap gap-1.5">
-                            <Button type="button" size="small" variant="secondary" onClick={() => openEdit(item)}>
-                              编辑
-                            </Button>
-                            <Show when={canRole()}>
-                              <Button type="button" size="small" variant="secondary" onClick={() => openRole(item)}>
-                                分配角色
-                              </Button>
-                            </Show>
-                            <Button type="button" size="small" variant="secondary" onClick={() => void resetPassword(item)} disabled={state.pending}>
-                              重置密码
-                            </Button>
-                            <Show when={canProviderUser()}>
-                              <Button type="button" size="small" variant="secondary" onClick={() => void openProvider(item)}>
-                                设置供应商
-                              </Button>
-                            </Show>
+                          <div class="flex justify-center">
+                            <DropdownMenu gutter={4} placement="bottom-end">
+                              <DropdownMenu.Trigger
+                                as={IconButton}
+                                icon="dot-grid"
+                                variant="ghost"
+                                class="size-7 rounded-md data-[expanded]:bg-surface-base-active"
+                                aria-label={`管理用户 ${item.username}`}
+                              />
+                              <DropdownMenu.Portal>
+                                <DropdownMenu.Content>
+                                  <DropdownMenu.Item onSelect={() => openEdit(item)}>
+                                    <DropdownMenu.ItemLabel>编辑</DropdownMenu.ItemLabel>
+                                  </DropdownMenu.Item>
+                                  <Show when={canRole()}>
+                                    <DropdownMenu.Item onSelect={() => openRole(item)}>
+                                      <DropdownMenu.ItemLabel>分配角色</DropdownMenu.ItemLabel>
+                                    </DropdownMenu.Item>
+                                  </Show>
+                                  <DropdownMenu.Item onSelect={() => void resetPassword(item)} disabled={state.pending}>
+                                    <DropdownMenu.ItemLabel>重置密码</DropdownMenu.ItemLabel>
+                                  </DropdownMenu.Item>
+                                <Show when={canProviderUser()}>
+                                    <DropdownMenu.Item onSelect={() => void openProvider(item)}>
+                                      <DropdownMenu.ItemLabel>设置供应商</DropdownMenu.ItemLabel>
+                                    </DropdownMenu.Item>
+                                  </Show>
+                                  <DropdownMenu.Separator />
+                                  <DropdownMenu.Item
+                                    onSelect={() => void removeUser(item)}
+                                    disabled={state.pending || item.id === auth.user()?.id || item.id === "user_tp_admin"}
+                                  >
+                                    <DropdownMenu.ItemLabel>删除成员</DropdownMenu.ItemLabel>
+                                  </DropdownMenu.Item>
+                                </DropdownMenu.Content>
+                              </DropdownMenu.Portal>
+                            </DropdownMenu>
                           </div>
                         </td>
                       </tr>
@@ -625,7 +682,7 @@ export const SettingsUsers = () => {
                   </For>
                   <Show when={state.users.length === 0}>
                     <tr class="border-t border-border-weak-base">
-                      <td class="px-3 py-6 text-center text-text-weak" colSpan={6}>
+                      <td class="px-3 py-6 text-center text-text-weak" colSpan={4}>
                         暂无用户数据
                       </td>
                     </tr>
@@ -633,11 +690,41 @@ export const SettingsUsers = () => {
                 </tbody>
               </table>
             </div>
-            <div class="px-4 py-3 border-t border-border-weak-base bg-surface-panel/35 flex items-center justify-between">
+            <div class="px-4 py-3 border-t border-border-weak-base bg-surface-panel/35 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div class="text-12-regular text-text-weak">
                 第 {state.userPage} / {userPageTotal()} 页，共 {state.userTotal} 条（当前 {userRangeStart()}-{userRangeEnd()}）
               </div>
-              <div class="flex items-center gap-2">
+              <div class="flex flex-col gap-2 md:flex-row md:items-center">
+                <div class="flex items-center gap-2">
+                  <span class="text-12-regular text-text-weak">每页</span>
+                  <select
+                    class="h-8 rounded-md border border-border-weak-base bg-background-base px-2 text-12-regular"
+                    value={String(state.userPageSize)}
+                    onChange={(event) => void loadUserPageSize(Number(event.currentTarget.value))}
+                  >
+                    <For each={pageSizes}>{(item) => <option value={item}>{item}</option>}</For>
+                  </select>
+                  <span class="text-12-regular text-text-weak">条</span>
+                </div>
+                <form
+                  class="flex items-center gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void loadUserPage()
+                  }}
+                >
+                  <span class="text-12-regular text-text-weak">跳到</span>
+                  <input
+                    class="h-8 w-20 rounded-md border border-border-weak-base bg-background-base px-2 text-12-regular"
+                    inputMode="numeric"
+                    value={state.userJump}
+                    onInput={(event) => setState("userJump", event.currentTarget.value)}
+                  />
+                  <span class="text-12-regular text-text-weak">页</span>
+                  <Button type="submit" size="small" variant="secondary" disabled={state.loading}>
+                    跳转
+                  </Button>
+                </form>
                 <Button
                   type="button"
                   size="small"
@@ -729,7 +816,7 @@ export const SettingsUsers = () => {
                           checked={state.createRoles.includes(role.code)}
                           onChange={() => toggleCreateRole(role.code)}
                         />
-                        <span>{roleZh(role.code)}</span>
+                        <span>{role.name?.trim() || roleZh(role.code)}</span>
                       </label>
                     )}
                   </For>
@@ -815,7 +902,7 @@ export const SettingsUsers = () => {
                   {(role) => (
                     <label class="inline-flex items-center gap-2 rounded-full border border-border-weak-base bg-surface-base px-3 py-1.5 text-12-regular">
                       <input type="checkbox" checked={state.roleCodes.includes(role.code)} onChange={() => toggleRole(role.code)} />
-                      <span>{roleZh(role.code)}</span>
+                      <span>{role.name?.trim() || roleZh(role.code)}</span>
                     </label>
                   )}
                 </For>

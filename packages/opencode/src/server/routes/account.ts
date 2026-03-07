@@ -800,7 +800,7 @@ export const AccountRoutes = lazy(() =>
         "query",
         z.object({
           page: z.coerce.number().int().min(1).optional(),
-          page_size: z.coerce.number().int().min(1).max(100).optional(),
+          page_size: z.coerce.number().int().min(1).max(500).optional(),
         }),
       ),
       async (c) => {
@@ -834,6 +834,24 @@ export const AccountRoutes = lazy(() =>
         const body = c.req.valid("json")
         const result = await UserService.createRole({
           ...body,
+          actor_user_id,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
+        return c.json(result)
+      },
+    )
+    .delete(
+      "/admin/roles/:role_code",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ role_code: z.string() })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const result = await UserService.deleteRole({
+          role_code: param.role_code,
           actor_user_id,
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
@@ -1372,7 +1390,7 @@ export const AccountRoutes = lazy(() =>
           department_id: z.string().optional(),
           keyword: z.string().optional(),
           page: z.coerce.number().int().min(1).optional(),
-          page_size: z.coerce.number().int().min(1).max(100).optional(),
+          page_size: z.coerce.number().int().min(1).max(500).optional(),
         }),
       ),
       async (c) => {
@@ -1451,6 +1469,24 @@ export const AccountRoutes = lazy(() =>
         const result = await UserService.updateUser({
           user_id: param.user_id,
           ...body,
+          actor_user_id,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
+        return c.json(result)
+      },
+    )
+    .delete(
+      "/admin/users/:user_id",
+      UserRbac.require("user:manage"),
+      validator("param", z.object({ user_id: z.string() })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const result = await UserService.deleteUser({
+          user_id: param.user_id,
           actor_user_id,
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),

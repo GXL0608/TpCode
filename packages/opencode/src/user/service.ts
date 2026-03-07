@@ -226,6 +226,15 @@ function roleCodeValid(code: string) {
   return /^[a-z][a-z0-9_]{1,63}$/.test(code)
 }
 
+function builtinRole(code: string) {
+  return roles().some((item) => item.code === code)
+}
+
+function builtinUser(user: UserRow) {
+  if (user.id === "user_tp_admin") return true
+  return user.username === "admin" && (user.external_source ?? "").trim() === "tpcode"
+}
+
 function profile(input: { user: UserRow; roles: string[]; permissions: string[]; context_project_id?: string }) {
   return {
     id: input.user.id,
@@ -2196,6 +2205,34 @@ export namespace UserService {
     return { ok: true as const }
   }
 
+  export async function deleteUser(input: {
+    user_id: string
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const user = await userByID(input.user_id)
+    if (!user) return { ok: false as const, code: "user_missing" }
+    if (input.actor_user_id && input.actor_user_id === input.user_id) return { ok: false as const, code: "user_self_delete_forbidden" }
+    if (builtinUser(user)) return { ok: false as const, code: "user_builtin_forbidden" }
+    await Database.use((db) => db.delete(TpUserTable).where(eq(TpUserTable.id, input.user_id)).run())
+    invalidateByUserID(input.user_id)
+    AccountContextService.invalidateProjectAccess({ user_id: input.user_id })
+    auditLater({
+      actor_user_id: input.actor_user_id,
+      action: "account.user.delete",
+      target_type: "tp_user",
+      target_id: input.user_id,
+      result: "success",
+      detail_json: {
+        username: user.username,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
   export async function setRolePermissions(input: {
     role_code: string
     permission_codes: string[]
@@ -2235,6 +2272,44 @@ export namespace UserService {
       detail_json: {
         role_code: input.role_code,
         permission_codes: codes,
+      },
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return { ok: true as const }
+  }
+
+  export async function deleteRole(input: {
+    role_code: string
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    if (!role) return { ok: false as const, code: "role_missing" }
+    if (builtinRole(role.code)) return { ok: false as const, code: "role_builtin_forbidden" }
+    const affectedUsers = await Database.use((db) =>
+      db
+        .select({ user_id: TpUserRoleTable.user_id })
+        .from(TpUserRoleTable)
+        .where(eq(TpUserRoleTable.role_id, role.id))
+        .all(),
+    )
+    await Database.use((db) => db.delete(TpRoleTable).where(eq(TpRoleTable.id, role.id)).run())
+    for (const item of affectedUsers) {
+      invalidateByUserID(item.user_id)
+      AccountContextService.invalidateProjectAccess({ user_id: item.user_id })
+    }
+    auditLater({
+      actor_user_id: input.actor_user_id,
+      action: "account.role.delete",
+      target_type: "tp_role",
+      target_id: role.id,
+      result: "success",
+      detail_json: {
+        code: role.code,
+        name: role.name,
+        affected_user_count: affectedUsers.length,
       },
       ip: input.ip,
       user_agent: input.user_agent,

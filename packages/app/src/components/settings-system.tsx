@@ -67,7 +67,7 @@ export const SettingsSystem = () => {
         <div class="flex items-center justify-between">
           <div>
             <div class="text-18-medium text-text-strong">系统设置</div>
-            <div class="text-12-regular text-text-weak mt-1">统一维护服务端运行参数</div>
+            <div class="text-12-regular text-text-weak mt-1">控制项目管理中的目录扫描根路径</div>
           </div>
           <Button type="button" variant="secondary" onClick={() => void load()} disabled={state.loading}>
             刷新
@@ -93,7 +93,7 @@ export const SettingsSystem = () => {
             onInput={(event) => setState("scanRoot", event.currentTarget.value)}
           />
           <div class="text-11-regular text-text-weak">
-            仅扫描一级子目录，且子目录包含 `.git` 才会进入可分配项目列表。
+            项目管理会扫描这些根目录下的一级子目录；包含 `.git` 的目录会优先识别为项目并进入可分配列表。
           </div>
           <div class="flex justify-end">
             <Button type="submit" disabled={state.saving}>

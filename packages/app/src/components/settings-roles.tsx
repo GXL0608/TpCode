@@ -1,4 +1,6 @@
 import { Button } from "@opencode-ai/ui/button"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
+import { IconButton } from "@opencode-ai/ui/icon-button"
 import { For, Show, createEffect, createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useAccountAuth } from "@/context/account-auth"
@@ -48,6 +50,9 @@ function sameSet(a: string[], b: string[]) {
   return left.every((item, index) => item === right[index])
 }
 
+const pageSizes = [10, 20, 50, 100, 500] as const
+const builtinRoleSet = new Set(["super_admin", "dev_lead", "developer", "ops", "pm", "value_ops", "hospital_admin", "dept_director", "hospital_user", "dean"])
+
 export const SettingsRoles = () => {
   const auth = useAccountAuth()
   const request = useAccountRequest()
@@ -63,12 +68,12 @@ export const SettingsRoles = () => {
     createName: "",
     createScope: "system" as "system" | "org",
     rolePage: 1,
-    rolePageSize: 15,
+    roleJump: "1",
+    rolePageSize: 20,
     roleTotal: 0,
     roles: [] as AccountRole[],
     permissions: [] as AccountPermission[],
     users: [] as AccountUser[],
-    roleProducts: {} as Record<string, string[]>,
     permOpen: false,
     permRoleCode: "",
     permCodes: [] as string[],
@@ -136,8 +141,6 @@ export const SettingsRoles = () => {
     if (start === 0) return 0
     return start + state.roles.length - 1
   })
-  const roleMembersCount = (roleCode: string) => state.roles.find((item) => item.code === roleCode)?.member_count ?? 0
-  const roleProductCount = (roleCode: string) => (state.roleProducts[roleCode] ?? []).length
   const roleTitle = (code: string) => {
     const role = state.roles.find((item) => item.code === code)
     if (role?.name) return `${role.name} (${role.code})`
@@ -170,34 +173,16 @@ export const SettingsRoles = () => {
     setState("productIDs", (current) => [...current, productID])
   }
 
-  const loadRoleProducts = async (roles: AccountRole[]) => {
-    const rows = await Promise.all(
-      roles.map(async (item) => {
-        const response = await request({ path: `/account/admin/roles/${encodeURIComponent(item.code)}/products` }).catch(() => undefined)
-        if (!response?.ok) return [item.code, [] as string[]] as const
-        const body = (await response.json().catch(() => undefined)) as RoleProductsResponse | undefined
-        return [item.code, body?.product_ids ?? []] as const
-      }),
-    )
-    const next = rows.reduce(
-      (acc, [code, productIDs]) => {
-        acc[code] = productIDs
-        return acc
-      },
-      {} as Record<string, string[]>,
-    )
-    setState("roleProducts", next)
-  }
-
-  const load = async (input?: { page?: number }) => {
+  const load = async (input?: { page?: number; pageSize?: number }) => {
     if (!canRole()) return
     setState("loading", true)
     setState("error", "")
     const pageID = input?.page ?? state.rolePage
+    const pageSize = input?.pageSize ?? state.rolePageSize
 
     const rolesQuery = new URLSearchParams({
       page: String(pageID),
-      page_size: String(state.rolePageSize),
+      page_size: String(pageSize),
     })
     const rolesResponse = await request({ path: `/account/admin/roles?${rolesQuery.toString()}` }).catch(() => undefined)
     const permissionsResponse = await request({ path: "/account/admin/permissions" }).catch(() => undefined)
@@ -220,11 +205,26 @@ export const SettingsRoles = () => {
 
     setState("roles", roles)
     setState("rolePage", Math.max(1, rolesPage?.page ?? pageID))
-    setState("rolePageSize", Math.max(1, rolesPage?.page_size ?? state.rolePageSize))
+    setState("roleJump", String(Math.max(1, rolesPage?.page ?? pageID)))
+    setState("rolePageSize", Math.max(1, rolesPage?.page_size ?? pageSize))
     setState("roleTotal", Math.max(0, rolesPage?.total ?? roles.length))
     setState("permissions", permissions)
-    await loadRoleProducts(roles)
     setState("loading", false)
+  }
+
+  const loadRolePage = async () => {
+    const next = Number(state.roleJump.trim())
+    if (!Number.isFinite(next)) {
+      setState("roleJump", String(state.rolePage))
+      return
+    }
+    await load({ page: Math.min(rolePageTotal(), Math.max(1, Math.floor(next))) })
+  }
+
+  const loadRolePageSize = async (pageSize: number) => {
+    setState("rolePageSize", pageSize)
+    setState("roleJump", "1")
+    await load({ page: 1, pageSize })
   }
 
   const loadCatalog = async () => {
@@ -442,6 +442,30 @@ export const SettingsRoles = () => {
     await load({ page: 1 })
   }
 
+  const removeRole = async (item: AccountRole) => {
+    const ok = globalThis.confirm(
+      `确认删除角色「${item.name || item.code}」？\n\n删除后会同时移除该角色的成员绑定、权限配置，以及关联的产品/项目访问关系，且无法恢复。`,
+    )
+    if (!ok) return
+    setState("pending", true)
+    setState("message", "")
+    setState("error", "")
+    const response = await request({
+      method: "DELETE",
+      path: `/account/admin/roles/${encodeURIComponent(item.code)}`,
+    }).catch(() => undefined)
+    setState("pending", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    setState("message", `角色 ${item.name || item.code} 已删除`)
+    const page = state.roles.length === 1 && state.rolePage > 1 ? state.rolePage - 1 : state.rolePage
+    await auth.reload()
+    if (!auth.has("role:manage")) return
+    await load({ page })
+  }
+
   createEffect(() => {
     if (!auth.ready()) return
     if (!auth.authenticated()) return
@@ -509,40 +533,54 @@ export const SettingsRoles = () => {
                 <span class="text-12-regular text-text-weak">加载中...</span>
               </Show>
             </div>
-            <div class="max-h-[560px] overflow-auto">
+            <div class="max-h-[620px] overflow-auto">
               <table class="w-full text-12-regular">
                 <thead class="bg-surface-panel">
                   <tr>
                     <th class="text-left px-3 py-2">角色编码</th>
                     <th class="text-left px-3 py-2">角色名称</th>
-                    <th class="text-left px-3 py-2">权限数</th>
-                    <th class="text-left px-3 py-2">成员数</th>
-                    <th class="text-left px-3 py-2">产品数</th>
-                    <th class="text-left px-3 py-2">操作</th>
+                    <th class="w-16 text-center px-3 py-2">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   <For each={state.roles}>
                     {(item) => (
                       <tr class="border-t border-border-weak-base hover:bg-surface-panel/45 transition-colors">
-                        <td class="px-3 py-2">{item.code}</td>
-                        <td class="px-3 py-2">{item.name || roleZh(item.code)}</td>
-                        <td class="px-3 py-2">{item.permissions.length}</td>
-                        <td class="px-3 py-2">{roleMembersCount(item.code)}</td>
-                        <td class="px-3 py-2">{roleProductCount(item.code)}</td>
+                        <td class="px-3 py-2 text-12-medium text-text-strong">{item.code}</td>
+                        <td class="px-3 py-2 text-text-weak">{item.name || roleZh(item.code)}</td>
                         <td class="px-3 py-2">
-                          <div class="flex flex-wrap gap-1.5">
-                            <Button type="button" size="small" variant="secondary" onClick={() => openPerm(item)}>
-                              权限设置
-                            </Button>
-                            <Show when={canMember()}>
-                              <Button type="button" size="small" variant="secondary" onClick={() => void openMember(item)}>
-                                成员管理
-                              </Button>
-                            </Show>
-                            <Button type="button" size="small" variant="secondary" onClick={() => void openProduct(item)}>
-                              分配产品
-                            </Button>
+                          <div class="flex justify-center">
+                            <DropdownMenu gutter={4} placement="bottom-end">
+                              <DropdownMenu.Trigger
+                                as={IconButton}
+                                icon="dot-grid"
+                                variant="ghost"
+                                class="size-7 rounded-md data-[expanded]:bg-surface-base-active"
+                                aria-label={`管理角色 ${item.code}`}
+                              />
+                              <DropdownMenu.Portal>
+                                <DropdownMenu.Content>
+                                  <DropdownMenu.Item onSelect={() => openPerm(item)}>
+                                    <DropdownMenu.ItemLabel>权限设置</DropdownMenu.ItemLabel>
+                                  </DropdownMenu.Item>
+                                  <Show when={canMember()}>
+                                    <DropdownMenu.Item onSelect={() => void openMember(item)}>
+                                      <DropdownMenu.ItemLabel>成员管理</DropdownMenu.ItemLabel>
+                                    </DropdownMenu.Item>
+                                  </Show>
+                                  <DropdownMenu.Item onSelect={() => void openProduct(item)}>
+                                    <DropdownMenu.ItemLabel>分配产品</DropdownMenu.ItemLabel>
+                                  </DropdownMenu.Item>
+                                  <DropdownMenu.Separator />
+                                  <DropdownMenu.Item
+                                    onSelect={() => void removeRole(item)}
+                                    disabled={state.pending || builtinRoleSet.has(item.code)}
+                                  >
+                                    <DropdownMenu.ItemLabel>删除角色</DropdownMenu.ItemLabel>
+                                  </DropdownMenu.Item>
+                                </DropdownMenu.Content>
+                              </DropdownMenu.Portal>
+                            </DropdownMenu>
                           </div>
                         </td>
                       </tr>
@@ -550,7 +588,7 @@ export const SettingsRoles = () => {
                   </For>
                   <Show when={state.roles.length === 0}>
                     <tr class="border-t border-border-weak-base">
-                      <td class="px-3 py-6 text-center text-text-weak" colSpan={6}>
+                      <td class="px-3 py-6 text-center text-text-weak" colSpan={3}>
                         暂无角色数据
                       </td>
                     </tr>
@@ -558,11 +596,41 @@ export const SettingsRoles = () => {
                 </tbody>
               </table>
             </div>
-            <div class="px-4 py-3 border-t border-border-weak-base bg-surface-panel/35 flex items-center justify-between">
+            <div class="px-4 py-3 border-t border-border-weak-base bg-surface-panel/35 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div class="text-12-regular text-text-weak">
                 第 {state.rolePage} / {rolePageTotal()} 页，共 {state.roleTotal} 条（当前 {roleRangeStart()}-{roleRangeEnd()}）
               </div>
-              <div class="flex items-center gap-2">
+              <div class="flex flex-col gap-2 md:flex-row md:items-center">
+                <div class="flex items-center gap-2">
+                  <span class="text-12-regular text-text-weak">每页</span>
+                  <select
+                    class="h-8 rounded-md border border-border-weak-base bg-background-base px-2 text-12-regular"
+                    value={String(state.rolePageSize)}
+                    onChange={(event) => void loadRolePageSize(Number(event.currentTarget.value))}
+                  >
+                    <For each={pageSizes}>{(item) => <option value={item}>{item}</option>}</For>
+                  </select>
+                  <span class="text-12-regular text-text-weak">条</span>
+                </div>
+                <form
+                  class="flex items-center gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void loadRolePage()
+                  }}
+                >
+                  <span class="text-12-regular text-text-weak">跳到</span>
+                  <input
+                    class="h-8 w-20 rounded-md border border-border-weak-base bg-background-base px-2 text-12-regular"
+                    inputMode="numeric"
+                    value={state.roleJump}
+                    onInput={(event) => setState("roleJump", event.currentTarget.value)}
+                  />
+                  <span class="text-12-regular text-text-weak">页</span>
+                  <Button type="submit" size="small" variant="secondary" disabled={state.loading}>
+                    跳转
+                  </Button>
+                </form>
                 <Button
                   type="button"
                   size="small"
