@@ -1060,6 +1060,10 @@ export type ServerConfig = {
   cors?: Array<string>
   gateway?: {
     /**
+     * Enable gateway write protection and drain mode
+     */
+    enabled?: boolean
+    /**
      * Node ID exposed for gateway routing and observability
      */
     nodeId?: string
@@ -1075,6 +1079,14 @@ export type ServerConfig = {
      * Reject write requests when maxWriteInflight is exceeded
      */
     rejectWriteOnOverload?: boolean
+    /**
+     * Enable bundled web defaulting to configured gateway web url
+     */
+    webEnabled?: boolean
+    /**
+     * Gateway url used by bundled web as default api endpoint
+     */
+    webUrl?: string
   }
 }
 
@@ -1624,6 +1636,33 @@ export type AccountLoginResult = {
     context_project_id?: string
     roles: Array<string>
     permissions: Array<string>
+  }
+}
+
+export type AccountProjectState = {
+  current_project_id?: string
+  last_project_id?: string
+  open_project_ids: Array<string>
+  last_session_by_project: {
+    [key: string]: {
+      session_id: string
+      directory: string
+      time_updated: number
+    }
+  }
+  workspace_mode_by_project: {
+    [key: string]: boolean
+  }
+  workspace_order_by_project: {
+    [key: string]: Array<string>
+  }
+  workspace_expanded_by_directory: {
+    [key: string]: boolean
+  }
+  workspace_alias_by_project_branch: {
+    [key: string]: {
+      [key: string]: string
+    }
   }
 }
 
@@ -2493,6 +2532,81 @@ export type PostAccountMeVhoBindData = {
 export type PostAccountMeVhoBindResponses = {
   200: unknown
 }
+
+export type AccountContextStateData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/account/context/state"
+}
+
+export type AccountContextStateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountContextStateError = AccountContextStateErrors[keyof AccountContextStateErrors]
+
+export type AccountContextStateResponses = {
+  /**
+   * Project state
+   */
+  200: AccountProjectState
+}
+
+export type AccountContextStateResponse = AccountContextStateResponses[keyof AccountContextStateResponses]
+
+export type AccountContextStateUpdateData = {
+  body?: {
+    last_project_id?: string | null
+    open_project_ids?: Array<string>
+    last_session_by_project?: {
+      [key: string]: {
+        session_id: string
+        directory: string
+        time_updated: number
+      }
+    }
+    workspace_mode_by_project?: {
+      [key: string]: boolean
+    }
+    workspace_order_by_project?: {
+      [key: string]: Array<string>
+    }
+    workspace_expanded_by_directory?: {
+      [key: string]: boolean
+    }
+    workspace_alias_by_project_branch?: {
+      [key: string]: {
+        [key: string]: string
+      }
+    }
+  }
+  path?: never
+  query?: never
+  url: "/account/context/state"
+}
+
+export type AccountContextStateUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountContextStateUpdateError = AccountContextStateUpdateErrors[keyof AccountContextStateUpdateErrors]
+
+export type AccountContextStateUpdateResponses = {
+  /**
+   * Project state
+   */
+  200: AccountProjectState
+}
+
+export type AccountContextStateUpdateResponse =
+  AccountContextStateUpdateResponses[keyof AccountContextStateUpdateResponses]
 
 export type PostAccountContextSelectData = {
   body?: {
@@ -4060,6 +4174,38 @@ export type SessionStatusResponses = {
 
 export type SessionStatusResponse = SessionStatusResponses[keyof SessionStatusResponses]
 
+export type SessionVoiceData = {
+  body?: never
+  path: {
+    sessionID: string
+    voiceID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/voice/{voiceID}"
+}
+
+export type SessionVoiceErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionVoiceError = SessionVoiceErrors[keyof SessionVoiceErrors]
+
+export type SessionVoiceResponses = {
+  /**
+   * Audio stream
+   */
+  200: unknown
+}
+
 export type SessionDeleteData = {
   body?: never
   path: {
@@ -4792,6 +4938,8 @@ export type SessionCommandData = {
       mime: string
       filename?: string
       url: string
+      duration_ms?: number
+      forModel?: boolean
       source?: FilePartSource
     }>
   }

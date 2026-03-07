@@ -3,6 +3,10 @@
 import { client } from "./client.gen.js"
 import { buildClientParams, type Client, type Options as Options2, type TDataShape } from "./client/index.js"
 import type {
+  AccountContextStateErrors,
+  AccountContextStateResponses,
+  AccountContextStateUpdateErrors,
+  AccountContextStateUpdateResponses,
   AccountLoginErrors,
   AccountLoginResponses,
   AccountLogoutAllErrors,
@@ -246,6 +250,8 @@ import type {
   SessionUnshareResponses,
   SessionUpdateErrors,
   SessionUpdateResponses,
+  SessionVoiceErrors,
+  SessionVoiceResponses,
   SubtaskPartInput,
   TextPartInput,
   ToolIdsErrors,
@@ -563,6 +569,92 @@ export class Logout extends HeyApiClient {
   }
 }
 
+export class State extends HeyApiClient {
+  /**
+   * Update current account project UI state
+   *
+   * Patch the database-backed, account-scoped project UI state.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      last_project_id?: string | null
+      open_project_ids?: Array<string>
+      last_session_by_project?: {
+        [key: string]: {
+          session_id: string
+          directory: string
+          time_updated: number
+        }
+      }
+      workspace_mode_by_project?: {
+        [key: string]: boolean
+      }
+      workspace_order_by_project?: {
+        [key: string]: Array<string>
+      }
+      workspace_expanded_by_directory?: {
+        [key: string]: boolean
+      }
+      workspace_alias_by_project_branch?: {
+        [key: string]: {
+          [key: string]: string
+        }
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "last_project_id" },
+            { in: "body", key: "open_project_ids" },
+            { in: "body", key: "last_session_by_project" },
+            { in: "body", key: "workspace_mode_by_project" },
+            { in: "body", key: "workspace_order_by_project" },
+            { in: "body", key: "workspace_expanded_by_directory" },
+            { in: "body", key: "workspace_alias_by_project_branch" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      AccountContextStateUpdateResponses,
+      AccountContextStateUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/account/context/state",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Context extends HeyApiClient {
+  /**
+   * Current account project UI state
+   *
+   * Get the database-backed, account-scoped project UI state.
+   */
+  public state<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<AccountContextStateResponses, AccountContextStateErrors, ThrowOnError>({
+      url: "/account/context/state",
+      ...options,
+    })
+  }
+
+  private _state?: State
+  get state2(): State {
+    return (this._state ??= new State({ client: this.client }))
+  }
+}
+
 export class Plan extends HeyApiClient {
   /**
    * Save plan
@@ -851,6 +943,11 @@ export class Account extends HeyApiClient {
   private _logout?: Logout
   get logout2(): Logout {
     return (this._logout ??= new Logout({ client: this.client }))
+  }
+
+  private _context?: Context
+  get context(): Context {
+    return (this._context ??= new Context({ client: this.client }))
   }
 
   private _plan?: Plan
@@ -1690,6 +1787,38 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * Get session voice audio
+   *
+   * Retrieve a stored voice recording for a specific session.
+   */
+  public voice<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      voiceID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "voiceID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionVoiceResponses, SessionVoiceErrors, ThrowOnError>({
+      url: "/session/{sessionID}/voice/{voiceID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
    * Delete session
    *
    * Delete a session and permanently remove all associated data, including messages and history.
@@ -2330,6 +2459,8 @@ export class Session2 extends HeyApiClient {
         mime: string
         filename?: string
         url: string
+        duration_ms?: number
+        forModel?: boolean
         source?: FilePartSource
       }>
     },
