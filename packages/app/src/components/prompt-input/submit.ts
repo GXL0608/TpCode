@@ -53,6 +53,7 @@ type PromptSubmitInput = {
   promptLength: (prompt: Prompt) => number
   addToHistory: (prompt: Prompt, mode: "normal" | "shell") => void
   resetHistoryNavigation: () => void
+  clearDraft?: () => void
   setMode: (mode: "normal" | "shell") => void
   setPopover: (popover: "at" | "slash" | null) => void
   newSessionWorktree?: Accessor<string | undefined>
@@ -149,6 +150,13 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     if (text.trim().length === 0 && images.length === 0 && voices.length === 0 && input.commentCount() === 0) {
       if (input.working()) abort()
+      return
+    }
+    if (text.trim().length === 0 && images.length === 0 && voices.length > 0 && input.commentCount() === 0) {
+      showToast({
+        title: language.t("prompt.toast.voiceNoSpeech.title"),
+        description: language.t("prompt.toast.voiceNoSpeech.description"),
+      })
       return
     }
     const terms = blocked(text)
@@ -256,6 +264,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const variant = local.model.variant.current()
 
     const clearInput = () => {
+      input.clearDraft?.()
       prompt.reset()
       input.setMode("normal")
       input.setPopover(null)

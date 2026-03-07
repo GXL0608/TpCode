@@ -50,6 +50,7 @@ import { TextShimmer } from "./text-shimmer"
 import { Button } from "./button"
 import { Dialog } from "./dialog"
 import { TextField } from "./text-field"
+import { resolveMessageAttachmentUrl } from "./message-attachment-url"
 
 interface Diagnostic {
   range: {
@@ -96,6 +97,7 @@ export interface MessageProps {
   showAssistantCopyPartID?: string | null
   interrupted?: boolean
   showReasoningSummaries?: boolean
+  attachmentBaseUrl?: string
 }
 
 export interface MessagePartProps {
@@ -552,6 +554,7 @@ export function Message(props: MessageProps) {
             message={userMessage() as UserMessage}
             parts={props.parts}
             interrupted={props.interrupted}
+            attachmentBaseUrl={props.attachmentBaseUrl}
           />
         )}
       </Match>
@@ -731,7 +734,12 @@ function ContextToolGroup(props: { parts: ToolPart[]; busy?: boolean }) {
   )
 }
 
-export function UserMessageDisplay(props: { message: UserMessage; parts: PartType[]; interrupted?: boolean }) {
+export function UserMessageDisplay(props: {
+  message: UserMessage
+  parts: PartType[]
+  interrupted?: boolean
+  attachmentBaseUrl?: string
+}) {
   const data = useData()
   const dialog = useDialog()
   const i18n = useI18n()
@@ -795,26 +803,20 @@ export function UserMessageDisplay(props: { message: UserMessage; parts: PartTyp
     return items.filter((x) => !!x).join("\u00A0\u00B7\u00A0")
   })
 
-  const openImagePreview = (url: string, alt?: string) => {
-    dialog.show(() => <ImagePreview src={url} alt={alt} />)
+  const attachmentUrl = (url?: string) => {
+    const token =
+      typeof window === "undefined"
+        ? undefined
+        : window.localStorage.getItem("tpcode.account.access_token") ?? undefined
+    return resolveMessageAttachmentUrl({
+      url,
+      token,
+      base: props.attachmentBaseUrl,
+    })
   }
 
-  const audioUrl = (url?: string) => {
-    if (!url) return url
-    if (!url.startsWith("/session/")) return url
-    if (typeof window === "undefined") return url
-    const token = window.localStorage.getItem("tpcode.account.access_token")
-    if (!token) return url
-    try {
-      const parsed = new URL(url, window.location.origin)
-      if (!parsed.searchParams.has("access_token")) {
-        parsed.searchParams.set("access_token", token)
-      }
-      return `${parsed.pathname}${parsed.search}`
-    } catch {
-      const separator = url.includes("?") ? "&" : "?"
-      return `${url}${separator}access_token=${encodeURIComponent(token)}`
-    }
+  const openImagePreview = (url: string, alt?: string) => {
+    dialog.show(() => <ImagePreview src={attachmentUrl(url) ?? url} alt={alt} />)
   }
 
   const handleCopy = async () => {
@@ -844,12 +846,17 @@ export function UserMessageDisplay(props: { message: UserMessage; parts: PartTyp
                   <Match when={file.mime.startsWith("image/") && file.url}>
                     <img
                       data-slot="user-message-attachment-image"
-                      src={file.url}
+                      src={attachmentUrl(file.url)}
                       alt={file.filename ?? i18n.t("ui.message.attachment.alt")}
                     />
                   </Match>
                   <Match when={file.mime.startsWith("audio/") && file.url}>
-                    <audio data-slot="user-message-attachment-audio" controls preload="metadata" src={audioUrl(file.url)} />
+                    <audio
+                      data-slot="user-message-attachment-audio"
+                      controls
+                      preload="metadata"
+                      src={attachmentUrl(file.url)}
+                    />
                   </Match>
                   <Match when={true}>
                     <div data-slot="user-message-attachment-icon">

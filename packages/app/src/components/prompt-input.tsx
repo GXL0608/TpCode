@@ -57,6 +57,7 @@ import { PromptContextItems } from "./prompt-input/context-items"
 import { PromptImageAttachments } from "./prompt-input/image-attachments"
 import { PromptVoiceAttachments } from "./prompt-input/voice-attachments"
 import { PromptDragOverlay } from "./prompt-input/drag-overlay"
+import { shouldClearVoiceDraft, shouldResetPromptDraft } from "./prompt-input/draft"
 import { promptPlaceholder } from "./prompt-input/placeholder"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
 import { createSpeechRecognition } from "@/utils/speech"
@@ -97,7 +98,6 @@ const EXAMPLES = [
   "prompt.example.25",
 ] as const
 
-const NON_EMPTY_TEXT = /[^\s\u200B]/
 const MAX_VOICE_DURATION_MS = 60_000
 const MAX_VOICE_BYTES = 3 * 1024 * 1024
 const VOICE_MIME_FALLBACK = "audio/webm"
@@ -148,6 +148,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   let timer: number | undefined
   let startedAt = 0
   let finalizing = false
+  let voiceRun = 0
+  let activeVoiceRun = 0
 
   const mirror = { input: false }
   const inset = 44
@@ -286,6 +288,26 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (timer === undefined) return
     clearTimeout(timer)
     timer = undefined
+  }
+  const clearVoiceDraft = () => {
+    voiceRun += 1
+    clearVoiceTimer()
+    const active = recorder
+    recorder = undefined
+    if (active && active.state !== "inactive") {
+      active.ondataavailable = null
+      active.onerror = null
+      active.onstop = null
+      active.stop()
+    }
+    chunks = []
+    startedAt = 0
+    finalizing = false
+    speech.stop()
+    speech.reset()
+    clearVoiceStream()
+    setVoiceError("")
+    setVoicePhase("idle")
   }
   const clearVoiceStream = () => {
     if (!stream) return
@@ -858,13 +880,25 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         ? rawParts[0].content
         : rawParts.map((p) => ("content" in p ? p.content : "")).join("")
     const hasNonText = rawParts.some((part) => part.type !== "text")
-    const shouldReset = !NON_EMPTY_TEXT.test(rawText) && !hasNonText && images.length === 0 && voices.length === 0
+    const shouldReset = shouldResetPromptDraft({
+      raw: rawText,
+      has_non_text: hasNonText,
+      image_count: images.length,
+      voice_count: voices.length,
+    })
+    const shouldClearVoice = shouldClearVoiceDraft({
+      raw: rawText,
+      has_non_text: hasNonText,
+      image_count: images.length,
+      voice_count: voices.length,
+    })
 
-    if (shouldReset) {
+    if (shouldReset || shouldClearVoice) {
       closePopover()
       resetHistoryNavigation()
       if (prompt.dirty()) {
         mirror.input = true
+        if (shouldClearVoice) clearVoiceDraft()
         prompt.set(DEFAULT_PROMPT, 0)
       }
       queueScroll()
@@ -1034,7 +1068,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     showToast({ title, description })
   }
 
-  const completeVoice = async () => {
+  const completeVoice = async (run: number) => {
     if (finalizing) return
     finalizing = true
 
@@ -1063,6 +1097,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
 
     const dataUrl = await voiceDataUrl(blob).catch(() => "")
+    if (run !== voiceRun) {
+      finalizing = false
+      return
+    }
     if (!dataUrl) {
       finalizing = false
       failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
@@ -1078,6 +1116,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       duration_ms: duration,
     }
     await speech.settle()
+    if (run !== voiceRun) {
+      finalizing = false
+      return
+    }
     const cursorPosition = prompt.cursor() ?? getCursorPosition(editorRef)
     prompt.set([...prompt.current(), attachment], cursorPosition)
 
@@ -1114,7 +1156,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     speech.stop()
 
     if (!recorder || recorder.state === "inactive") {
-      void completeVoice()
+      void completeVoice(activeVoiceRun)
       return
     }
     recorder.stop()
@@ -1145,6 +1187,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     chunks = []
     finalizing = false
     startedAt = Date.now()
+    activeVoiceRun = ++voiceRun
 
     const mime = pickVoiceMime()
     const next = (() => {
@@ -1166,7 +1209,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
     }
     next.onstop = () => {
-      void completeVoice()
+      void completeVoice(activeVoiceRun)
     }
 
     speech.reset()
@@ -1227,6 +1270,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     resetHistoryNavigation: () => {
       resetHistoryNavigation(true)
     },
+    clearDraft: clearVoiceDraft,
     setMode: () => setStore("mode", "normal"),
     setPopover: (popover) => setStore("popover", popover),
     newSessionWorktree: () => props.newSessionWorktree,

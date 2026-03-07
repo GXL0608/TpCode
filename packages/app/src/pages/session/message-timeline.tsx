@@ -19,6 +19,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useLanguage } from "@/context/language"
 import { useSettings } from "@/context/settings"
 import { useSDK } from "@/context/sdk"
+import { useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
 
@@ -112,6 +113,7 @@ export function MessageTimeline(props: {
   const params = useParams()
   const navigate = useNavigate()
   const sdk = useSDK()
+  const server = useServer()
   const sync = useSync()
   const settings = useSettings()
   const dialog = useDialog()
@@ -600,6 +602,7 @@ export function MessageTimeline(props: {
                       showReasoningSummaries={settings.general.showReasoningSummaries()}
                       shellToolDefaultOpen={settings.general.shellToolPartsExpanded()}
                       editToolDefaultOpen={settings.general.editToolPartsExpanded()}
+                      attachmentBaseUrl={server.current?.http.url}
                       classes={{
                         root: "min-w-0 w-full relative",
                         content: "flex flex-col justify-between !overflow-visible",

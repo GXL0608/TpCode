@@ -1100,6 +1100,8 @@ export namespace SessionPrompt {
       return `voice-${now}.${subtype || "webm"}`
     }
 
+    await Session.updateMessage(info)
+
     const parts = await Promise.all(
       input.parts.map(async (part): Promise<Draft<MessageV2.Part>[]> => {
         if (part.type === "file") {
@@ -1186,7 +1188,26 @@ export namespace SessionPrompt {
                   stt_text: firstText,
                   stt_engine: "browser_speech_recognition",
                   data_url: part.url,
+                }).catch((error) => {
+                  log.error("failed to store voice attachment", {
+                    error,
+                    sessionID: input.sessionID,
+                    messageID: info.id,
+                    partID: id,
+                  })
+                  return undefined
                 })
+                if (!saved) {
+                  return [
+                    {
+                      ...part,
+                      id,
+                      messageID: info.id,
+                      sessionID: input.sessionID,
+                      filename,
+                    },
+                  ]
+                }
                 return [
                   {
                     ...part,

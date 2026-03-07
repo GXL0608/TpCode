@@ -16,6 +16,7 @@ let route: { id?: string } = {}
 let promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
 let commands: { name: string }[] = []
 let promptAsyncError: Error | undefined
+let clearDraftCalls = 0
 
 const event = { preventDefault: () => undefined } as unknown as Event
 
@@ -166,6 +167,7 @@ beforeEach(() => {
   promptValue = [{ type: "text", content: "ls", start: 0, end: 2 }]
   commands = []
   promptAsyncError = undefined
+  clearDraftCalls = 0
 })
 
 function createSubmit(input?: {
@@ -183,6 +185,9 @@ function createSubmit(input?: {
     promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
     addToHistory: () => undefined,
     resetHistoryNavigation: () => undefined,
+    clearDraft: () => {
+      clearDraftCalls += 1
+    },
     setMode: () => undefined,
     setPopover: () => undefined,
     newSessionWorktree: () => selected,
@@ -192,6 +197,33 @@ function createSubmit(input?: {
 }
 
 describe("prompt submit session resolution", () => {
+  test("blocks sending voice-only draft without text", async () => {
+    route = { id: "session-route-voice-only" }
+    promptValue = [
+      {
+        type: "voice",
+        id: "voice_1",
+        filename: "voice.webm",
+        mime: "audio/webm",
+        dataUrl: "data:audio/webm;base64,AAA",
+        duration_ms: 1200,
+      },
+    ]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(promptAsyncCalls).toEqual([])
+    expect(clearDraftCalls).toBe(0)
+    expect(toasts).toEqual([
+      {
+        title: "prompt.toast.voiceNoSpeech.title",
+        description: "prompt.toast.voiceNoSpeech.description",
+      },
+    ])
+  })
+
   test("reads the latest worktree accessor value per submit", async () => {
     const submit = createSubmit({ mode: "shell" })
 
@@ -213,6 +245,7 @@ describe("prompt submit session resolution", () => {
     await flush()
 
     expect(createdSessions).toEqual([])
+    expect(clearDraftCalls).toBe(1)
     expect(promptAsyncCalls).toEqual([{ directory: "/repo/main", sessionID: "session-route-normal" }])
   })
 

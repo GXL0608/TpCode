@@ -306,9 +306,10 @@ export const dict = {
   "prompt.toast.voiceRecordFailed.description": "Please retry after checking microphone availability.",
   "prompt.toast.voiceRecognitionUnsupported.title": "Speech recognition unavailable",
   "prompt.toast.voiceRecognitionUnsupported.description":
-    "Audio was attached. Type manually if transcription is unavailable in this container.",
-  "prompt.toast.voiceNoSpeech.title": "No speech recognized",
-  "prompt.toast.voiceNoSpeech.description": "Audio was attached. You can edit text manually before sending.",
+    "Audio is attached to the current draft. Add text before sending; it is only stored after the message is sent.",
+  "prompt.toast.voiceNoSpeech.title": "No transcription produced",
+  "prompt.toast.voiceNoSpeech.description":
+    "Audio is attached to the current draft. Add text before sending; it is only stored after the message is sent.",
 
   "dialog.mcp.title": "MCPs",
   "dialog.mcp.description": "{{enabled}} of {{total}} enabled",

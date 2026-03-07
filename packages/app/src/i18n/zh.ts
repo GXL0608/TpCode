@@ -321,9 +321,9 @@ export const dict = {
   "prompt.toast.voiceRecordFailed.title": "录音失败",
   "prompt.toast.voiceRecordFailed.description": "请检查麦克风可用性后重试。",
   "prompt.toast.voiceRecognitionUnsupported.title": "当前环境不支持语音转文字",
-  "prompt.toast.voiceRecognitionUnsupported.description": "音频已作为附件保存，可手动补充文字后发送。",
-  "prompt.toast.voiceNoSpeech.title": "未识别到语音内容",
-  "prompt.toast.voiceNoSpeech.description": "音频已作为附件保存，可手动补充文字后发送。",
+  "prompt.toast.voiceRecognitionUnsupported.description": "录音已附加到当前草稿。发送前请手动补充文字；发送后才会写入后台。",
+  "prompt.toast.voiceNoSpeech.title": "未完成语音转写",
+  "prompt.toast.voiceNoSpeech.description": "录音已附加到当前草稿。发送前请手动补充文字；发送后才会写入后台。",
 
   "dialog.mcp.title": "MCPs",
   "dialog.mcp.description": "已启用 {{enabled}} / {{total}}",

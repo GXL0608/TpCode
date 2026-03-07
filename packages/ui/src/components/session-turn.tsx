@@ -143,6 +143,7 @@ export function SessionTurn(
     shellToolDefaultOpen?: boolean
     editToolDefaultOpen?: boolean
     onUserInteracted?: () => void
+    attachmentBaseUrl?: string
     classes?: {
       root?: string
       content?: string
@@ -361,7 +362,12 @@ export function SessionTurn(
                 class={props.classes?.container}
               >
                 <div data-slot="session-turn-message-content" aria-live="off">
-                  <Message message={msg()} parts={parts()} interrupted={interrupted()} />
+                  <Message
+                    message={msg()}
+                    parts={parts()}
+                    interrupted={interrupted()}
+                    attachmentBaseUrl={props.attachmentBaseUrl}
+                  />
                 </div>
                 <Show when={assistantMessages().length > 0}>
                   <div data-slot="session-turn-assistant-content" aria-hidden={working()}>
