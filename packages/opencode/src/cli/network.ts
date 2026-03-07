@@ -2,6 +2,9 @@ import type { Argv, InferredOptionTypes } from "yargs"
 import { Config } from "../config/config"
 import { Installation } from "../installation"
 import { resolveWebGateway } from "../server/web-gateway"
+import { Instance } from "../project/instance"
+
+const PACKAGED_WEB_URL = "http://220.249.52.218"
 
 const options = {
   port: {
@@ -90,8 +93,16 @@ function envInt(key: string) {
   return parsed
 }
 
+function own<T extends object>(input: T | undefined, key: keyof T) {
+  if (!input) return false
+  return Object.prototype.hasOwnProperty.call(input, key)
+}
+
 export async function resolveNetworkOptions(args: NetworkOptions) {
-  const config = await Config.global()
+  const config = await Instance.provide({
+    directory: process.cwd(),
+    fn: () => Config.get().catch(() => Config.getGlobal()),
+  }).catch(() => Config.getGlobal())
   const defaultEnabled = !Installation.isLocal()
   const portExplicitlySet = argSet("--port")
   const hostnameExplicitlySet = argSet("--hostname")
@@ -114,7 +125,8 @@ export async function resolveNetworkOptions(args: NetworkOptions) {
     : mdns && !config?.server?.hostname
       ? "0.0.0.0"
       : (config?.server?.hostname ?? args.hostname)
-  const configCors = config?.server?.cors ?? []
+  const defaultCors = defaultEnabled ? [PACKAGED_WEB_URL] : []
+  const configCors = own(config?.server, "cors") ? (config?.server?.cors ?? []) : defaultCors
   const argsCors = Array.isArray(args.cors) ? args.cors : args.cors ? [args.cors] : []
   const cors = [...configCors, ...argsCors]
   const gateway = config?.server?.gateway
@@ -139,7 +151,9 @@ export async function resolveNetworkOptions(args: NetworkOptions) {
     enabled: webEnabled,
     url: gatewayWebUrlExplicitlySet
       ? args["gateway-web-url"]
-      : (process.env["TPCODE_GATEWAY_WEB_URL"] ?? gateway?.webUrl),
+      : (process.env["TPCODE_GATEWAY_WEB_URL"] ??
+          (own(gateway, "webUrl") ? gateway?.webUrl : undefined) ??
+          (defaultEnabled ? PACKAGED_WEB_URL : undefined)),
     defaultEnabled,
   })
 

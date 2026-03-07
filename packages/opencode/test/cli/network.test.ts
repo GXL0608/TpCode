@@ -4,10 +4,15 @@ import os from "os"
 import path from "path"
 import { resolveNetworkOptions } from "../../src/cli/network"
 import { Config } from "../../src/config/config"
+import { Installation } from "../../src/installation"
+import { Instance } from "../../src/project/instance"
 
 const argv = process.argv.slice()
+const originalIsLocal = Installation.isLocal
+const cwd = process.cwd()
 const env = {
   OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+  OPENCODE_CONFIG_CONTENT: process.env.OPENCODE_CONFIG_CONTENT,
   TPCODE_GATEWAY_NODE_ID: process.env.TPCODE_GATEWAY_NODE_ID,
   TPCODE_GATEWAY_DRAIN: process.env.TPCODE_GATEWAY_DRAIN,
   TPCODE_GATEWAY_ENABLED: process.env.TPCODE_GATEWAY_ENABLED,
@@ -18,8 +23,13 @@ const dirs: string[] = []
 
 afterEach(async () => {
   process.argv = argv.slice()
+  process.chdir(cwd)
+  ;(Installation as unknown as { isLocal: typeof Installation.isLocal }).isLocal = originalIsLocal
+  await Instance.disposeAll()
   if (env.OPENCODE_CONFIG_DIR === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = env.OPENCODE_CONFIG_DIR
+  if (env.OPENCODE_CONFIG_CONTENT === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+  else process.env.OPENCODE_CONFIG_CONTENT = env.OPENCODE_CONFIG_CONTENT
   if (env.TPCODE_GATEWAY_NODE_ID === undefined) delete process.env.TPCODE_GATEWAY_NODE_ID
   else process.env.TPCODE_GATEWAY_NODE_ID = env.TPCODE_GATEWAY_NODE_ID
   if (env.TPCODE_GATEWAY_DRAIN === undefined) delete process.env.TPCODE_GATEWAY_DRAIN
@@ -41,6 +51,11 @@ async function isolated() {
   dirs.push(dir)
   process.env.OPENCODE_CONFIG_DIR = dir
   Config.global.reset()
+  return dir
+}
+
+function packaged() {
+  ;(Installation as unknown as { isLocal: typeof Installation.isLocal }).isLocal = () => false
 }
 
 function args() {
@@ -104,6 +119,47 @@ test("supports gateway web config from env", async () => {
   const result = await resolveNetworkOptions(args() as any)
   expect(result.gateway.webEnabled).toBe(true)
   expect(result.gateway.webUrl).toBe("https://tpcode.xxx")
+})
+
+test("uses packaged gateway defaults when config is absent", async () => {
+  await isolated()
+  packaged()
+  delete process.env.TPCODE_GATEWAY_ENABLED
+  delete process.env.TPCODE_GATEWAY_DRAIN
+  delete process.env.TPCODE_GATEWAY_WEB_ENABLED
+  delete process.env.TPCODE_GATEWAY_WEB_URL
+  process.argv = ["bun", "opencode", "serve"]
+  const result = await resolveNetworkOptions(args() as any)
+  expect(result.cors).toEqual(["http://220.249.52.218"])
+  expect(result.gateway.enabled).toBe(true)
+  expect(result.gateway.webEnabled).toBe(true)
+  expect(result.gateway.webUrl).toBe("http://220.249.52.218")
+})
+
+test("prefers opencode.json values over packaged gateway defaults", async () => {
+  const dir = await isolated()
+  packaged()
+  const configDir = path.join(dir, ".opencode")
+  await fs.mkdir(configDir, { recursive: true })
+  await fs.writeFile(
+    path.join(configDir, "opencode.jsonc"),
+    JSON.stringify({
+      server: {
+        cors: ["http://1.2.3.4"],
+        gateway: {
+          webEnabled: true,
+          webUrl: "http://1.2.3.4",
+        },
+      },
+    }),
+  )
+  process.chdir(dir)
+  Config.global.reset()
+  process.argv = ["bun", "opencode", "serve"]
+  const result = await resolveNetworkOptions(args() as any)
+  expect(result.cors).toEqual(["http://1.2.3.4"])
+  expect(result.gateway.webEnabled).toBe(true)
+  expect(result.gateway.webUrl).toBe("http://1.2.3.4")
 })
 
 test("supports --no-gateway-web-enabled override", async () => {
