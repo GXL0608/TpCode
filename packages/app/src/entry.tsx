@@ -7,6 +7,7 @@ import { type Platform, PlatformProvider } from "@/context/platform"
 import { dict as en } from "@/i18n/en"
 import { dict as zh } from "@/i18n/zh"
 import { handleNotificationClick } from "@/utils/notification-click"
+import { resolveDefaultServerUrl } from "@/utils/default-server-url"
 import pkg from "../package.json"
 import { ServerConnection } from "./context/server"
 
@@ -52,6 +53,16 @@ const setStorage = (key: string, value: string | null) => {
 
 const readDefaultServerUrl = () => getStorage(DEFAULT_SERVER_URL_KEY)
 const writeDefaultServerUrl = (url: string | null) => setStorage(DEFAULT_SERVER_URL_KEY, url)
+
+const readRuntimeServerUrl = () => {
+  const global_ = window.__OPENCODE__?.serverUrl
+  if (global_) return global_
+  const meta = document.querySelector('meta[name="opencode-server-url"]')
+  if (!meta) return
+  const value = meta.getAttribute("content")
+  if (!value) return
+  return value
+}
 
 const notify: Platform["notify"] = async (title, description, href) => {
   if (!("Notification" in window)) return
@@ -111,12 +122,15 @@ const platform: Platform = {
 }
 
 const defaultUrl = iife(() => {
-  const lsDefault = readDefaultServerUrl()
-  if (lsDefault) return lsDefault
-  if (location.hostname.includes("opencode.ai")) return "http://localhost:4096"
-  if (import.meta.env.DEV)
-    return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? "localhost"}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
-  return location.origin
+  return resolveDefaultServerUrl({
+    runtime: readRuntimeServerUrl(),
+    stored: readDefaultServerUrl(),
+    hostname: location.hostname,
+    origin: location.origin,
+    dev: import.meta.env.DEV,
+    devHost: import.meta.env.VITE_OPENCODE_SERVER_HOST,
+    devPort: import.meta.env.VITE_OPENCODE_SERVER_PORT,
+  })
 })
 
 if (root instanceof HTMLElement) {

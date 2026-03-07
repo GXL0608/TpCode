@@ -56,6 +56,42 @@ test("loads JSON config file", async () => {
   })
 })
 
+test("loads server gateway config", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://opencode.ai/config.json",
+        server: {
+          port: 4096,
+          gateway: {
+            enabled: true,
+            nodeId: "node-a",
+            drain: true,
+            maxWriteInflight: 8,
+            rejectWriteOnOverload: false,
+            webEnabled: false,
+            webUrl: "https://tpcode.xxx/",
+          },
+        },
+      })
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await Config.get()
+      expect(config.server?.port).toBe(4096)
+      expect(config.server?.gateway?.enabled).toBe(true)
+      expect(config.server?.gateway?.nodeId).toBe("node-a")
+      expect(config.server?.gateway?.drain).toBe(true)
+      expect(config.server?.gateway?.maxWriteInflight).toBe(8)
+      expect(config.server?.gateway?.rejectWriteOnOverload).toBe(false)
+      expect(config.server?.gateway?.webEnabled).toBe(false)
+      expect(config.server?.gateway?.webUrl).toBe("https://tpcode.xxx/")
+    },
+  })
+})
+
 test("ignores legacy tui keys in opencode config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

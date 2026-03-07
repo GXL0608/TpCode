@@ -1,4 +1,5 @@
 import { Hono } from "hono"
+import type { Context } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { streamSSE } from "hono/streaming"
 import z from "zod"
@@ -12,6 +13,7 @@ import { Config } from "../../config/config"
 import { errors } from "../error"
 import { Flag } from "../../flag/flag"
 import { ServerDegraded, ServerDegradedEvent } from "../degraded"
+import { GatewayState } from "../gateway-state"
 import {
   createEventVisibilityCache,
   eventSessionID,
@@ -29,6 +31,67 @@ const HEALTH_CHECK = z.object({
   last: z.number(),
   details: z.record(z.string(), z.unknown()).optional(),
 })
+const NODE = z.object({
+  id: z.string(),
+  host: z.string(),
+  port: z.number().int().nonnegative(),
+  pid: z.number().int().positive(),
+  started_at: z.number().int().positive(),
+  drain: z.boolean(),
+  write_inflight: z.number().int().nonnegative(),
+  max_write_inflight: z.number().int().positive(),
+  reject_write_on_overload: z.boolean(),
+  updated_at: z.number().int().positive(),
+  ready: z.boolean(),
+  reason: z.string().optional(),
+})
+const READY = z.object({
+  ready: z.boolean(),
+  reason: z.string().optional(),
+  node_id: z.string(),
+  timestamp: z.number().int().positive(),
+})
+const DRAIN_INPUT = z.object({
+  enabled: z.boolean(),
+  reason: z.string().optional(),
+})
+const DRAIN_OUTPUT = z.object({
+  ok: z.literal(true),
+  drain: z.boolean(),
+  reason: z.string().optional(),
+  updated_at: z.number().int().positive(),
+})
+
+function nodePayload() {
+  const node = GatewayState.snapshot()
+  return {
+    id: node.id,
+    host: node.host,
+    port: node.port,
+    pid: node.pid,
+    started_at: node.startedAt,
+    drain: node.drain,
+    write_inflight: node.writeInflight,
+    max_write_inflight: node.maxWriteInflight,
+    reject_write_on_overload: node.rejectWriteOnOverload,
+    updated_at: node.updatedAt,
+    ready: node.ready,
+    reason: node.reason,
+  }
+}
+
+function requireManagePermission(c: Context) {
+  if (!Flag.TPCODE_ACCOUNT_ENABLED) return
+  const permissions = c.get("account_permissions") as string[] | undefined
+  if (permissions?.includes("role:manage")) return
+  return c.json(
+    {
+      error: "forbidden",
+      permission: "role:manage",
+    },
+    403,
+  )
+}
 
 export const GlobalDisposedEvent = BusEvent.define("global.disposed", z.object({}))
 
@@ -51,6 +114,8 @@ export const GlobalRoutes = lazy(() =>
                     version: z.string(),
                     degraded: z.boolean().optional(),
                     checks: z.record(z.string(), HEALTH_CHECK).optional(),
+                    ready: z.boolean(),
+                    node: NODE,
                   }),
                 ),
               },
@@ -60,11 +125,107 @@ export const GlobalRoutes = lazy(() =>
       }),
       async (c) => {
         const status = ServerDegraded.health()
+        const node = nodePayload()
         return c.json({
           healthy: true,
           version: Installation.VERSION,
           degraded: status.degraded,
           checks: status.checks,
+          ready: node.ready,
+          node,
+        })
+      },
+    )
+    .get(
+      "/ready",
+      describeRoute({
+        summary: "Get readiness",
+        description: "Readiness endpoint for gateway health checks.",
+        operationId: "global.ready",
+        responses: {
+          200: {
+            description: "Ready",
+            content: {
+              "application/json": {
+                schema: resolver(READY),
+              },
+            },
+          },
+          503: {
+            description: "Not ready",
+            content: {
+              "application/json": {
+                schema: resolver(READY),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        const state = GatewayState.snapshot()
+        const payload = {
+          ready: state.ready,
+          reason: state.reason,
+          node_id: state.id,
+          timestamp: Date.now(),
+        }
+        if (state.ready) return c.json(payload)
+        return c.json(payload, 503)
+      },
+    )
+    .get(
+      "/node",
+      describeRoute({
+        summary: "Get node state",
+        description: "Get local node state used by gateway operations.",
+        operationId: "global.node",
+        responses: {
+          200: {
+            description: "Node state",
+            content: {
+              "application/json": {
+                schema: resolver(NODE),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        return c.json(nodePayload())
+      },
+    )
+    .put(
+      "/drain",
+      describeRoute({
+        summary: "Set node drain",
+        description: "Enable or disable drain mode on this node.",
+        operationId: "global.drain",
+        responses: {
+          200: {
+            description: "Drain updated",
+            content: {
+              "application/json": {
+                schema: resolver(DRAIN_OUTPUT),
+              },
+            },
+          },
+          ...errors(400, 403),
+        },
+      }),
+      validator("json", DRAIN_INPUT),
+      async (c) => {
+        const denied = requireManagePermission(c)
+        if (denied) return denied
+        const input = c.req.valid("json")
+        const result = GatewayState.setDrain({
+          enabled: input.enabled,
+          reason: input.reason,
+        })
+        return c.json({
+          ok: true,
+          drain: result.drain,
+          reason: result.reason,
+          updated_at: result.updatedAt,
         })
       },
     )
