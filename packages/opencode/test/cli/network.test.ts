@@ -130,10 +130,10 @@ test("uses packaged gateway defaults when config is absent", async () => {
   delete process.env.TPCODE_GATEWAY_WEB_URL
   process.argv = ["bun", "opencode", "serve"]
   const result = await resolveNetworkOptions(args() as any)
-  expect(result.cors).toEqual(["http://220.249.52.218"])
+  expect(result.cors).toEqual(["http://220.249.52.218:8081"])
   expect(result.gateway.enabled).toBe(true)
   expect(result.gateway.webEnabled).toBe(true)
-  expect(result.gateway.webUrl).toBe("http://220.249.52.218")
+  expect(result.gateway.webUrl).toBe("http://220.249.52.218:8081")
 })
 
 test("prefers opencode.json values over packaged gateway defaults", async () => {

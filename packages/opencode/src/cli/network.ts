@@ -4,7 +4,7 @@ import { Installation } from "../installation"
 import { resolveWebGateway } from "../server/web-gateway"
 import { Instance } from "../project/instance"
 
-const PACKAGED_WEB_URL = "http://220.249.52.218"
+const PACKAGED_WEB_URL = "http://220.249.52.218:8081"
 
 const options = {
   port: {
