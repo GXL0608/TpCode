@@ -47,6 +47,7 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
     const accountID = auth.user()?.id ?? "anonymous"
     const providers = useProviders()
     const [loaded, setLoaded] = createSignal(false)
+    const canUseOwn = createMemo(() => auth.has("provider:use_own"))
 
     const [store, setStore, _, ready] = persisted(
       Persist.global(`acct:${accountID}:model`),
@@ -124,6 +125,10 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
         setLoaded(false)
         return
       }
+      if (!auth.has("provider:config_own") || !canUseOwn()) {
+        setLoaded(true)
+        return
+      }
       const user = auth.user()
       if (!user?.id) {
         setLoaded(false)
@@ -153,6 +158,7 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
 
     createEffect(() => {
       if (!auth.enabled() || !auth.authenticated()) return
+      if (!auth.has("provider:config_own") || !canUseOwn()) return
       if (!loaded()) return
       const body = encode()
       const timer = setTimeout(() => {

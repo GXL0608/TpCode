@@ -11,7 +11,7 @@ import { lazy } from "../../util/lazy"
 import { Flag } from "@/flag/flag"
 import { Auth } from "@/auth"
 import { AccountCurrent } from "@/user/current"
-import { UserProviderConfig } from "@/provider/user-provider-config"
+import { AccountProviderState } from "@/provider/account-provider-state"
 
 function requireProviderConfig(c: Context) {
   const permissions = c.get("account_permissions" as never) as string[] | undefined
@@ -19,16 +19,16 @@ function requireProviderConfig(c: Context) {
     return c.json(
       {
         error: "forbidden",
-        permission: "provider:config_own|provider:config_global",
+        permission: "provider:config_own",
       },
       403,
     )
   }
-  if (permissions.includes("provider:config_own") || permissions.includes("provider:config_global")) return
+  if (permissions.includes("provider:config_own")) return
   return c.json(
     {
       error: "forbidden",
-      permission: "provider:config_own|provider:config_global",
+      permission: "provider:config_own",
     },
     403,
   )
@@ -66,15 +66,16 @@ export const ProviderRoutes = lazy(() =>
         const strictAccount = Flag.TPCODE_ACCOUNT_ENABLED
         const config = strictAccount ? undefined : await Config.get()
         const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
-        const user = strictAccount && uid ? await UserProviderConfig.state(uid) : undefined
-        const disabled = new Set(strictAccount ? (user?.control.disabled_providers ?? []) : (config?.disabled_providers ?? []))
+        const account = strictAccount && uid ? await AccountProviderState.load(uid) : undefined
+        const user = account?.user
+        const disabled = new Set(strictAccount ? (account?.control.disabled_providers ?? []) : (config?.disabled_providers ?? []))
         if (strictAccount) {
           for (const [providerID, item] of Object.entries(user?.providers ?? {})) {
             if (item.meta.flags?.disabled) disabled.add(providerID)
           }
         }
         const enabled = strictAccount
-          ? (user?.control.enabled_providers ? new Set(user.control.enabled_providers) : undefined)
+          ? (account?.control.enabled_providers ? new Set(account.control.enabled_providers) : undefined)
           : (config?.enabled_providers ? new Set(config.enabled_providers) : undefined)
 
         const filteredProviders: Record<string, (typeof allProviders)[string]> = {}
@@ -88,8 +89,8 @@ export const ProviderRoutes = lazy(() =>
           connected,
         )
         let connectedIDs = Object.keys(connected)
-        if (strictAccount && user) {
-          connectedIDs = Object.entries(user.providers).flatMap(([providerID, item]) => (item.auth ? [providerID] : []))
+        if (strictAccount && account) {
+          connectedIDs = Object.entries(account.providers).flatMap(([providerID, item]) => (item.auth ? [providerID] : []))
         }
         if (strictAccount && !user) {
           const account = await Auth.all()
@@ -206,6 +207,9 @@ export const ProviderRoutes = lazy(() =>
           method,
           code,
         })
+        if (Flag.TPCODE_ACCOUNT_ENABLED) {
+          await AccountProviderState.invalidate()
+        }
         return c.json(true)
       },
     ),

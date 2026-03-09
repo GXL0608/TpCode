@@ -326,6 +326,15 @@ describe("account visibility", () => {
   test.skipIf(!on)("provider keys are isolated per user", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
+    const role = uid("self_provider")
+    const createdRole = await svc.createRole({
+      code: role,
+      name: role,
+      scope: "system",
+      permission_codes: ["provider:config_own"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(createdRole.ok).toBe(true)
     const a = uid("key_a")
     const b = uid("key_b")
     const pass = "TpCode@123A"
@@ -334,7 +343,7 @@ describe("account visibility", () => {
       password: pass,
       account_type: "internal",
       org_id: "org_tp_internal",
-      role_codes: ["developer"],
+      role_codes: [role],
       actor_user_id: "user_tp_admin",
     })
     const ub = await svc.createUser({
@@ -342,7 +351,7 @@ describe("account visibility", () => {
       password: pass,
       account_type: "internal",
       org_id: "org_tp_internal",
-      role_codes: ["developer"],
+      role_codes: [role],
       actor_user_id: "user_tp_admin",
     })
     expect(ua.ok).toBe(true)
@@ -455,7 +464,112 @@ describe("account visibility", () => {
     expect(keyA).not.toBe(keyB)
   })
 
-  test.skipIf(!on)("non super_admin cannot manage other user providers even with provider:config_user", async () => {
+  test.skipIf(!on)("provider:use_own gates whether personal provider config participates in effective state", async () => {
+    const svc = mem.user
+    if (!svc) throw new Error("user_service_missing")
+    const role = uid("self_provider_disabled")
+    const createdRole = await svc.createRole({
+      code: role,
+      name: role,
+      scope: "system",
+      permission_codes: ["provider:config_own"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(createdRole.ok).toBe(true)
+
+    const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
+    const setGlobal = await req({
+      path: "/account/admin/provider/openai/global",
+      method: "PUT",
+      token: admin,
+      body: { type: "api", key: "sk-global-openai-use-own" },
+    })
+    expect(setGlobal.status).toBe(200)
+    const setControl = await req({
+      path: "/account/admin/provider-control/global",
+      method: "PUT",
+      token: admin,
+      body: { model: "openai/gpt-4.1-mini", small_model: "openai/gpt-4.1-mini" },
+    })
+    expect(setControl.status).toBe(200)
+
+    const username = uid("use_own_off")
+    const password = "TpCode@123A"
+    const created = await svc.createUser({
+      username,
+      password,
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: [role],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+
+    const token = await login(username, password)
+    const ownKey = await req({
+      path: "/auth/openrouter",
+      method: "PUT",
+      token,
+      body: { type: "api", key: "sk-own-openrouter" },
+    })
+    expect(ownKey.status).toBe(200)
+    const ownModel = await req({
+      path: "/account/me/provider-control",
+      method: "PUT",
+      token,
+      body: { model: "openrouter/openai/gpt-4o-mini" },
+    })
+    expect(ownModel.status).toBe(200)
+
+    const openrouter = await req({
+      path: "/account/me/provider/openrouter",
+      token,
+    })
+    expect(openrouter.status).toBe(200)
+    const openrouterBody = (await openrouter.json()) as {
+      configured?: boolean
+      source?: string
+    }
+    expect(openrouterBody.configured).toBe(false)
+    expect(openrouterBody.source).toBe("none")
+
+    const openai = await req({
+      path: "/account/me/provider/openai",
+      token,
+    })
+    expect(openai.status).toBe(200)
+    const openaiBody = (await openai.json()) as {
+      configured?: boolean
+      source?: string
+    }
+    expect(openaiBody.configured).toBe(true)
+    expect(openaiBody.source).toBe("global")
+
+    const control = await req({
+      path: "/account/me/provider-control",
+      token,
+    })
+    expect(control.status).toBe(200)
+    const controlBody = (await control.json()) as {
+      model?: string
+      small_model?: string
+    }
+    expect(controlBody.model).toBe("openai/gpt-4.1-mini")
+    expect(controlBody.small_model).toBe("openai/gpt-4.1-mini")
+
+    const list = await req({
+      path: "/provider",
+      token,
+    })
+    expect(list.status).toBe(200)
+    const listBody = (await list.json()) as {
+      connected?: string[]
+    }
+    expect((listBody.connected ?? []).includes("openai")).toBe(true)
+    expect((listBody.connected ?? []).includes("openrouter")).toBe(false)
+  })
+
+  test.skipIf(!on)("provider:config_user allows delegated user provider management", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const role = uid("delegate_role")
@@ -481,14 +595,13 @@ describe("account visibility", () => {
     expect(created.ok).toBe(true)
 
     const token = await login(username, password)
-    const denied = await req({
+    const allowed = await req({
       path: "/account/admin/users/user_tp_admin/providers",
       token,
     })
-    expect(denied.status).toBe(403)
-    const body = (await denied.json()) as { permission?: string; error?: string }
-    expect(body.error).toBe("forbidden")
-    expect(body.permission).toBe("role:super_admin")
+    expect(allowed.status).toBe(200)
+    const body = (await allowed.json()) as unknown[]
+    expect(Array.isArray(body)).toBe(true)
   })
 
   test.skipIf(!on)("super_admin can manage target user provider and does not use target config for self", async () => {
@@ -555,7 +668,7 @@ describe("account visibility", () => {
     expect(adminBody.auth_type).toBeUndefined()
   })
 
-  test.skipIf(!on)("shared provider key does not auto-apply to normal user in strict mode", async () => {
+  test.skipIf(!on)("global provider key and control auto-apply to normal user in strict mode", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
@@ -566,7 +679,14 @@ describe("account visibility", () => {
       token: admin,
       body: { type: "api", key: "sk-global-openai" },
     })
-    expect(setGlobal.status).toBe(403)
+    expect(setGlobal.status).toBe(200)
+    const setControl = await req({
+      path: "/account/admin/provider-control/global",
+      method: "PUT",
+      token: admin,
+      body: { model: "openai/gpt-4.1-mini", small_model: "openai/gpt-4.1-mini" },
+    })
+    expect(setControl.status).toBe(200)
 
     const username = uid("strict_scope")
     const password = "TpCode@123A"
@@ -591,9 +711,21 @@ describe("account visibility", () => {
       source?: string
       auth_type?: string
     }
-    expect(body.configured).toBe(false)
-    expect(body.source).toBe("none")
-    expect(body.auth_type).toBeUndefined()
+    expect(body.configured).toBe(true)
+    expect(body.source).toBe("global")
+    expect(body.auth_type).toBe("api")
+
+    const control = await req({
+      path: "/account/me/provider-control",
+      token,
+    })
+    expect(control.status).toBe(200)
+    const controlBody = (await control.json()) as {
+      model?: string
+      small_model?: string
+    }
+    expect(controlBody.model).toBe("openai/gpt-4.1-mini")
+    expect(controlBody.small_model).toBe("openai/gpt-4.1-mini")
 
     const list = await req({
       path: "/provider",
@@ -603,6 +735,6 @@ describe("account visibility", () => {
     const listBody = (await list.json()) as {
       connected?: string[]
     }
-    expect((listBody.connected ?? []).includes("openai")).toBe(false)
+    expect((listBody.connected ?? []).includes("openai")).toBe(true)
   })
 })

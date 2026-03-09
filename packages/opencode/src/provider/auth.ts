@@ -15,7 +15,7 @@ export namespace ProviderAuth {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
     const current = AccountCurrent.optional()
     if (!current?.user_id) return false
-    return current.permissions.includes("provider:config_own") || current.permissions.includes("provider:config_global")
+    return current.permissions.includes("provider:config_own")
   }
 
   async function save(providerID: string, info: Auth.Info) {

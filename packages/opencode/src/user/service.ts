@@ -72,6 +72,7 @@ function permissions() {
     { code: "agent:use_build", name: "使用 Build 智能体", group_name: "agent" },
     { code: "agent:use_plan", name: "使用 Plan 智能体", group_name: "agent" },
     { code: "provider:config_own", name: "配置个人模型密钥", group_name: "provider" },
+    { code: "provider:use_own", name: "使用个人模型配置", group_name: "provider" },
     { code: "provider:config_global", name: "配置全局模型密钥", group_name: "provider" },
     { code: "provider:config_user", name: "配置用户模型密钥", group_name: "provider" },
     { code: "ui:settings.providers:view", name: "查看供应商设置页", group_name: "ui" },
@@ -100,8 +101,8 @@ const rolePerm = {
     "agent:use_docs",
     "agent:use_build",
     "agent:use_plan",
+    "provider:use_own",
     "provider:config_global",
-    "provider:config_own",
     "provider:config_user",
     "ui:settings.providers:view",
     "ui:settings.models:view",
@@ -121,18 +122,9 @@ const rolePerm = {
     "prototype:approve",
     "file:browse",
     "agent:use_plan",
-    "provider:config_own",
   ],
-  developer: [
-    "session:create",
-    "session:view_own",
-    "code:generate",
-    "prototype:view",
-    "file:browse",
-    "agent:use_plan",
-    "provider:config_own",
-  ],
-  ops: ["session:create", "session:view_own", "code:deploy", "prototype:view", "file:browse", "agent:use_plan", "provider:config_own"],
+  developer: ["session:create", "session:view_own", "code:generate", "prototype:view", "file:browse", "agent:use_plan"],
+  ops: ["session:create", "session:view_own", "code:deploy", "prototype:view", "file:browse", "agent:use_plan"],
   pm: [
     "session:create",
     "session:view_own",
@@ -141,9 +133,8 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
-    "provider:config_own",
   ],
-  value_ops: ["session:create", "session:view_own", "session:view_all", "prototype:view", "agent:use_plan", "provider:config_own"],
+  value_ops: ["session:create", "session:view_own", "session:view_all", "prototype:view", "agent:use_plan"],
   hospital_admin: [
     "session:create",
     "session:view_own",
@@ -151,7 +142,6 @@ const rolePerm = {
     "session:view_org",
     "prototype:view",
     "agent:use_plan",
-    "provider:config_own",
   ],
   dept_director: [
     "session:create",
@@ -160,9 +150,8 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
-    "provider:config_own",
   ],
-  hospital_user: ["session:create", "session:view_own", "prototype:view", "agent:use_plan", "provider:config_own"],
+  hospital_user: ["session:create", "session:view_own", "prototype:view", "agent:use_plan"],
   dean: [
     "session:view_own",
     "session:view_org",
@@ -170,7 +159,6 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
-    "provider:config_own",
   ],
 } as const
 
@@ -207,6 +195,7 @@ const permissionNameMap = {
   "agent:use_build": "使用 Build 智能体",
   "agent:use_plan": "使用 Plan 智能体",
   "provider:config_own": "配置个人模型密钥",
+  "provider:use_own": "使用个人模型配置",
   "provider:config_global": "配置全局模型密钥",
   "provider:config_user": "配置用户模型密钥",
   "ui:settings.providers:view": "查看供应商设置页",
@@ -438,6 +427,7 @@ export namespace UserService {
   export async function ensureSeed() {
     const p = permissions()
     const r = roles()
+    const builtinCodes = r.map((item) => item.code)
     await Database.use(async (db) => {
       await db.insert(TpOrganizationTable)
         .values({
@@ -490,6 +480,19 @@ export namespace UserService {
         )
         .onConflictDoNothing()
         .run()
+      for (const code of builtinCodes) {
+        await db.delete(TpRolePermissionTable).where(eq(TpRolePermissionTable.role_id, id("role_" + code))).run()
+        const perms = [...new Set(rolePerm[code as keyof typeof rolePerm] ?? [])]
+        if (perms.length === 0) continue
+        await db.insert(TpRolePermissionTable)
+          .values(
+            perms.map((perm) => ({
+              role_id: id("role_" + code),
+              permission_id: id("perm_" + perm),
+            })),
+          )
+          .run()
+      }
     })
 
     const user = await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, "admin")).get())

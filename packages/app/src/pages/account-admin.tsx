@@ -172,6 +172,11 @@ export default function AccountAdmin() {
   const [targetPermissionCodes, setTargetPermissionCodes] = createSignal("")
   const [globalProviderID, setGlobalProviderID] = createSignal("openai")
   const [globalProviderKey, setGlobalProviderKey] = createSignal("")
+  const [globalModel, setGlobalModel] = createSignal("")
+  const [globalSmallModel, setGlobalSmallModel] = createSignal("")
+  const [globalEnabledProviders, setGlobalEnabledProviders] = createSignal("")
+  const [globalDisabledProviders, setGlobalDisabledProviders] = createSignal("")
+  const [globalProviderConfigText, setGlobalProviderConfigText] = createSignal("{}")
   const [roleAccessProjectID, setRoleAccessProjectID] = createSignal("")
   const [roleAccessCodes, setRoleAccessCodes] = createSignal("")
   const [userAccessProjectID, setUserAccessProjectID] = createSignal("")
@@ -324,6 +329,21 @@ export default function AccountAdmin() {
           setState("globalProviders", items ?? {})
         }),
       )
+      jobs.push(
+        request({ path: "/account/admin/provider-control/global" }).then(async (response) => {
+          if (!response?.ok) return
+          const body = json<{
+            model?: string
+            small_model?: string
+            enabled_providers?: string[]
+            disabled_providers?: string[]
+          }>(await response.json().catch(() => undefined))
+          setGlobalModel(body?.model ?? "")
+          setGlobalSmallModel(body?.small_model ?? "")
+          setGlobalEnabledProviders((body?.enabled_providers ?? []).join(", "))
+          setGlobalDisabledProviders((body?.disabled_providers ?? []).join(", "))
+        }),
+      )
     }
 
     await Promise.all(jobs)
@@ -361,13 +381,35 @@ export default function AccountAdmin() {
     void load()
   })
 
+  createEffect(() => {
+    if (!auth.ready() || !auth.authenticated() || !canProviderGlobal()) return
+    const providerID = globalProviderID().trim()
+    if (!providerID) {
+      setGlobalProviderConfigText("{}")
+      return
+    }
+    void request({
+      path: `/account/admin/providers/${encodeURIComponent(providerID)}/config/global`,
+    }).then(async (response) => {
+      if (!response?.ok) return
+      const body = json<{ config?: unknown }>(await response.json().catch(() => undefined))
+      setGlobalProviderConfigText(body?.config ? JSON.stringify(body.config, null, 2) : "{}")
+    })
+  })
+
+  const parseList = (input: string) =>
+    input
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+
   return (
     <div class="min-h-screen w-full px-4 py-6">
       <div class="mx-auto w-full max-w-6xl flex flex-col gap-4">
         <div class="rounded-xl bg-surface-raised-base p-4 flex items-center justify-between">
           <div>
             <div class="text-20-medium text-text-strong">TpCode 账号管理台</div>
-            <div class="text-12-regular text-text-weak">组织 / 部门 / 用户 / 角色权限 / 项目分配 / VHO绑定 / 全局供应商密钥</div>
+            <div class="text-12-regular text-text-weak">组织 / 部门 / 用户 / 角色权限 / 项目分配 / VHO绑定</div>
           </div>
           <div class="flex items-center gap-2 text-12-regular">
             <A href="/settings/security" class="hover:text-text-strong">
@@ -1090,68 +1132,12 @@ export default function AccountAdmin() {
 
           <Show when={canProviderGlobal()}>
             <section class="rounded-xl bg-surface-raised-base p-4 flex flex-col gap-3">
-              <div class="text-16-medium text-text-strong">全局供应商密钥</div>
-              <form
-                class="grid grid-cols-1 md:grid-cols-3 gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  if (state.pending) return
-                  setState("pending", true)
-                  void request({
-                    path: `/account/admin/provider/${encodeURIComponent(globalProviderID().trim())}/global`,
-                    method: "PUT",
-                    body: {
-                      type: "api",
-                      key: globalProviderKey(),
-                    },
-                  }).then((response) => {
-                    if (!response?.ok) return fail("设置全局供应商密钥失败")
-                    setGlobalProviderKey("")
-                    done("全局供应商密钥已更新")
-                  })
-                }}
-              >
-                <input
-                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                  placeholder="供应商标识（编码）"
-                  value={globalProviderID()}
-                  onInput={(event) => setGlobalProviderID(event.currentTarget.value)}
-                />
-                <input
-                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                  placeholder="接口密钥"
-                  value={globalProviderKey()}
-                  onInput={(event) => setGlobalProviderKey(event.currentTarget.value)}
-                />
-                <Button type="submit" disabled={state.pending || !globalProviderID().trim() || !globalProviderKey()}>
-                  保存全局密钥
-                </Button>
-              </form>
-              <Button
-                variant="secondary"
-                disabled={state.pending || !globalProviderID().trim()}
-                onClick={() => {
-                  if (state.pending) return
-                  setState("pending", true)
-                  void request({
-                    path: `/account/admin/provider/${encodeURIComponent(globalProviderID().trim())}/global`,
-                    method: "DELETE",
-                  }).then((response) => {
-                    if (!response?.ok) return fail("删除全局供应商密钥失败")
-                    done("全局供应商密钥已删除")
-                  })
-                }}
-              >
-                删除全局密钥
-              </Button>
-              <div class="rounded-md border border-border-weak-base p-2 text-12-regular">
-                <For each={Object.entries(state.globalProviders)}>
-                  {(item) => (
-                    <div class="py-1">
-                      {item[0]} ({item[1].type})
-                    </div>
-                  )}
-                </For>
+              <div class="text-16-medium text-text-strong">全局模型配置入口已调整</div>
+              <div class="rounded-md border border-border-weak-base bg-surface-base p-4 text-13-regular text-text-weak">
+                全局供应商、模型、默认项和 provider config 现在统一在“设置 / 提供商”页面维护。
+                <div class="mt-2 text-12-regular text-text-weak">
+                  成员的个人供应商配置请到“设置 / 用户管理”，在成员操作菜单中打开“设置供应商”。
+                </div>
               </div>
             </section>
           </Show>

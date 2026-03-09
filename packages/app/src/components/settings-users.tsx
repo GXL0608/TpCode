@@ -1,15 +1,13 @@
 import { Button } from "@opencode-ai/ui/button"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { IconButton } from "@opencode-ai/ui/icon-button"
-import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
-import { iconNames, type IconName } from "@opencode-ai/ui/icons/provider"
 import { For, Show, createEffect, createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useAccountAuth } from "@/context/account-auth"
-import { popularProviders, useProviders } from "@/hooks/use-providers"
 import { passwordError, passwordRule, phoneError, phoneRule } from "@/utils/account-rule"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { type AccountRole, type AccountUser, roleZh } from "./settings-rbac-zh"
+import { SettingsProviders } from "./settings-providers"
 
 function list<T>(input: unknown) {
   return Array.isArray(input) ? (input as T[]) : []
@@ -37,10 +35,10 @@ const pageSizes = [10, 20, 50, 100, 500] as const
 export const SettingsUsers = () => {
   const auth = useAccountAuth()
   const request = useAccountRequest()
-  const providers = useProviders()
+  const canView = createMemo(() => auth.has("user:manage") || auth.has("provider:config_user"))
   const canManage = createMemo(() => auth.has("user:manage"))
   const canRole = createMemo(() => auth.has("role:manage"))
-  const canProviderUser = createMemo(() => auth.user()?.roles.includes("super_admin") ?? false)
+  const canProviderUser = createMemo(() => auth.has("provider:config_user"))
 
   const [state, setState] = createStore({
     loading: false,
@@ -73,47 +71,11 @@ export const SettingsUsers = () => {
     providerOpen: false,
     providerUserID: "",
     providerUserName: "",
-    providerID: "openai",
-    providerKey: "",
-    providerRows: [] as Array<{ provider_id: string; configured: boolean; auth_type?: string; has_config?: boolean; disabled?: boolean }>,
-    providerModel: "",
-    providerSmallModel: "",
-    providerConfigText: "{}",
   })
 
   const editUser = createMemo(() => state.users.find((item) => item.id === state.editUserID))
   const roleUser = createMemo(() => state.users.find((item) => item.id === state.roleUserID))
-  const providerCatalog = createMemo(() => {
-    const map = new Map<string, { id: string; name: string }>()
-    for (const item of providers.all()) {
-      map.set(item.id, {
-        id: item.id,
-        name: item.name?.trim() || item.id,
-      })
-    }
-    for (const id of popularProviders) {
-      if (map.has(id)) continue
-      map.set(id, {
-        id,
-        name: id,
-      })
-    }
-    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
-  })
-  const providerMap = createMemo(() => new Map(providerCatalog().map((item) => [item.id, item])))
   const roleMap = createMemo(() => new Map(state.roles.map((item) => [item.code, item])))
-  const configuredProviderIDs = createMemo(() => new Set(state.providerRows.map((item) => item.provider_id)))
-  const providerPopular = createMemo(() =>
-    popularProviders
-      .map((id) => providerMap().get(id))
-      .filter((item): item is { id: string; name: string } => !!item && !configuredProviderIDs().has(item.id)),
-  )
-  const providerAll = createMemo(() => providerCatalog().filter((item) => !configuredProviderIDs().has(item.id)))
-  const providerName = (providerID: string) => providerMap().get(providerID)?.name ?? providerID
-  const providerIcon = (providerID: string): IconName => {
-    if (iconNames.includes(providerID as IconName)) return providerID as IconName
-    return "synthetic"
-  }
   const createPasswordIssue = createMemo(() => passwordError(state.createPassword))
   const createPhoneIssue = createMemo(() => phoneError(state.createPhone))
   const userPageTotal = createMemo(() => Math.max(1, Math.ceil(state.userTotal / state.userPageSize)))
@@ -166,7 +128,7 @@ export const SettingsUsers = () => {
   }
 
   const load = async (input?: { page?: number; pageSize?: number }) => {
-    if (!canManage()) return
+    if (!canView()) return
     setState("loading", true)
     setState("error", "")
     const pageID = input?.page ?? state.userPage
@@ -342,59 +304,11 @@ export const SettingsUsers = () => {
     await load({ page })
   }
 
-  const loadUserProviders = async (userID: string) => {
-    const response = await request({
-      path: `/account/admin/users/${encodeURIComponent(userID)}/providers`,
-    }).catch(() => undefined)
-    if (!response?.ok) {
-      setState("error", await parseAccountError(response))
-      return
-    }
-    const rows = list<{ provider_id: string; configured: boolean; auth_type?: string; has_config?: boolean; disabled?: boolean }>(
-      await response.json().catch(() => undefined),
-    )
-    setState("providerRows", rows)
-  }
-
-  const loadUserProviderControl = async (userID: string) => {
-    const response = await request({
-      path: `/account/admin/users/${encodeURIComponent(userID)}/provider-control`,
-    }).catch(() => undefined)
-    if (!response?.ok) {
-      setState("error", await parseAccountError(response))
-      return
-    }
-    const row = (await response.json().catch(() => undefined)) as { model?: unknown; small_model?: unknown } | undefined
-    setState("providerModel", typeof row?.model === "string" ? row.model : "")
-    setState("providerSmallModel", typeof row?.small_model === "string" ? row.small_model : "")
-  }
-
-  const loadProviderConfig = async (userID: string, providerID: string) => {
-    const response = await request({
-      path: `/account/admin/users/${encodeURIComponent(userID)}/providers/${encodeURIComponent(providerID)}/config`,
-    }).catch(() => undefined)
-    if (!response?.ok) {
-      setState("error", await parseAccountError(response))
-      return
-    }
-    const row = (await response.json().catch(() => undefined)) as { config?: unknown } | undefined
-    const text = row?.config ? JSON.stringify(row.config, null, 2) : "{}"
-    setState("providerConfigText", text)
-  }
-
-  const openProvider = async (item: AccountUser) => {
+  const openProvider = (item: AccountUser) => {
     if (!canProviderUser()) return
     setState("providerOpen", true)
     setState("providerUserID", item.id)
     setState("providerUserName", item.display_name || item.username)
-    setState("providerID", providerCatalog()[0]?.id ?? "openai")
-    setState("providerKey", "")
-    setState("providerRows", [])
-    setState("providerModel", "")
-    setState("providerSmallModel", "")
-    setState("providerConfigText", "{}")
-    await loadUserProviders(item.id)
-    await loadUserProviderControl(item.id)
   }
 
   const closeProvider = () => {
@@ -402,100 +316,6 @@ export const SettingsUsers = () => {
     setState("providerOpen", false)
     setState("providerUserID", "")
     setState("providerUserName", "")
-    setState("providerID", "openai")
-    setState("providerKey", "")
-    setState("providerRows", [])
-    setState("providerModel", "")
-    setState("providerSmallModel", "")
-    setState("providerConfigText", "{}")
-  }
-
-  const saveProvider = async (event: SubmitEvent) => {
-    event.preventDefault()
-    if (!state.providerUserID || !state.providerID.trim() || !state.providerKey.trim()) return
-    setState("pending", true)
-    setState("message", "")
-    setState("error", "")
-    const response = await request({
-      method: "PUT",
-      path: `/account/admin/users/${encodeURIComponent(state.providerUserID)}/providers/${encodeURIComponent(state.providerID.trim())}`,
-      body: {
-        type: "api",
-        key: state.providerKey.trim(),
-      },
-    }).catch(() => undefined)
-    setState("pending", false)
-    if (!response?.ok) {
-      setState("error", await parseAccountError(response))
-      return
-    }
-    setState("providerKey", "")
-    setState("message", "用户供应商已更新")
-    await loadUserProviders(state.providerUserID)
-  }
-
-  const removeProvider = async (providerID: string) => {
-    if (!state.providerUserID) return
-    setState("pending", true)
-    setState("message", "")
-    setState("error", "")
-    const response = await request({
-      method: "DELETE",
-      path: `/account/admin/users/${encodeURIComponent(state.providerUserID)}/providers/${encodeURIComponent(providerID)}`,
-    }).catch(() => undefined)
-    setState("pending", false)
-    if (!response?.ok) {
-      setState("error", await parseAccountError(response))
-      return
-    }
-    setState("message", "用户供应商已删除")
-    await loadUserProviders(state.providerUserID)
-  }
-
-  const saveProviderControl = async () => {
-    if (!state.providerUserID) return
-    setState("pending", true)
-    setState("message", "")
-    setState("error", "")
-    const response = await request({
-      method: "PUT",
-      path: `/account/admin/users/${encodeURIComponent(state.providerUserID)}/provider-control`,
-      body: {
-        model: state.providerModel.trim() || undefined,
-        small_model: state.providerSmallModel.trim() || undefined,
-      },
-    }).catch(() => undefined)
-    setState("pending", false)
-    if (!response?.ok) {
-      setState("error", await parseAccountError(response))
-      return
-    }
-    setState("message", "用户模型默认配置已更新")
-  }
-
-  const saveProviderConfig = async () => {
-    if (!state.providerUserID || !state.providerID.trim()) return
-    setState("pending", true)
-    setState("message", "")
-    setState("error", "")
-    const parsed = await Promise.resolve().then(() => JSON.parse(state.providerConfigText || "{}") as Record<string, unknown>).catch(() => undefined)
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      setState("pending", false)
-      setState("error", "提供商配置 JSON 格式无效")
-      return
-    }
-    const response = await request({
-      method: "PUT",
-      path: `/account/admin/users/${encodeURIComponent(state.providerUserID)}/providers/${encodeURIComponent(state.providerID.trim())}/config`,
-      body: parsed,
-    }).catch(() => undefined)
-    setState("pending", false)
-    if (!response?.ok) {
-      setState("error", await parseAccountError(response))
-      return
-    }
-    setState("message", "用户供应商配置已更新")
-    await loadUserProviders(state.providerUserID)
   }
 
   const createUser = async (event: SubmitEvent) => {
@@ -544,22 +364,13 @@ export const SettingsUsers = () => {
     void load()
   })
 
-  createEffect(() => {
-    if (!state.providerOpen) return
-    if (!canProviderUser()) return
-    if (!state.providerUserID) return
-    const providerID = state.providerID.trim()
-    if (!providerID) return
-    void loadProviderConfig(state.providerUserID, providerID)
-  })
-
   return (
     <div class="w-full h-full overflow-y-auto p-4 md:p-6 flex flex-col gap-4">
       <Show
-        when={canManage()}
+        when={canView()}
         fallback={
           <section class="rounded-2xl border border-border-weak-base bg-surface-raised-base p-5 text-13-regular text-text-weak">
-            当前账号没有用户管理权限
+            当前账号没有用户列表权限
           </section>
         }
       >
@@ -573,9 +384,11 @@ export const SettingsUsers = () => {
               <Button type="button" variant="secondary" onClick={() => void load()} disabled={state.loading}>
                 刷新
               </Button>
-              <Button type="button" onClick={() => setState("createOpen", true)}>
-                新增用户
-              </Button>
+              <Show when={canManage()}>
+                <Button type="button" onClick={() => setState("createOpen", true)}>
+                  新增用户
+                </Button>
+              </Show>
             </div>
           </div>
 
@@ -605,7 +418,7 @@ export const SettingsUsers = () => {
           </Show>
           <Show when={!canProviderUser()}>
             <div class="rounded-md bg-surface-panel px-3 py-2 text-12-regular text-text-weak">
-              仅 super_admin 可为其他用户代管模型提供商与模型配置。
+              当前账号没有“用户模型配置”权限。
             </div>
           </Show>
 
@@ -936,151 +749,26 @@ export const SettingsUsers = () => {
 
       <Show when={state.providerOpen && canProviderUser()}>
         <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
-          <form class="w-full max-w-xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={saveProvider}>
-            <div class="text-16-medium text-text-strong">设置供应商</div>
-            <div class="text-12-regular text-text-weak">目标用户：{state.providerUserName || "-"}</div>
-            <div class="rounded-md border border-border-weak-base bg-surface-panel p-3 max-h-[260px] overflow-auto">
-              <div class="text-12-medium text-text-weak mb-2">已配置供应商</div>
-              <Show
-                when={state.providerRows.length > 0}
-                fallback={<div class="text-12-regular text-text-weak">暂无配置</div>}
-              >
-                <div class="flex flex-col gap-2">
-                  <For each={state.providerRows}>
-                    {(item) => (
-                      <div class="flex items-center justify-between rounded-md border border-border-weak-base bg-surface-base px-3 py-2">
-                        <div class="min-w-0 flex items-center gap-2">
-                          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-base border border-border-weak-base">
-                            <ProviderIcon id={providerIcon(item.provider_id)} class="size-4 icon-strong-base" />
-                          </div>
-                          <div class="min-w-0">
-                            <div class="text-12-medium text-text-strong truncate">{providerName(item.provider_id)}</div>
-                            <div class="text-11-regular text-text-weak truncate">{item.provider_id}</div>
-                          </div>
-                        </div>
-                        <div class="flex items-center gap-1.5">
-                          <span class="text-11-regular text-text-weak">{item.auth_type ?? "no-key"}</span>
-                          <span class="text-11-regular text-text-weak">{item.has_config ? "cfg" : "no-cfg"}</span>
-                          <span class="text-11-regular text-text-weak">{item.disabled ? "disabled" : "enabled"}</span>
-                          <Button
-                            type="button"
-                            size="small"
-                            variant="secondary"
-                            onClick={() => setState("providerID", item.provider_id)}
-                            disabled={state.pending}
-                          >
-                            更新密钥
-                          </Button>
-                          <Button
-                            type="button"
-                            size="small"
-                            variant="secondary"
-                            onClick={() => setState("providerID", item.provider_id)}
-                            disabled={state.pending}
-                          >
-                            编辑配置
-                          </Button>
-                          <Button type="button" size="small" variant="secondary" onClick={() => void removeProvider(item.provider_id)} disabled={state.pending}>
-                            删除
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </div>
-            <div class="rounded-md border border-border-weak-base bg-surface-panel p-3 flex flex-col gap-2">
-              <div class="text-12-medium text-text-weak">新增或更新供应商</div>
-              <Show when={providerPopular().length > 0}>
-                <div class="flex flex-wrap gap-1.5">
-                  <For each={providerPopular()}>
-                    {(item) => (
-                      <Button
-                        type="button"
-                        size="small"
-                        variant={state.providerID === item.id ? "primary" : "secondary"}
-                        onClick={() => setState("providerID", item.id)}
-                      >
-                        {item.name}
-                      </Button>
-                    )}
-                  </For>
-                </div>
-              </Show>
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <select
-                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                  value={state.providerID}
-                  onChange={(event) => setState("providerID", event.currentTarget.value)}
-                >
-                  <option value="">请选择供应商</option>
-                  <For each={providerAll()}>
-                    {(item) => (
-                      <option value={item.id}>
-                        {item.name} ({item.id})
-                      </option>
-                    )}
-                  </For>
-                </select>
-                <input
-                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                  placeholder="API Key"
-                  type="password"
-                  value={state.providerKey}
-                  onInput={(event) => setState("providerKey", event.currentTarget.value)}
-                />
+          <div class="w-full max-w-6xl h-[88vh] rounded-xl border border-border-weak-base bg-background-base shadow-lg overflow-hidden flex flex-col">
+            <div class="flex items-center justify-between gap-4 border-b border-border-weak-base px-5 py-4">
+              <div class="min-w-0">
+                <div class="text-16-medium text-text-strong">设置供应商</div>
+                <div class="text-12-regular text-text-weak">目标用户：{state.providerUserName || "-"}</div>
               </div>
-              <input
-                class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                placeholder="或手动输入供应商ID（自定义供应商）"
-                value={state.providerID}
-                onInput={(event) => setState("providerID", event.currentTarget.value)}
-                list="account-user-provider-catalog"
-              />
-              <datalist id="account-user-provider-catalog">
-                <For each={providerCatalog()}>
-                  {(item) => <option value={item.id}>{item.name}</option>}
-                </For>
-              </datalist>
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <input
-                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                  placeholder="默认模型 provider/model"
-                  value={state.providerModel}
-                  onInput={(event) => setState("providerModel", event.currentTarget.value)}
-                />
-                <input
-                  class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                  placeholder="small_model provider/model"
-                  value={state.providerSmallModel}
-                  onInput={(event) => setState("providerSmallModel", event.currentTarget.value)}
-                />
-              </div>
-              <textarea
-                class="min-h-[140px] rounded-md border border-border-weak-base bg-surface-base px-3 py-2 text-12-regular font-mono"
-                placeholder="Provider Config JSON"
-                value={state.providerConfigText}
-                onInput={(event) => setState("providerConfigText", event.currentTarget.value)}
-              />
-              <div class="flex flex-wrap gap-2">
-                <Button type="button" size="small" variant="secondary" onClick={() => void saveProviderConfig()} disabled={state.pending || !state.providerID.trim()}>
-                  保存供应商配置
-                </Button>
-                <Button type="button" size="small" variant="secondary" onClick={() => void saveProviderControl()} disabled={state.pending}>
-                  保存默认模型配置
-                </Button>
-              </div>
-            </div>
-            <div class="flex justify-end gap-2">
               <Button type="button" variant="secondary" onClick={closeProvider} disabled={state.pending}>
                 关闭
               </Button>
-              <Button type="submit" disabled={state.pending || !state.providerID.trim() || !state.providerKey.trim()}>
-                {state.pending ? "保存中..." : "保存供应商"}
-              </Button>
             </div>
-          </form>
+            <div class="min-h-0 flex-1">
+              <SettingsProviders
+                scope={{
+                  kind: "user",
+                  userID: state.providerUserID,
+                  userName: state.providerUserName,
+                }}
+              />
+            </div>
+          </div>
         </div>
       </Show>
     </div>

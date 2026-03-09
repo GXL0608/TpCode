@@ -19,7 +19,7 @@ export const DialogSettings: Component = () => {
   const language = useLanguage()
   const platform = usePlatform()
   const auth = useAccountAuth()
-  const canManageUsers = createMemo(() => auth.has("user:manage"))
+  const canManageUsers = createMemo(() => auth.has("user:manage") || auth.has("provider:config_user"))
   const canManageRoles = createMemo(() => auth.has("role:manage"))
   const canManageProjects = createMemo(() => auth.has("role:manage"))
   const canManageSystem = createMemo(() => auth.has("role:manage"))

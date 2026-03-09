@@ -46,7 +46,7 @@ import { ProviderTransform } from "./transform"
 import { Installation } from "../installation"
 import { AccountCurrent } from "@/user/current"
 import { State } from "@/project/state"
-import { UserProviderConfig } from "./user-provider-config"
+import { AccountProviderState } from "./account-provider-state"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -85,6 +85,13 @@ export namespace Provider {
       const val = Env.get(String(key)) ?? vars?.[String(key) as keyof typeof vars]
       return val ?? match
     })
+  }
+
+  async function scopedAuth(providerID: string) {
+    if (!strictAccountScope()) return Auth.get(providerID)
+    const uid = AccountCurrent.optional()?.user_id
+    if (!uid) return
+    return AccountProviderState.load(uid).then((x) => AccountProviderState.auth(x, providerID))
   }
 
   const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
@@ -135,7 +142,7 @@ export namespace Provider {
       const hasKey = await (async () => {
         const env = Env.all()
         if (input.env.some((item) => env[item])) return true
-        if (await Auth.get(input.id)) return true
+        if (await scopedAuth(input.id)) return true
         if (!strictAccountScope()) {
           const config = await Config.get()
           if (config.provider?.["opencode"]?.options?.apiKey) return true
@@ -216,7 +223,7 @@ export namespace Provider {
     "amazon-bedrock": async (input) => {
       const providerConfig = strictAccountScope() ? ({ options: input.options ?? {} } as { options?: Record<string, any> }) : await Config.get().then((x) => x.provider?.["amazon-bedrock"])
 
-      const auth = await Auth.get("amazon-bedrock")
+      const auth = await scopedAuth("amazon-bedrock")
 
       // Region precedence: 1) config file, 2) env var, 3) default
       const configRegion = providerConfig?.options?.region
@@ -434,7 +441,7 @@ export namespace Provider {
       }
     },
     "sap-ai-core": async () => {
-      const auth = await Auth.get("sap-ai-core")
+      const auth = await scopedAuth("sap-ai-core")
       // TODO: Using process.env directly because Env.set only updates a shallow copy (not process.env),
       // until the scope of the Env API is clarified (test only or runtime?)
       const envServiceKey = iife(() => {
@@ -471,7 +478,7 @@ export namespace Provider {
     gitlab: async (input) => {
       const instanceUrl = Env.get("GITLAB_INSTANCE_URL") || "https://gitlab.com"
 
-      const auth = await Auth.get(input.id)
+      const auth = await scopedAuth(input.id)
       const apiKey = await (async () => {
         if (auth?.type === "oauth") return auth.access
         if (auth?.type === "api") return auth.key
@@ -516,7 +523,7 @@ export namespace Provider {
       const apiKey = await iife(async () => {
         const envToken = Env.get("CLOUDFLARE_API_KEY")
         if (envToken) return envToken
-        const auth = await Auth.get(input.id)
+        const auth = await scopedAuth(input.id)
         if (auth?.type === "api") return auth.key
         return undefined
       })
@@ -542,7 +549,7 @@ export namespace Provider {
       const apiToken = await (async () => {
         const envToken = Env.get("CLOUDFLARE_API_TOKEN") || Env.get("CF_AIG_TOKEN")
         if (envToken) return envToken
-        const auth = await Auth.get(input.id)
+        const auth = await scopedAuth(input.id)
         if (auth?.type === "api") return auth.key
         return undefined
       })()
@@ -777,9 +784,10 @@ export namespace Provider {
     const modelsDev = await ModelsDev.get()
     const database = mapValues(modelsDev, fromModelsDevProvider)
     const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
-    const user = strictAccount && uid ? await UserProviderConfig.state(uid) : undefined
+    const account = strictAccount && uid ? await AccountProviderState.load(uid) : undefined
+    const user = account?.user
     const ownAuth = strictAccount
-      ? Object.entries(user?.providers ?? {}).reduce(
+      ? Object.entries(account?.providers ?? {}).reduce(
           (acc, [providerID, item]) => {
             if (!item.auth) return acc
             acc[providerID] = item.auth
@@ -789,24 +797,24 @@ export namespace Provider {
         )
       : {}
     const configProviders = strictAccount
-      ? Object.entries(user?.providers ?? {}).reduce(
+      ? Object.entries(account?.providers ?? {}).reduce(
           (acc, [providerID, item]) => {
-            if (!item.meta.provider_config) return acc
-            acc.push([providerID, item.meta.provider_config] as const)
+            if (!item.config) return acc
+            acc.push([providerID, item.config] as const)
             return acc
           },
           [] as [string, z.output<typeof Config.Provider>][],
         )
       : (Object.entries(config?.provider ?? {}) as [string, z.output<typeof Config.Provider>][])
 
-    const disabled = new Set(strictAccount ? (user?.control.disabled_providers ?? []) : (config?.disabled_providers ?? []))
+    const disabled = new Set(strictAccount ? (account?.control.disabled_providers ?? []) : (config?.disabled_providers ?? []))
     if (strictAccount) {
       for (const [providerID, item] of Object.entries(user?.providers ?? {})) {
         if (item.meta.flags?.disabled) disabled.add(providerID)
       }
     }
     const enabled = strictAccount
-      ? (user?.control.enabled_providers ? new Set(user.control.enabled_providers) : null)
+      ? (account?.control.enabled_providers ? new Set(account.control.enabled_providers) : null)
       : (config?.enabled_providers ? new Set(config.enabled_providers) : null)
 
     function isProviderAllowed(providerID: string): boolean {
@@ -986,12 +994,12 @@ export namespace Provider {
 
       // For github-copilot plugin, check if auth exists for either github-copilot or github-copilot-enterprise
       let hasAuth = false
-      const auth = await Auth.get(providerID)
+      const auth = await scopedAuth(providerID)
       if (auth) hasAuth = true
 
       // Special handling for github-copilot: also check for enterprise auth
       if (providerID === "github-copilot" && !hasAuth) {
-        const enterpriseAuth = await Auth.get("github-copilot-enterprise")
+        const enterpriseAuth = await scopedAuth("github-copilot-enterprise")
         if (enterpriseAuth) hasAuth = true
       }
 
@@ -1000,7 +1008,7 @@ export namespace Provider {
 
       // Load for the main provider if auth exists
       if (auth) {
-        const options = await plugin.auth.loader(() => Auth.get(providerID) as any, database[plugin.auth.provider])
+        const options = await plugin.auth.loader(() => scopedAuth(providerID) as any, database[plugin.auth.provider])
         const opts = options ?? {}
         const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
         mergeProvider(providerID, patch)
@@ -1010,10 +1018,10 @@ export namespace Provider {
       if (providerID === "github-copilot") {
         const enterpriseProviderID = "github-copilot-enterprise"
         if (!disabled.has(enterpriseProviderID)) {
-          const enterpriseAuth = await Auth.get(enterpriseProviderID)
+          const enterpriseAuth = await scopedAuth(enterpriseProviderID)
           if (enterpriseAuth) {
             const enterpriseOptions = await plugin.auth.loader(
-              () => Auth.get(enterpriseProviderID) as any,
+              () => scopedAuth(enterpriseProviderID) as any,
               database[enterpriseProviderID],
             )
             const opts = enterpriseOptions ?? {}
@@ -1284,7 +1292,7 @@ export namespace Provider {
     const strictAccount = strictAccountScope()
     const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
     if (strictAccount && uid) {
-      const control = await UserProviderConfig.getUserControl(uid)
+      const control = await AccountProviderState.load(uid).then((x) => x.control)
       if (control.small_model) {
         const parsed = parseModel(control.small_model)
         return getModel(parsed.providerID, parsed.modelID)
@@ -1370,7 +1378,7 @@ export namespace Provider {
     const strictAccount = strictAccountScope()
     const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
     if (strictAccount && uid) {
-      const control = await UserProviderConfig.getUserControl(uid)
+      const control = await AccountProviderState.load(uid).then((x) => x.control)
       if (control.model) return parseModel(control.model)
     }
     const cfg = strictAccount ? undefined : await Config.get()

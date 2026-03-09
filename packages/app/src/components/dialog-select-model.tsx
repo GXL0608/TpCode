@@ -14,6 +14,7 @@ import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogManageModels } from "./dialog-manage-models"
 import { ModelTooltip } from "./model-tooltip"
 import { useLanguage } from "@/context/language"
+import { useAccountAuth } from "@/context/account-auth"
 
 const isFree = (provider: string, cost: { input: number } | undefined) =>
   provider === "opencode" && (!cost || cost.input === 0)
@@ -100,13 +101,17 @@ export function ModelSelectorPopover(props: {
     dismiss: null,
   })
   const dialog = useDialog()
+  const account = useAccountAuth()
+  const canManage = createMemo(() => !account.enabled() || account.has("provider:config_own"))
 
   const handleManage = () => {
+    if (!canManage()) return
     setStore("open", false)
     dialog.show(() => <DialogManageModels />)
   }
 
   const handleConnectProvider = () => {
+    if (!canManage()) return
     setStore("open", false)
     dialog.show(() => <DialogSelectProvider />)
   }
@@ -154,6 +159,7 @@ export function ModelSelectorPopover(props: {
             onSelect={() => setStore("open", false)}
             class="p-1"
             action={
+              canManage() ? (
               <div class="flex items-center gap-1">
                 <Tooltip placement="top" value={language.t("command.provider.connect")}>
                   <IconButton
@@ -176,6 +182,7 @@ export function ModelSelectorPopover(props: {
                   />
                 </Tooltip>
               </div>
+              ) : undefined
             }
           />
         </Kobalte.Content>
@@ -187,11 +194,14 @@ export function ModelSelectorPopover(props: {
 export const DialogSelectModel: Component<{ provider?: string }> = (props) => {
   const dialog = useDialog()
   const language = useLanguage()
+  const account = useAccountAuth()
+  const canManage = createMemo(() => !account.enabled() || account.has("provider:config_own"))
 
   return (
     <Dialog
       title={language.t("dialog.model.select.title")}
       action={
+        canManage() ? (
         <Button
           class="h-7 -my-1 text-14-medium"
           icon="plus-small"
@@ -200,16 +210,19 @@ export const DialogSelectModel: Component<{ provider?: string }> = (props) => {
         >
           {language.t("command.provider.connect")}
         </Button>
+        ) : undefined
       }
     >
       <ModelList provider={props.provider} onSelect={() => dialog.close()} />
-      <Button
-        variant="ghost"
-        class="ml-3 mt-5 mb-6 text-text-base self-start"
-        onClick={() => dialog.show(() => <DialogManageModels />)}
-      >
-        {language.t("dialog.model.manage")}
-      </Button>
+      <Show when={canManage()}>
+        <Button
+          variant="ghost"
+          class="ml-3 mt-5 mb-6 text-text-base self-start"
+          onClick={() => dialog.show(() => <DialogManageModels />)}
+        >
+          {language.t("dialog.model.manage")}
+        </Button>
+      </Show>
     </Dialog>
   )
 }

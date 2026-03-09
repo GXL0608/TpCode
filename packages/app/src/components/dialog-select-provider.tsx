@@ -9,6 +9,8 @@ import { iconNames, type IconName } from "@opencode-ai/ui/icons/provider"
 import { DialogConnectProvider } from "./dialog-connect-provider"
 import { useLanguage } from "@/context/language"
 import { DialogCustomProvider } from "./dialog-custom-provider"
+import { useAccountAuth } from "@/context/account-auth"
+import type { ProviderSettingsScope } from "./provider-settings-scope"
 
 const CUSTOM_ID = "_custom"
 
@@ -17,10 +19,24 @@ function icon(id: string): IconName {
   return "synthetic"
 }
 
-export const DialogSelectProvider: Component = () => {
+export const DialogSelectProvider: Component<{ scope?: ProviderSettingsScope; onComplete?: () => void }> = (props) => {
   const dialog = useDialog()
   const providers = useProviders()
   const language = useLanguage()
+  const account = useAccountAuth()
+  const canManage = () => {
+    if (props.scope?.kind === "global") return account.has("provider:config_global")
+    if (props.scope?.kind === "user") return account.has("provider:config_user")
+    return !account.enabled() || account.has("provider:config_own")
+  }
+
+  if (!canManage()) {
+    return (
+      <Dialog title={language.t("command.provider.connect")} transition>
+        <div class="text-14-regular text-text-weak px-1 py-2">当前账号没有供应商配置权限。</div>
+      </Dialog>
+    )
+  }
 
   const popularGroup = () => language.t("dialog.provider.group.popular")
   const otherGroup = () => language.t("dialog.provider.group.other")
@@ -61,10 +77,10 @@ export const DialogSelectProvider: Component = () => {
         onSelect={(x) => {
           if (!x) return
           if (x.id === CUSTOM_ID) {
-            dialog.show(() => <DialogCustomProvider back="providers" />)
+            dialog.show(() => <DialogCustomProvider back="providers" scope={props.scope} onComplete={props.onComplete} />)
             return
           }
-          dialog.show(() => <DialogConnectProvider provider={x.id} />)
+          dialog.show(() => <DialogConnectProvider provider={x.id} scope={props.scope} onComplete={props.onComplete} />)
         }}
       >
         {(i) => (

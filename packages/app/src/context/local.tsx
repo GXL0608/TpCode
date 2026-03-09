@@ -21,6 +21,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const account = useAccountAuth()
     const accountRequest = useAccountRequest()
     const [accountModel, setAccountModel] = createSignal<string | undefined>()
+    const canUseOwn = createMemo(() => account.has("provider:use_own"))
     const connected = createMemo(() => new Set(providers.connected().map((provider) => provider.id)))
 
     createEffect(() => {
@@ -210,7 +211,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (model) models.setVisibility(model, true)
           if (options?.recent && model) models.recent.push(model)
         })
-        if (!model || !account.enabled() || !account.authenticated()) return
+        if (!model || !account.enabled() || !account.authenticated() || !account.has("provider:config_own") || !canUseOwn())
+          return
         void accountRequest({
           method: "PUT",
           path: "/account/me/provider-control",

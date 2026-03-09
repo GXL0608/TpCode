@@ -578,6 +578,54 @@ describe("account system", () => {
     expect(allowed.status).toBe(200)
   })
 
+  test.skipIf(!accountEnabled)("ordinary user cannot self-configure provider or model without provider:config_own", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("locked_provider")
+    const password = "TpCode@123A"
+    const created = await service.createUser({
+      username,
+      password,
+      display_name: "Locked Provider",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+    const token = await login(username, password)
+
+    const authDenied = await call({
+      path: "/auth/openai",
+      method: "PUT",
+      token,
+      body: { type: "api", key: "sk-locked" },
+    })
+    expect(authDenied.status).toBe(403)
+
+    const controlRead = await call({
+      path: "/account/me/provider-control",
+      token,
+    })
+    expect(controlRead.status).toBe(200)
+
+    const controlDenied = await call({
+      path: "/account/me/provider-control",
+      method: "PUT",
+      token,
+      body: { model: "openai/gpt-4.1-mini" },
+    })
+    expect(controlDenied.status).toBe(403)
+
+    const prefsDenied = await call({
+      path: "/account/me/model-prefs",
+      method: "PUT",
+      token,
+      body: { favorite: ["openai/gpt-4.1-mini"] },
+    })
+    expect(prefsDenied.status).toBe(403)
+  })
+
   test.skipIf(!accountEnabled)("forbidden prompt words are blocked and audited on session input", async () => {
     const service = state.user
     if (!service) throw new Error("user_service_missing")
