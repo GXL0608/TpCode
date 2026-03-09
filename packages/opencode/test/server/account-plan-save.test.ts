@@ -18,19 +18,14 @@ const feedback = {
     session_id: string
     message_id: string
   }[],
-  error: undefined as Error | undefined,
+  result: undefined as { ok: false; code: string; message: string } | undefined,
 }
 
 mock.module("../../src/plan/task-feedback", () => ({
   TaskFeedbackService: {
-    markAiPlanLater(input: (typeof feedback.calls)[number]) {
+    markAiPlan(input: (typeof feedback.calls)[number]) {
       feedback.calls.push(input)
-      if (!feedback.error) return Promise.resolve()
-      return Promise.resolve()
-        .then(() => {
-          throw feedback.error
-        })
-        .catch(() => undefined)
+      return Promise.resolve(feedback.result ?? { ok: true as const })
     },
   },
 }))
@@ -165,7 +160,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   feedback.calls.length = 0
-  feedback.error = undefined
+  feedback.result = undefined
 })
 
 describe("account plan save", () => {
@@ -258,8 +253,12 @@ describe("account plan save", () => {
     expect(feedback.calls).toHaveLength(0)
   })
 
-  test.skipIf(!on)("oracle update failure does not block save", async () => {
-    feedback.error = new Error("oracle_down")
+  test.skipIf(!on)("oracle update failure should fail save and rollback local plan", async () => {
+    feedback.result = {
+      ok: false,
+      code: "oracle_feedback_update_failed",
+      message: "Oracle回写失败：oracle_down",
+    }
     const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
     const sessionID = await createSession(admin.token)
     const plan = await createMessage({
@@ -279,16 +278,18 @@ describe("account plan save", () => {
         vho_feedback_no: "VHO-ERR-1",
       },
     })
-    expect(response.status).toBe(200)
-    const body = (await response.json()) as { ok?: boolean; id?: string }
-    expect(body.ok).toBe(true)
-    const row = await Database.use((db) => db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, body.id!)).get())
-    expect(!!row).toBe(true)
-    expect(row?.vho_feedback_no).toBe("VHO-ERR-1")
+    expect(response.status).toBe(502)
+    const body = (await response.json()) as { ok?: boolean; code?: string; message?: string }
+    expect(body.ok).toBe(false)
+    expect(body.code).toBe("oracle_feedback_update_failed")
+    expect(body.message).toBe("Oracle回写失败：oracle_down")
+    const rows = await Database.use((db) =>
+      db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.session_id, sessionID)).all(),
+    )
+    expect(rows).toHaveLength(0)
     expect(feedback.calls).toHaveLength(1)
     expect(feedback.calls[0]).toMatchObject({
       vho_feedback_no: "VHO-ERR-1",
-      plan_id: body.id,
       session_id: sessionID,
       message_id: plan.messageID,
     })

@@ -35,7 +35,7 @@ function DirectoryDataProvider(props: ParentProps<{ directory: string }>) {
           showToast({
             variant: "error",
             title: language.t("common.requestFailed"),
-            description: result.code,
+            description: result.message ?? result.code,
           })
         }
         if (result.ok) {

@@ -69,7 +69,11 @@ const PlanSaveFailure = z
       "part_missing",
       "plan_text_missing",
       "forbidden",
+      "oracle_feedback_missing",
+      "oracle_feedback_update_failed",
+      "oracle_feedback_row_count_invalid",
     ]),
+    message: z.string().optional(),
     permission: z.string().optional(),
   })
   .meta({ ref: "AccountPlanSaveFailure" })
@@ -669,6 +673,14 @@ export const AccountRoutes = lazy(() =>
               },
             },
           },
+          502: {
+            description: "Upstream sync failed",
+            content: {
+              "application/json": {
+                schema: resolver(PlanSaveFailure),
+              },
+            },
+          },
         },
       }),
       validator("json", PlanSaveBody),
@@ -688,7 +700,11 @@ export const AccountRoutes = lazy(() =>
           actor: user,
         })
         if (!result.ok) {
-          const status = result.code === "session_missing" || result.code === "message_missing" ? 404 : 400
+          const status = result.code === "session_missing" || result.code === "message_missing"
+            ? 404
+            : result.code === "oracle_feedback_update_failed" || result.code === "oracle_feedback_row_count_invalid"
+              ? 502
+              : 400
           return c.json({ ...result, error_code: result.code }, status)
         }
         UserService.auditLater({

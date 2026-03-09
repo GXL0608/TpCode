@@ -92,6 +92,7 @@ type SavePlanResult =
   | {
       ok: false
       code: string
+      message?: string
     }
 
 function json<T>(input: unknown): T | undefined {
@@ -446,9 +447,19 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           if (ok) response = await call()
         }
         if (!response?.ok) {
+          const body = json<{ ok?: boolean; code?: string; error?: string; message?: string }>(
+            await response?.json().catch(() => undefined),
+          )
+          if (body?.ok === false && body.code) {
+            return {
+              ok: false,
+              code: body.code,
+              message: body.message,
+            }
+          }
           return {
             ok: false,
-            code: (await responseCode(response)) ?? "plan_save_failed",
+            code: body?.code ?? body?.error ?? "plan_save_failed",
           }
         }
         const body = json<SavePlanResult>(await response.json().catch(() => undefined))

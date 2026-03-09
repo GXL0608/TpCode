@@ -14,6 +14,10 @@ declare module "oracledb" {
     close(): Promise<void>
   }
 
+  export function initOracleClient(input?: {
+    libDir?: string
+  }): void
+
   export function getConnection(input: {
     user: string
     password: string

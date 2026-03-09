@@ -1684,6 +1684,10 @@ export type AccountPlanSaveFailure = {
     | "part_missing"
     | "plan_text_missing"
     | "forbidden"
+    | "oracle_feedback_missing"
+    | "oracle_feedback_update_failed"
+    | "oracle_feedback_row_count_invalid"
+  message?: string
   permission?: string
 }
 
@@ -2703,6 +2707,10 @@ export type AccountPlanSaveErrors = {
    * Not found
    */
   404: AccountPlanSaveFailure
+  /**
+   * Upstream sync failed
+   */
+  502: AccountPlanSaveFailure
 }
 
 export type AccountPlanSaveError = AccountPlanSaveErrors[keyof AccountPlanSaveErrors]
