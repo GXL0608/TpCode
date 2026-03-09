@@ -1,7 +1,7 @@
 import { useGlobalSync } from "@/context/global-sync"
 import { decode64 } from "@/utils/base64"
 import { useParams } from "@solidjs/router"
-import { createMemo } from "solid-js"
+import { createEffect, createMemo } from "solid-js"
 
 export const popularProviders = [
   "opencode",
@@ -19,10 +19,14 @@ export function useProviders() {
   const globalSync = useGlobalSync()
   const params = useParams()
   const currentDirectory = createMemo(() => decode64(params.dir) ?? "")
+  createEffect(() => {
+    const directory = currentDirectory()
+    void globalSync.loadProvider(directory || undefined)
+  })
   const providers = createMemo(() => {
     if (currentDirectory()) {
-      const [projectStore] = globalSync.child(currentDirectory())
-      return projectStore.provider
+      const [projectStore] = globalSync.child(currentDirectory(), { bootstrap: false })
+      if (projectStore.provider.all.length > 0) return projectStore.provider
     }
     return globalSync.data.provider
   })

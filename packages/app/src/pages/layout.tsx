@@ -39,7 +39,6 @@ import { clearWorkspaceTerminals } from "@/context/terminal"
 import { useNotification } from "@/context/notification"
 import { usePermission } from "@/context/permission"
 import { Binary } from "@opencode-ai/util/binary"
-import { retry } from "@opencode-ai/util/retry"
 import { playSound, soundSrc } from "@/utils/sound"
 import { createAim } from "@/utils/aim"
 import { Worktree as WorktreeState } from "@/utils/worktree"
@@ -156,6 +155,13 @@ export default function Layout(props: ParentProps) {
     void accountProject.rememberSession(project_id, session)
   }
   const workspaceExpandedMap = createMemo(() => projectState().workspace_expanded_by_directory)
+  const hydratedSession = createMemo(() => {
+    const directory = currentDir()
+    const id = params.id
+    if (!directory || !id) return false
+    const [store] = globalSync.child(directory, { bootstrap: false })
+    return store.message[id] !== undefined
+  })
 
   const [state, setState] = createStore({
     autoselect: !initialDirectory,
@@ -729,7 +735,7 @@ export default function Layout(props: ParentProps) {
   async function prefetchMessages(directory: string, sessionID: string, token: number) {
     const [store, setStore] = globalSync.child(directory, { bootstrap: false })
 
-    return retry(() => globalSDK.client.session.messages({ directory, sessionID, limit: prefetchChunk }))
+    return globalSDK.client.session.messages({ directory, sessionID, limit: prefetchChunk })
       .then((messages) => {
         if (prefetchToken.value !== token) return
 
@@ -815,6 +821,7 @@ export default function Layout(props: ParentProps) {
     const id = params.id
     if (!id) return
     if (!params.dir) return
+    if (!hydratedSession()) return
 
     const index = sessions.findIndex((s) => s.id === id)
     if (index === -1) return

@@ -25,7 +25,7 @@ interface CheckServerHealthOptions {
 }
 
 const defaultTimeoutMs = 3000
-const defaultRetryCount = 2
+const defaultRetryCount = 0
 const defaultRetryDelayMs = 100
 
 function timeoutSignal(timeoutMs: number) {

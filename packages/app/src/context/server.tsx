@@ -1,5 +1,5 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import { batch, createEffect, createMemo, onCleanup } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup, untrack } from "solid-js"
 import { createStore } from "solid-js/store"
 import { usePlatform } from "@/context/platform"
 import { Persist, persisted } from "@/utils/persist"
@@ -190,17 +190,25 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     const fetcher = platform.fetch ?? globalThis.fetch
     const check = (conn: ServerConnection.Any) => checkServerHealth(conn.http, fetcher).then((x) => x.healthy)
 
+    const current = createMemo<ServerConnection.Any | undefined>(
+      () => allServers().find((s) => ServerConnection.key(s) === state.active) ?? allServers()[0],
+    )
+    const currentKey = createMemo(() => {
+      const conn = current()
+      if (!conn) return
+      return ServerConnection.key(conn)
+    })
+
     createEffect(() => {
-      const current_ = current()
+      const key = currentKey()
+      if (!key) return
+      const current_ = untrack(current)
       if (!current_) return
 
       setState("healthy", undefined)
       onCleanup(startHealthPolling(current_))
     })
 
-    const current = createMemo<ServerConnection.Any | undefined>(
-      () => allServers().find((s) => ServerConnection.key(s) === state.active) ?? allServers()[0],
-    )
     const isLocal = createMemo(() => {
       const c = current()
       return (c?.type === "sidecar" && c.variant === "base") || (c?.type === "http" && isLocalHost(c.http.url))

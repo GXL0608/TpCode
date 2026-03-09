@@ -11,7 +11,6 @@ import type {
 } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@opencode-ai/ui/toast"
 import { getFilename } from "@opencode-ai/util/path"
-import { retry } from "@opencode-ai/util/retry"
 import { batch } from "solid-js"
 import { reconcile, type SetStoreFunction, type Store } from "solid-js/store"
 import type { State, VcsCache } from "./types"
@@ -49,6 +48,9 @@ export async function bootstrapGlobal(input: {
   invalidConfigurationError: string
   formatMoreCount: (count: number) => string
   setGlobalStore: SetStoreFunction<GlobalStore>
+  rootPath?: () => Path | undefined
+  rootProvider?: () => ProviderListResponse | undefined
+  waitRootProvider?: () => Promise<ProviderListResponse | undefined>
 }) {
   const deferredBootstrap = flag("opencode.perf.bootstrap.deferred", true)
   const health = await input.globalSDK.global
@@ -80,16 +82,14 @@ export async function bootstrapGlobal(input: {
   }
 
   const coreTasks = [
-    retry(() =>
-      input.globalSDK.project.list().then((x) => {
-        const projects = (x.data ?? [])
-          .filter((p) => !!p?.id)
-          .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
-          .slice()
-          .sort((a, b) => cmp(a.id, b.id))
-        input.setGlobalStore("project", projects)
-      }),
-    ),
+    input.globalSDK.project.list().then((x) => {
+      const projects = (x.data ?? [])
+        .filter((p) => !!p?.id)
+        .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
+        .slice()
+        .sort((a, b) => cmp(a.id, b.id))
+      input.setGlobalStore("project", projects)
+    }),
   ]
 
   const coreResults = await Promise.allSettled(coreTasks)
@@ -99,26 +99,37 @@ export async function bootstrapGlobal(input: {
   if (!deferredBootstrap) return
 
   const deferredTasks = [
-    retry(() =>
-      input.globalSDK.path.get().then((x) => {
+    (() => {
+      const cached = input.rootPath?.()
+      if (cached?.directory === "/") {
+        input.setGlobalStore("path", cached)
+        return Promise.resolve()
+      }
+      return input.globalSDK.path.get().then((x) => {
         input.setGlobalStore("path", x.data!)
-      }),
-    ),
-    retry(() =>
-      input.globalSDK.global.config.get().then((x) => {
-        input.setGlobalStore("config", x.data!)
-      }),
-    ),
-    retry(() =>
-      input.globalSDK.provider.list().then((x) => {
+      })
+    })(),
+    input.globalSDK.global.config.get().then((x) => {
+      input.setGlobalStore("config", x.data!)
+    }),
+    await (async () => {
+      const cached = input.rootProvider?.()
+      if (cached?.all.length) {
+        input.setGlobalStore("provider", cached)
+        return
+      }
+      const shared = await input.waitRootProvider?.()
+      if (shared?.all.length) {
+        input.setGlobalStore("provider", shared)
+        return
+      }
+      await input.globalSDK.provider.list().then((x) => {
         input.setGlobalStore("provider", normalizeProviderList(x.data!))
-      }),
-    ),
-    retry(() =>
-      input.globalSDK.provider.auth().then((x) => {
-        input.setGlobalStore("provider_auth", x.data ?? {})
-      }),
-    ),
+      })
+    })(),
+    input.globalSDK.provider.auth().then((x) => {
+      input.setGlobalStore("provider_auth", x.data ?? {})
+    }),
   ]
   void Promise.allSettled(deferredTasks).then((deferredResults) => {
     const deferredErrors = deferredResults
@@ -151,16 +162,12 @@ export async function bootstrapDirectory(input: {
   if (input.store.status !== "complete") input.setStore("status", "loading")
 
   const blockingRequests = {
-    provider: () =>
-      input.sdk.provider.list().then((x) => {
-        input.setStore("provider", normalizeProviderList(x.data!))
-      }),
     agent: () => input.sdk.app.agents().then((x) => input.setStore("agent", x.data ?? [])),
     config: () => input.sdk.config.get().then((x) => input.setStore("config", x.data!)),
   }
 
   try {
-    await Promise.all(Object.values(blockingRequests).map((p) => retry(p)))
+    await Promise.all(Object.values(blockingRequests).map((p) => p()))
   } catch (err) {
     console.error("Failed to bootstrap instance", err)
     const project = getFilename(input.directory)

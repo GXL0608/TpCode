@@ -1,7 +1,6 @@
 import { batch, createMemo } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { Binary } from "@opencode-ai/util/binary"
-import { retry } from "@opencode-ai/util/retry"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useGlobalSync } from "./global-sync"
 import { resolveProjectByDirectory } from "./project-resolver"
@@ -129,9 +128,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     }
 
     const fetchMessages = async (input: { client: typeof sdk.client; sessionID: string; limit: number }) => {
-      const messages = await retry(() =>
-        input.client.session.messages({ sessionID: input.sessionID, limit: input.limit }),
-      )
+      const messages = await input.client.session.messages({ sessionID: input.sessionID, limit: input.limit })
       const items = (messages.data ?? []).filter((x) => !!x?.info?.id)
       const session = items
         .map((x) => x.info)
@@ -241,7 +238,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
           const sessionReq = hasSession
             ? Promise.resolve()
-            : retry(() => client.session.get({ sessionID })).then((session) => {
+            : client.session.get({ sessionID }).then((session) => {
                 const data = session.data
                 if (!data) return
                 setStore(
@@ -278,7 +275,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
           const key = keyFor(directory, sessionID)
           return runInflight(inflightDiff, key, () =>
-            retry(() => client.session.diff({ sessionID })).then((diff) => {
+            client.session.diff({ sessionID }).then((diff) => {
               setStore("session_diff", sessionID, reconcile(diff.data ?? [], { key: "file" }))
             }),
           )
@@ -302,7 +299,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
           const key = keyFor(directory, sessionID)
           return runInflight(inflightTodo, key, () =>
-            retry(() => client.session.todo({ sessionID })).then((todo) => {
+            client.session.todo({ sessionID }).then((todo) => {
               const list = todo.data ?? []
               setStore("todo", sessionID, reconcile(list, { key: "id" }))
               globalSync.todo.set(sessionID, list)

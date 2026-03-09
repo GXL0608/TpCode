@@ -53,18 +53,31 @@ const listServersByHealth = (
   })
 }
 
-const useServerHealth = (servers: Accessor<ServerConnection.Any[]>, fetcher: typeof fetch) => {
+const useServerHealth = (
+  servers: Accessor<ServerConnection.Any[]>,
+  current: Accessor<ServerConnection.Any | undefined>,
+  healthy: Accessor<boolean | undefined>,
+  fetcher: typeof fetch,
+) => {
   const [status, setStatus] = createStore({} as Record<ServerConnection.Key, ServerHealth | undefined>)
 
   createEffect(() => {
     const list = servers()
+    const active = current()
+    const activeKey = active && ServerConnection.key(active)
+    const activeHealthy = healthy()
     let dead = false
 
     const refresh = async () => {
       const results: Record<string, ServerHealth> = {}
       await Promise.all(
         list.map(async (conn) => {
-          results[ServerConnection.key(conn)] = await checkServerHealth(conn.http, fetcher)
+          const key = ServerConnection.key(conn)
+          if (activeKey === key && activeHealthy !== undefined) {
+            results[key] = { healthy: activeHealthy }
+            return
+          }
+          results[key] = await checkServerHealth(conn.http, fetcher)
         }),
       )
       if (dead) return
@@ -176,7 +189,7 @@ export function StatusPopover() {
     if (list.every((item) => ServerConnection.key(item) !== ServerConnection.key(current))) return [current, ...list]
     return [current, ...list.filter((item) => ServerConnection.key(item) !== ServerConnection.key(current))]
   })
-  const health = useServerHealth(servers, fetcher)
+  const health = useServerHealth(servers, () => server.current, server.healthy, fetcher)
   const sortedServers = createMemo(() => listServersByHealth(servers(), server.key, health))
   const mcp = useMcpToggle({ sync, sdk, language })
   const defaultServer = useDefaultServerKey(platform.getDefaultServerUrl)

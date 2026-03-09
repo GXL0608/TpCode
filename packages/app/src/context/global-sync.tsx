@@ -22,6 +22,7 @@ import { estimateRootSessionTotal, loadRootSessionsWithFallback } from "./global
 import { trimSessions } from "./global-sync/session-trim"
 import type { ProjectMeta } from "./global-sync/types"
 import { SESSION_RECENT_LIMIT } from "./global-sync/types"
+import { normalizeProviderList } from "./global-sync/utils"
 import { usePlatform } from "./platform"
 import { useAccountAuth } from "./account-auth"
 import { formatServerError } from "@/utils/server-errors"
@@ -53,6 +54,8 @@ function createGlobalSync() {
   const sessionLoads = new Map<string, Promise<void>>()
   const sessionMeta = new Map<string, { limit: number }>()
   const statusLoads = new Map<string, Promise<void>>()
+  const providerLoads = new Map<string, Promise<void>>()
+  const providerReady = new Set<string>()
   const degradedPullAt = new Map<string, number>()
   const busySince = new Map<string, number>()
   const progressAt = new Map<string, number>()
@@ -60,6 +63,7 @@ function createGlobalSync() {
   const STATUS_REFRESH_COOLDOWN_MS = 5000
   const STALLED_BUSY_MS = 60_000
   const STALLED_POLL_MS = 15_000
+  let seenConnected = false
 
   const [globalStore, setGlobalStore] = createStore<GlobalStore>({
     ready: false,
@@ -106,6 +110,8 @@ function createGlobalSync() {
       sessionMeta.delete(directory)
       sdkCache.delete(directory)
       statusLoads.delete(directory)
+      providerLoads.delete(directory)
+      providerReady.delete(directory)
       degradedPullAt.delete(directory)
       for (const key of [...busySince.keys()]) {
         if (!key.startsWith(`${directory}\n`)) continue
@@ -125,6 +131,37 @@ function createGlobalSync() {
     })
     sdkCache.set(directory, sdk)
     return sdk
+  }
+
+  const loadProvider = (directory?: string) => {
+    const key = directory ?? "global"
+    if (providerReady.has(key)) return Promise.resolve()
+    const pending = providerLoads.get(key)
+    if (pending) return pending
+    const promise = (directory ? sdkFor(directory).provider.list() : globalSDK.client.provider.list())
+      .then((x) => {
+        const next = normalizeProviderList(x.data!)
+        if (directory) {
+          const [, setStore] = children.child(directory, { bootstrap: false })
+          setStore("provider", next)
+        }
+        if (!directory) {
+          setGlobalStore("provider", next)
+        }
+        providerReady.add(key)
+      })
+      .finally(() => {
+        providerLoads.delete(key)
+      })
+    providerLoads.set(key, promise)
+    return promise
+  }
+
+  const reloadProvider = (directory?: string) => {
+    const key = directory ?? "global"
+    providerLoads.delete(key)
+    providerReady.delete(key)
+    return loadProvider(directory)
   }
 
   const sessionKey = (directory: string, sessionID: string) => `${directory}\n${sessionID}`
@@ -311,23 +348,32 @@ function createGlobalSync() {
     const type = (event as { type?: string }).type
 
     if (directory === "global") {
-      applyGlobalEvent({
-        event,
-        project: globalStore.project,
-        refresh: queue.refresh,
-        setGlobalProject(next) {
-          if (typeof next === "function") {
-            setGlobalStore("project", produce(next))
-            return
-          }
-          setGlobalStore("project", next)
-        },
-      })
+      const initialConnected = type === "server.connected" && !seenConnected
+      if (type === "server.connected" && !seenConnected) seenConnected = true
+      if (!initialConnected) {
+        applyGlobalEvent({
+          event,
+          project: globalStore.project,
+          refresh: queue.refresh,
+          setGlobalProject(next) {
+            if (typeof next === "function") {
+              setGlobalStore("project", produce(next))
+              return
+            }
+            setGlobalStore("project", next)
+          },
+        })
+      }
+      if (initialConnected) return
       if (type === "server.connected" || type === "global.disposed" || type === "server.degraded") {
+        if (type === "server.connected" || type === "global.disposed") {
+          void reloadProvider()
+        }
         for (const [directory, child] of Object.entries(children.children)) {
           const [, setStore] = child
           if (type === "global.disposed" || type === "server.connected") {
             queue.push(directory)
+            if (child[0].provider.all.length > 0) void reloadProvider(directory)
           }
           if (type === "global.disposed") continue
           if (type === "server.degraded") {
@@ -418,6 +464,24 @@ function createGlobalSync() {
       invalidConfigurationError: language.t("error.server.invalidConfiguration"),
       formatMoreCount: (count) => language.t("common.moreCountSuffix", { count }),
       setGlobalStore,
+      rootPath: () => {
+        const store = children.children["/"]?.[0]
+        if (!store?.path.directory) return
+        return store.path
+      },
+      rootProvider: () => {
+        const store = children.children["/"]?.[0]
+        if (!store || store.provider.all.length === 0) return
+        return store.provider
+      },
+      waitRootProvider: () => {
+        if (!children.children["/"]) return Promise.resolve(undefined)
+        return loadProvider("/").then(() => {
+          const store = children.children["/"]?.[0]
+          if (!store || store.provider.all.length === 0) return
+          return store.provider
+        })
+      },
     })
   }
 
@@ -445,6 +509,13 @@ function createGlobalSync() {
     return globalSDK.client.global.config
       .update({ config })
       .then(bootstrap)
+      .then(() =>
+        Promise.all(
+          Object.entries(children.children)
+            .filter(([, child]) => child[0].provider.all.length > 0)
+            .map(([directory]) => reloadProvider(directory)),
+        ),
+      )
       .then(() => {
         setGlobalStore("reload", "complete")
       })
@@ -465,6 +536,7 @@ function createGlobalSync() {
     },
     child: children.child,
     bootstrap,
+    loadProvider,
     updateConfig,
     project: projectApi,
     todo: {

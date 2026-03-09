@@ -47,7 +47,8 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
     const accountID = auth.user()?.id ?? "anonymous"
     const providers = useProviders()
     const [loaded, setLoaded] = createSignal(false)
-    const canUseOwn = createMemo(() => !auth.enabled())
+    const [remote, setRemote] = createSignal<string>()
+    const canUseOwn = createMemo(() => auth.has("provider:use_own"))
 
     const [store, setStore, _, ready] = persisted(
       Persist.global(`acct:${accountID}:model`),
@@ -123,15 +124,18 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
     createEffect(() => {
       if (!auth.enabled() || !auth.authenticated()) {
         setLoaded(false)
+        setRemote(undefined)
         return
       }
       if (!auth.has("provider:config_own") || !canUseOwn()) {
         setLoaded(true)
+        setRemote(undefined)
         return
       }
       const user = auth.user()
       if (!user?.id) {
         setLoaded(false)
+        setRemote(undefined)
         return
       }
       let done = false
@@ -145,10 +149,12 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
         .then((body) => {
           if (done) return
           decode(body)
+          setRemote(JSON.stringify(encode()))
           setLoaded(true)
         })
         .catch(() => {
           if (done) return
+          setRemote(JSON.stringify(encode()))
           setLoaded(true)
         })
       onCleanup(() => {
@@ -161,11 +167,16 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
       if (!auth.has("provider:config_own") || !canUseOwn()) return
       if (!loaded()) return
       const body = encode()
+      const snapshot = JSON.stringify(body)
+      if (remote() === snapshot) return
       const timer = setTimeout(() => {
         void accountRequest({
           method: "PUT",
           path: "/account/me/model-prefs",
           body: body as unknown as Record<string, unknown>,
+        }).then((response) => {
+          if (!response?.ok) return
+          setRemote(snapshot)
         })
       }, 150)
       onCleanup(() => {
