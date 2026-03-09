@@ -129,7 +129,7 @@ beforeEach(() => {
   state.error = undefined
   state.connect_error.length = 0
   state.close_error = undefined
-  state.run_error = undefined
+  state.run_error = new Error("spawn java ENOENT")
   state.run_result = undefined
   state.info.length = 0
   state.warn.length = 0
@@ -137,6 +137,21 @@ beforeEach(() => {
 })
 
 describe("plan.task-feedback", () => {
+  test("prefers bundled jdbc when available", async () => {
+    state.run_error = undefined
+
+    await expect(TaskFeedbackService.markAiPlan({
+      vho_feedback_no: "VHO-JDBC",
+      plan_id: "plan_0",
+      session_id: "session_0",
+      message_id: "message_0",
+    })).resolves.toEqual({ ok: true })
+
+    expect(state.run).toHaveLength(1)
+    expect(state.run[0].cmd.slice(-5)).toEqual(["123.57.5.73", "1521", "tphy", "120", "VHO-JDBC"])
+    expect(state.connect).toHaveLength(0)
+  })
+
   test("executes update with where clause and closes connection", async () => {
     const result = await TaskFeedbackService.markAiPlan({
       vho_feedback_no: "  VHO-12345  ",
@@ -150,7 +165,8 @@ describe("plan.task-feedback", () => {
       {
         user: "zhyy",
         password: "BJtphy@2024!@#",
-        connectString: "123.57.5.73:1521/tphy",
+        connectString:
+          "(DESCRIPTION=(CONNECT_TIMEOUT=120)(TRANSPORT_CONNECT_TIMEOUT=120)(ADDRESS=(PROTOCOL=TCP)(HOST=123.57.5.73)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=tphy)))",
       },
     ])
     expect(state.exec).toHaveLength(1)
@@ -161,7 +177,7 @@ describe("plan.task-feedback", () => {
     expect(state.exec[0].options).toEqual({ autoCommit: true })
     expect(state.close).toBe(1)
     expect(state.info).toHaveLength(1)
-    expect(state.warn).toHaveLength(0)
+    expect(state.warn).toHaveLength(1)
     expect(state.fail).toHaveLength(0)
   })
 
@@ -183,9 +199,9 @@ describe("plan.task-feedback", () => {
     })
     expect(state.close).toBe(1)
     expect(state.info).toHaveLength(0)
-    expect(state.warn).toHaveLength(1)
+    expect(state.warn).toHaveLength(2)
     expect(state.fail).toHaveLength(0)
-    expect(state.warn[0].extra?.vho_feedback_no).toBe("VHO-404")
+    expect(state.warn[1].extra?.vho_feedback_no).toBe("VHO-404")
   })
 
   test("retries with sid when listener does not recognize service name", async () => {
@@ -204,18 +220,20 @@ describe("plan.task-feedback", () => {
     expect(state.connect[0]).toEqual({
       user: "zhyy",
       password: "BJtphy@2024!@#",
-      connectString: "123.57.5.73:1521/tphy",
+      connectString:
+        "(DESCRIPTION=(CONNECT_TIMEOUT=120)(TRANSPORT_CONNECT_TIMEOUT=120)(ADDRESS=(PROTOCOL=TCP)(HOST=123.57.5.73)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=tphy)))",
     })
     expect(state.connect[1]).toEqual({
       user: "zhyy",
       password: "BJtphy@2024!@#",
-      connectString: "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=123.57.5.73)(PORT=1521))(CONNECT_DATA=(SID=tphy)))",
+      connectString:
+        "(DESCRIPTION=(CONNECT_TIMEOUT=120)(TRANSPORT_CONNECT_TIMEOUT=120)(ADDRESS=(PROTOCOL=TCP)(HOST=123.57.5.73)(PORT=1521))(CONNECT_DATA=(SID=tphy)))",
     })
     expect(state.exec).toHaveLength(1)
     expect(state.fail).toHaveLength(0)
   })
 
-  test("falls back to bundled jdbc when thin mode does not support the server version", async () => {
+  test("returns thin mode hint when jdbc helper is unavailable", async () => {
     state.connect_error.push(new Error("NJS-138: connections to this database server version are not supported by node-oracledb in Thin mode"))
 
     await expect(TaskFeedbackService.markAiPlan({
@@ -223,17 +241,15 @@ describe("plan.task-feedback", () => {
       plan_id: "plan_5",
       session_id: "session_5",
       message_id: "message_5",
-    })).resolves.toEqual({ ok: true })
+    })).resolves.toEqual({
+      ok: false,
+      code: "oracle_feedback_update_failed",
+      message:
+        "Oracle回写失败：spawn java ENOENT；Oracle回写失败：NJS-138: connections to this database server version are not supported by node-oracledb in Thin mode；当前数据库版本不支持 Thin 模式，请在服务端配置 ORACLE_CLIENT_LIB_DIR（Oracle Instant Client）后重试",
+    })
 
     expect(state.run).toHaveLength(1)
-    expect(state.run[0].cmd[0]).toBe("java")
-    expect(state.run[0].cmd[1]).toBe("-cp")
-    expect(state.run[0].cmd[3]).toBe("TaskFeedbackUpdate")
-    expect(state.run[0].cmd.slice(-4)).toEqual(["123.57.5.73", "1521", "tphy", "VHO-THICK"])
-    expect(state.run[0].env).toMatchObject({
-      OPENCODE_TASK_FEEDBACK_ORACLE_USER: "zhyy",
-      OPENCODE_TASK_FEEDBACK_ORACLE_PASSWORD: "BJtphy@2024!@#",
-    })
+    expect(state.connect).toHaveLength(1)
   })
 
   test("returns failure when execute errors and still closes connection", async () => {
@@ -247,7 +263,7 @@ describe("plan.task-feedback", () => {
     })).resolves.toEqual({
       ok: false,
       code: "oracle_feedback_update_failed",
-      message: "Oracle回写失败：oracle_down",
+      message: "Oracle回写失败：spawn java ENOENT；Oracle回写失败：oracle_down",
     })
 
     expect(state.exec).toHaveLength(1)

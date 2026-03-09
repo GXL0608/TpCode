@@ -16,7 +16,7 @@ public class TaskFeedbackUpdate {
   }
 
   public static void main(String[] args) throws Exception {
-    if (args.length < 4) {
+    if (args.length < 5) {
       out("{\"ok\":false,\"code\":\"oracle_feedback_update_failed\",\"message\":\"Oracle回写失败：缺少JDBC参数\"}");
       return;
     }
@@ -24,7 +24,8 @@ public class TaskFeedbackUpdate {
     String host = args[0];
     String port = args[1];
     String sid = args[2];
-    String id = args[3];
+    String timeout = args[3];
+    String id = args[4];
     String user = System.getenv("OPENCODE_TASK_FEEDBACK_ORACLE_USER");
     String password = System.getenv("OPENCODE_TASK_FEEDBACK_ORACLE_PASSWORD");
 
@@ -33,7 +34,8 @@ public class TaskFeedbackUpdate {
       return;
     }
 
-    String url = "jdbc:oracle:thin:@" + host + ":" + port + ":" + sid;
+    String url =
+      "jdbc:oracle:thin:@(DESCRIPTION=(CONNECT_TIMEOUT=" + timeout + ")(TRANSPORT_CONNECT_TIMEOUT=" + timeout + ")(ADDRESS=(PROTOCOL=TCP)(HOST=" + host + ")(PORT=" + port + "))(CONNECT_DATA=(SID=" + sid + ")))";
 
     try (
       Connection conn = DriverManager.getConnection(url, user, password);

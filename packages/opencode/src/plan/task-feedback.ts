@@ -9,6 +9,7 @@ const password = "BJtphy@2024!@#"
 const host = "123.57.5.73"
 const port = 1521
 const name = "tphy"
+const timeout = 120
 const helper = fileURLToPath(new URL("../../vendor/oracle/task-feedback-helper.jar", import.meta.url))
 const driver = fileURLToPath(new URL("../../vendor/oracle/ojdbc8.jar", import.meta.url))
 const stmt = `
@@ -48,6 +49,19 @@ type Jdbc =
       rows?: number
     }
 
+type Attempt =
+  | {
+      ok: true
+      rows_affected?: number
+    }
+  | {
+      ok: false
+      code: "oracle_feedback_missing" | "oracle_feedback_update_failed" | "oracle_feedback_row_count_invalid"
+      message: string
+      rows_affected?: number
+      fallback?: boolean
+    }
+
 async function client() {
   const mod = (await import("oracledb")) as typeof import("oracledb") & { default?: typeof import("oracledb") }
   const db = mod.default ?? mod
@@ -66,11 +80,11 @@ function detail(error: unknown) {
 }
 
 function service() {
-  return `${host}:${port}/${name}`
+  return `(DESCRIPTION=(CONNECT_TIMEOUT=${timeout})(TRANSPORT_CONNECT_TIMEOUT=${timeout})(ADDRESS=(PROTOCOL=TCP)(HOST=${host})(PORT=${port}))(CONNECT_DATA=(SERVICE_NAME=${name})))`
 }
 
 function sid() {
-  return `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${host})(PORT=${port}))(CONNECT_DATA=(SID=${name})))`
+  return `(DESCRIPTION=(CONNECT_TIMEOUT=${timeout})(TRANSPORT_CONNECT_TIMEOUT=${timeout})(ADDRESS=(PROTOCOL=TCP)(HOST=${host})(PORT=${port}))(CONNECT_DATA=(SID=${name})))`
 }
 
 function retry(error: unknown) {
@@ -96,7 +110,7 @@ function parse(text: string) {
   }
 }
 
-async function jdbc(input: Input) {
+async function jdbc(input: Input): Promise<Attempt> {
   const run = await Process.run(
     [
       "java",
@@ -106,6 +120,7 @@ async function jdbc(input: Input) {
       host,
       String(port),
       name,
+      String(timeout),
       input.vho_feedback_no.trim(),
     ],
     {
@@ -123,6 +138,7 @@ async function jdbc(input: Input) {
       ok: false as const,
       code: "oracle_feedback_update_failed" as const,
       message: `Oracle回写失败：${detail(run.error)}`,
+      fallback: true,
     }
   }
 
@@ -145,6 +161,7 @@ async function jdbc(input: Input) {
     ok: false as const,
     code: "oracle_feedback_update_failed" as const,
     message: `Oracle回写失败：${extra}`,
+    fallback: true,
   }
 }
 
@@ -152,6 +169,59 @@ export namespace TaskFeedbackService {
   export async function markAiPlan(input: Input): Promise<Result> {
     const vho_feedback_no = input.vho_feedback_no.trim()
     if (!vho_feedback_no) return { ok: true as const }
+
+    const primary = await jdbc(input)
+    if (primary.ok) {
+      log.info("oracle ai plan updated", {
+        plan_id: input.plan_id,
+        session_id: input.session_id,
+        message_id: input.message_id,
+        vho_feedback_no,
+        rows_affected: primary.rows_affected ?? 1,
+        mode: "jdbc",
+      })
+      return { ok: true as const }
+    }
+    if (!primary.fallback) {
+      if (primary.code === "oracle_feedback_missing") {
+        log.warn("oracle ai plan feedback missing", {
+          plan_id: input.plan_id,
+          session_id: input.session_id,
+          message_id: input.message_id,
+          vho_feedback_no,
+          rows_affected: primary.rows_affected ?? 0,
+          mode: "jdbc",
+        })
+      } else if (primary.code === "oracle_feedback_row_count_invalid") {
+        log.warn("oracle ai plan updated unexpected row count", {
+          plan_id: input.plan_id,
+          session_id: input.session_id,
+          message_id: input.message_id,
+          vho_feedback_no,
+          rows_affected: primary.rows_affected,
+          mode: "jdbc",
+        })
+      } else {
+        log.error("oracle ai plan update failed", {
+          plan_id: input.plan_id,
+          session_id: input.session_id,
+          message_id: input.message_id,
+          vho_feedback_no,
+          error: primary.message,
+          mode: "jdbc",
+        })
+      }
+      return primary
+    }
+    log.warn("oracle ai plan jdbc helper unavailable, falling back to oracledb", {
+      plan_id: input.plan_id,
+      session_id: input.session_id,
+      message_id: input.message_id,
+      vho_feedback_no,
+      error: primary.message,
+      mode: "jdbc",
+    })
+    const prefix = `${primary.message}；`
 
     const mod = await client()
       .then((value) => ({ ok: true as const, value }))
@@ -167,7 +237,7 @@ export namespace TaskFeedbackService {
       return {
         ok: false as const,
         code: "oracle_feedback_update_failed",
-        message: message(mod.error),
+        message: prefix + message(mod.error),
       }
     }
 
@@ -206,49 +276,6 @@ export namespace TaskFeedbackService {
         })
         .catch((error: unknown) => ({ ok: false as const, error: `${detail(first.error)}；SID重试失败：${detail(error)}` }))
     if (!connected.ok) {
-      if (legacy(connected.error)) {
-        const result = await jdbc(input)
-        if (result.ok) {
-          log.info("oracle ai plan updated", {
-            plan_id: input.plan_id,
-            session_id: input.session_id,
-            message_id: input.message_id,
-            vho_feedback_no,
-            rows_affected: result.rows_affected ?? 1,
-            mode: "jdbc",
-          })
-          return { ok: true as const }
-        }
-        if (result.code === "oracle_feedback_missing") {
-          log.warn("oracle ai plan feedback missing", {
-            plan_id: input.plan_id,
-            session_id: input.session_id,
-            message_id: input.message_id,
-            vho_feedback_no,
-            rows_affected: result.rows_affected ?? 0,
-            mode: "jdbc",
-          })
-        } else if (result.code === "oracle_feedback_row_count_invalid") {
-          log.warn("oracle ai plan updated unexpected row count", {
-            plan_id: input.plan_id,
-            session_id: input.session_id,
-            message_id: input.message_id,
-            vho_feedback_no,
-            rows_affected: result.rows_affected,
-            mode: "jdbc",
-          })
-        } else {
-          log.error("oracle ai plan update failed", {
-            plan_id: input.plan_id,
-            session_id: input.session_id,
-            message_id: input.message_id,
-            vho_feedback_no,
-            error: result.message,
-            mode: "jdbc",
-          })
-        }
-        return result
-      }
       log.error("oracle ai plan update failed", {
         plan_id: input.plan_id,
         session_id: input.session_id,
@@ -259,7 +286,7 @@ export namespace TaskFeedbackService {
       return {
         ok: false as const,
         code: "oracle_feedback_update_failed",
-        message: message(connected.error),
+        message: prefix + message(connected.error),
       }
     }
     const conn = connected.value
@@ -286,7 +313,7 @@ export namespace TaskFeedbackService {
         return {
           ok: false as const,
           code: "oracle_feedback_update_failed",
-          message: message(executed.error),
+          message: prefix + message(executed.error),
         }
       }
       const result = executed.value
