@@ -331,7 +331,6 @@ describe("account visibility", () => {
       code: role,
       name: role,
       scope: "system",
-      permission_codes: ["provider:config_own"],
       actor_user_id: "user_tp_admin",
     })
     expect(createdRole.ok).toBe(true)
@@ -388,7 +387,6 @@ describe("account visibility", () => {
       code: role,
       name: role,
       scope: "system",
-      permission_codes: ["provider:config_own"],
       actor_user_id: "user_tp_admin",
     })
     expect(createdRole.ok).toBe(true)
