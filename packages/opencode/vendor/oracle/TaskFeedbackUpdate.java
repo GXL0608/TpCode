@@ -16,7 +16,7 @@ public class TaskFeedbackUpdate {
   }
 
   public static void main(String[] args) throws Exception {
-    if (args.length < 5) {
+    if (args.length < 4) {
       out("{\"ok\":false,\"code\":\"oracle_feedback_update_failed\",\"message\":\"Oracle回写失败：缺少JDBC参数\"}");
       return;
     }
@@ -24,8 +24,8 @@ public class TaskFeedbackUpdate {
     String host = args[0];
     String port = args[1];
     String sid = args[2];
-    String timeout = args[3];
-    String id = args[4];
+    String timeout = args.length >= 5 ? args[3] : "120";
+    String id = args.length >= 5 ? args[4] : args[3];
     String user = System.getenv("OPENCODE_TASK_FEEDBACK_ORACLE_USER");
     String password = System.getenv("OPENCODE_TASK_FEEDBACK_ORACLE_PASSWORD");
 
