@@ -58,6 +58,11 @@ export namespace Auth {
     }
   }
 
+  function obj(input: unknown) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return {}
+    return input as Record<string, unknown>
+  }
+
   async function globalAll(): Promise<Record<string, Info>> {
     const data = await Filesystem.readJson<Record<string, unknown>>(filepath).catch(() => ({}))
     return Object.entries(data).reduce(
@@ -179,8 +184,22 @@ export namespace Auth {
     await Filesystem.writeJson(filepath, data, 0o600)
   }
 
-  export async function setUser(user_id: string, key: string, info: Info) {
+  export async function setUser(user_id: string, key: string, info: Info, source: "self" | "admin" = "self") {
     const secret = JSON.stringify(info)
+    const current = await Database.use((db) =>
+      db
+        .select()
+        .from(TpUserProviderTable)
+        .where(and(eq(TpUserProviderTable.user_id, user_id), eq(TpUserProviderTable.provider_id, key)))
+        .get(),
+    )
+    const meta = {
+      ...obj(current?.meta_json),
+      _source: {
+        ...obj(obj(current?.meta_json)._source),
+        auth: source,
+      },
+    }
     await Database.use(async (db) => {
       await db
         .insert(TpUserProviderTable)
@@ -190,6 +209,7 @@ export namespace Auth {
           provider_id: key,
           auth_type: info.type,
           secret_cipher: secret,
+          meta_json: meta,
           is_active: true,
         })
         .onConflictDoUpdate({
@@ -197,6 +217,7 @@ export namespace Auth {
           set: {
             auth_type: info.type,
             secret_cipher: secret,
+            meta_json: meta,
             is_active: true,
             time_updated: Date.now(),
           },
@@ -205,8 +226,22 @@ export namespace Auth {
     })
   }
 
-  export async function removeUser(user_id: string, key: string) {
+  export async function removeUser(user_id: string, key: string, source: "self" | "admin" = "self") {
     const secret = JSON.stringify({ type: "api", key: ACCOUNT_META_DUMMY_KEY } satisfies Info)
+    const current = await Database.use((db) =>
+      db
+        .select()
+        .from(TpUserProviderTable)
+        .where(and(eq(TpUserProviderTable.user_id, user_id), eq(TpUserProviderTable.provider_id, key)))
+        .get(),
+    )
+    const meta = {
+      ...obj(current?.meta_json),
+      _source: {
+        ...obj(obj(current?.meta_json)._source),
+        auth: source,
+      },
+    }
     await Database.use(async (db) => {
       await db
         .insert(TpUserProviderTable)
@@ -216,6 +251,7 @@ export namespace Auth {
           provider_id: key,
           auth_type: "api",
           secret_cipher: secret,
+          meta_json: meta,
           is_active: true,
         })
         .onConflictDoUpdate({
@@ -223,6 +259,7 @@ export namespace Auth {
           set: {
             auth_type: "api",
             secret_cipher: secret,
+            meta_json: meta,
             is_active: true,
             time_updated: Date.now(),
           },
@@ -244,7 +281,7 @@ export namespace Auth {
     const uid = userID()
     if (Flag.TPCODE_ACCOUNT_ENABLED) {
       if (!uid) throw new Error("account_user_missing")
-      await setUser(uid, key, info)
+      await setUser(uid, key, info, "self")
       return
     }
     await setGlobal(key, info)
@@ -254,7 +291,7 @@ export namespace Auth {
     const uid = userID()
     if (Flag.TPCODE_ACCOUNT_ENABLED) {
       if (!uid) throw new Error("account_user_missing")
-      await removeUser(uid, key)
+      await removeUser(uid, key, "self")
       return
     }
     await removeGlobal(key)

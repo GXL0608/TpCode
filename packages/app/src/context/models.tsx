@@ -47,7 +47,7 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
     const accountID = auth.user()?.id ?? "anonymous"
     const providers = useProviders()
     const [loaded, setLoaded] = createSignal(false)
-    const canUseOwn = createMemo(() => auth.has("provider:use_own"))
+    const canUseOwn = createMemo(() => !auth.enabled())
 
     const [store, setStore, _, ready] = persisted(
       Persist.global(`acct:${accountID}:model`),

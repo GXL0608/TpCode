@@ -6,7 +6,6 @@ import z from "zod"
 import { Instance } from "@/project/instance"
 import { Event } from "@/server/event"
 import { GlobalBus } from "@/bus/global"
-import { AccountCurrent } from "@/user/current"
 
 type ProviderConfig = z.output<typeof Config.Provider>
 
@@ -28,13 +27,6 @@ export namespace AccountProviderState {
     providers: Record<string, ProviderState>
   }
 
-  function useOwn(user_id: string) {
-    const current = AccountCurrent.optional()
-    if (!current) return true
-    if (current.user_id !== user_id) return true
-    return current.permissions.includes("provider:use_own")
-  }
-
   export async function load(user_id: string): Promise<Effective> {
     const [global_auth, global_control, global_configs, user] = await Promise.all([
       Auth.sharedAll(),
@@ -42,12 +34,7 @@ export namespace AccountProviderState {
       AccountSystemSettingService.providerConfigs(),
       UserProviderConfig.state(user_id),
     ])
-    const own = useOwn(user_id)
-      ? user
-      : ({
-          control: {} as UserProviderConfig.Control,
-          providers: {},
-        } satisfies UserProviderConfig.State)
+    const own = user
     const ids = new Set([
       ...Object.keys(global_auth),
       ...Object.keys(global_configs),

@@ -323,7 +323,7 @@ describe("account visibility", () => {
     expect(ok.status).toBe(404)
   })
 
-  test.skipIf(!on)("provider keys are isolated per user", async () => {
+  test.skipIf(!on)("self-configured provider routes stay forbidden even if a role still carries provider:config_own", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const role = uid("self_provider")
@@ -336,7 +336,6 @@ describe("account visibility", () => {
     })
     expect(createdRole.ok).toBe(true)
     const a = uid("key_a")
-    const b = uid("key_b")
     const pass = "TpCode@123A"
     const ua = await svc.createUser({
       username: a,
@@ -346,125 +345,42 @@ describe("account visibility", () => {
       role_codes: [role],
       actor_user_id: "user_tp_admin",
     })
-    const ub = await svc.createUser({
-      username: b,
-      password: pass,
-      account_type: "internal",
-      org_id: "org_tp_internal",
-      role_codes: [role],
-      actor_user_id: "user_tp_admin",
-    })
     expect(ua.ok).toBe(true)
-    expect(ub.ok).toBe(true)
     if (!("id" in ua) || !ua.id) throw new Error("usera_id_missing")
-    if (!("id" in ub) || !ub.id) throw new Error("userb_id_missing")
-    const uaID = ua.id
-    const ubID = ub.id
 
     const ta = await login(a, pass)
-    const tb = await login(b, pass)
     const ra = await req({
       path: "/auth/openai",
       method: "PUT",
       token: ta,
       body: { type: "api", key: "sk-user-a" },
     })
-    const rb = await req({
-      path: "/auth/openai",
-      method: "PUT",
-      token: tb,
-      body: { type: "api", key: "sk-user-b" },
-    })
-    expect(ra.status).toBe(200)
-    expect(rb.status).toBe(200)
+    expect(ra.status).toBe(403)
 
     const ownA = await req({
       path: "/account/me/provider/openai",
       token: ta,
     })
-    const ownB = await req({
-      path: "/account/me/provider/openai",
-      token: tb,
-    })
     expect(ownA.status).toBe(200)
-    expect(ownB.status).toBe(200)
     const ownABody = (await ownA.json()) as {
       configured?: boolean
       source?: string
       auth_type?: string
     }
-    const ownBBody = (await ownB.json()) as {
-      configured?: boolean
-      source?: string
-      auth_type?: string
-    }
-    expect(ownABody.configured).toBe(true)
-    expect(ownABody.source).toBe("user")
-    expect(ownABody.auth_type).toBe("api")
-    expect(ownBBody.configured).toBe(true)
-    expect(ownBBody.source).toBe("user")
-    expect(ownBBody.auth_type).toBe("api")
-
-    const updateA = await req({
-      path: "/auth/openai",
-      method: "PUT",
-      token: ta,
-      body: { type: "api", key: "sk-user-a-2" },
-    })
-    expect(updateA.status).toBe(200)
-
-    const activeA = await req({
-      path: "/account/me/provider/openai",
-      token: ta,
-    })
-    expect(activeA.status).toBe(200)
-    const activeABody = (await activeA.json()) as {
-      configured?: boolean
-      source?: string
-      auth_type?: string
-    }
-    expect(activeABody.configured).toBe(true)
-    expect(activeABody.source).toBe("user")
-    expect(activeABody.auth_type).toBe("api")
-
-    const keepB = await req({
-      path: "/account/me/provider/openai",
-      token: tb,
-    })
-    expect(keepB.status).toBe(200)
-    const keepBBody = (await keepB.json()) as {
-      configured?: boolean
-      source?: string
-      auth_type?: string
-    }
-    expect(keepBBody.configured).toBe(true)
-    expect(keepBBody.source).toBe("user")
-    expect(keepBBody.auth_type).toBe("api")
-
+    expect(ownABody.configured).toBe(false)
+    expect(ownABody.source).toBe("none")
+    expect(ownABody.auth_type).toBeUndefined()
     const rowA = await Database.use((db) =>
       db
         .select()
         .from(TpUserProviderTable)
-        .where(and(eq(TpUserProviderTable.user_id, uaID), eq(TpUserProviderTable.provider_id, "openai")))
+        .where(and(eq(TpUserProviderTable.user_id, ua.id), eq(TpUserProviderTable.provider_id, "openai")))
         .get(),
     )
-    const rowB = await Database.use((db) =>
-      db
-        .select()
-        .from(TpUserProviderTable)
-        .where(and(eq(TpUserProviderTable.user_id, ubID), eq(TpUserProviderTable.provider_id, "openai")))
-        .get(),
-    )
-    expect(!!rowA).toBe(true)
-    expect(!!rowB).toBe(true)
-    const keyA = rowA ? (JSON.parse(rowA.secret_cipher) as { key?: string }).key : undefined
-    const keyB = rowB ? (JSON.parse(rowB.secret_cipher) as { key?: string }).key : undefined
-    expect(keyA).toContain("sk-user-a")
-    expect(keyB).toContain("sk-user-b")
-    expect(keyA).not.toBe(keyB)
+    expect(rowA).toBeUndefined()
   })
 
-  test.skipIf(!on)("provider:use_own gates whether personal provider config participates in effective state", async () => {
+  test.skipIf(!on)("personal provider config is ignored while global provider config still applies", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const role = uid("self_provider_disabled")
@@ -512,14 +428,14 @@ describe("account visibility", () => {
       token,
       body: { type: "api", key: "sk-own-openrouter" },
     })
-    expect(ownKey.status).toBe(200)
+    expect(ownKey.status).toBe(403)
     const ownModel = await req({
       path: "/account/me/provider-control",
       method: "PUT",
       token,
       body: { model: "openrouter/openai/gpt-4o-mini" },
     })
-    expect(ownModel.status).toBe(200)
+    expect(ownModel.status).toBe(403)
 
     const openrouter = await req({
       path: "/account/me/provider/openrouter",
@@ -736,5 +652,61 @@ describe("account visibility", () => {
       connected?: string[]
     }
     expect((listBody.connected ?? []).includes("openai")).toBe(true)
+  })
+
+  test.skipIf(!on)("global autoload provider stays connected for normal users in strict mode", async () => {
+    const svc = mem.user
+    if (!svc) throw new Error("user_service_missing")
+    const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
+
+    const setControl = await req({
+      path: "/account/admin/provider-control/global",
+      method: "PUT",
+      token: admin,
+      body: {
+        enabled_providers: ["opencode"],
+        disabled_providers: [],
+        model: "opencode/gpt-5-nano",
+        small_model: "opencode/gpt-5-nano",
+      },
+    })
+    expect(setControl.status).toBe(200)
+
+    const username = uid("strict_opencode")
+    const password = "TpCode@123A"
+    const created = await svc.createUser({
+      username,
+      password,
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+
+    const token = await login(username, password)
+    const control = await req({
+      path: "/account/me/provider-control",
+      token,
+    })
+    expect(control.status).toBe(200)
+    const controlBody = (await control.json()) as {
+      model?: string
+      small_model?: string
+    }
+    expect(controlBody.model).toBe("opencode/gpt-5-nano")
+    expect(controlBody.small_model).toBe("opencode/gpt-5-nano")
+
+    const list = await req({
+      path: "/provider",
+      token,
+    })
+    expect(list.status).toBe(200)
+    const listBody = (await list.json()) as {
+      connected?: string[]
+      all?: Array<{ id?: string }>
+    }
+    expect((listBody.all ?? []).some((item) => item.id === "opencode")).toBe(true)
+    expect((listBody.connected ?? []).includes("opencode")).toBe(true)
   })
 })

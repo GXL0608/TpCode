@@ -162,6 +162,15 @@ function requireLogin(c: Context) {
 }
 
 function requireProviderConfig(c: Context) {
+  if (Flag.TPCODE_ACCOUNT_ENABLED) {
+    return c.json(
+      {
+        error: "forbidden",
+        permission: "provider:config_global|provider:config_user",
+      },
+      403,
+    )
+  }
   const permissions = c.get("account_permissions" as never) as string[] | undefined
   if (!permissions) {
     return c.json(
@@ -702,9 +711,7 @@ export const AccountRoutes = lazy(() =>
         if (!result.ok) {
           const status = result.code === "session_missing" || result.code === "message_missing"
             ? 404
-            : result.code === "oracle_feedback_update_failed" || result.code === "oracle_feedback_row_count_invalid"
-              ? 502
-              : 400
+            : 400
           return c.json({ ...result, error_code: result.code }, status)
         }
         UserService.auditLater({
@@ -740,7 +747,7 @@ export const AccountRoutes = lazy(() =>
                   z.object({
                     provider_id: z.string(),
                     configured: z.boolean(),
-                    source: z.enum(["none", "user"]),
+                    source: z.enum(["none", "user", "global"]),
                     auth_type: z.string().optional(),
                   }),
                 ),
@@ -1754,7 +1761,7 @@ export const AccountRoutes = lazy(() =>
         const body = c.req.valid("json")
         const user = await UserService.userByID(param.user_id)
         if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await Auth.setUser(param.user_id, param.provider_id, body)
+        await Auth.setUser(param.user_id, param.provider_id, body, "admin")
         await UserService.audit({
           actor_user_id,
           action: "account.user.provider.set",
@@ -1818,7 +1825,7 @@ export const AccountRoutes = lazy(() =>
         const body = c.req.valid("json")
         const user = await UserService.userByID(param.user_id)
         if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await UserProviderConfig.setUserControl(param.user_id, body)
+        await UserProviderConfig.setUserControl(param.user_id, body, "admin")
         await AccountProviderState.invalidate()
         return c.json(true)
       },
@@ -1845,7 +1852,7 @@ export const AccountRoutes = lazy(() =>
         const body = c.req.valid("json")
         const user = await UserService.userByID(param.user_id)
         if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await UserProviderConfig.setProviderConfig(param.user_id, param.provider_id, body)
+        await UserProviderConfig.setProviderConfig(param.user_id, param.provider_id, body, "admin")
         await AccountProviderState.invalidate()
         return c.json(true)
       },
@@ -1860,7 +1867,7 @@ export const AccountRoutes = lazy(() =>
         const body = c.req.valid("json")
         const user = await UserService.userByID(param.user_id)
         if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await UserProviderConfig.setProviderDisabled(param.user_id, param.provider_id, body.disabled)
+        await UserProviderConfig.setProviderDisabled(param.user_id, param.provider_id, body.disabled, "admin")
         await AccountProviderState.invalidate()
         return c.json(true)
       },

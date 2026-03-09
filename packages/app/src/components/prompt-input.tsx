@@ -154,6 +154,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const mirror = { input: false }
   const inset = 44
   const speech = createSpeechRecognition()
+  const modelLabel = createMemo(() => {
+    const current = local.model.current()
+    if (current?.name) return current.name
+    const configured = local.model.configured()
+    if (configured) return configured
+    if (!local.model.ready()) return `${language.t("common.loading")}${language.t("common.loading.ellipsis")}`
+    return language.t("dialog.model.select.title")
+  })
 
   const scrollCursorIntoView = () => {
     const container = scrollRef
@@ -1738,7 +1746,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                         style={{ "will-change": "opacity", transform: "translateZ(0)" }}
                       />
                     </Show>
-                    <span class="truncate">{local.model.current()?.name ?? language.t("dialog.model.select.title")}</span>
+                    <span class="truncate">{modelLabel()}</span>
                     <Icon name="chevron-down" size="small" class="shrink-0" />
                   </Button>
                 </TooltipKeybind>
@@ -1766,7 +1774,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       style={{ "will-change": "opacity", transform: "translateZ(0)" }}
                     />
                   </Show>
-                  <span class="truncate">{local.model.current()?.name ?? language.t("dialog.model.select.title")}</span>
+                  <span class="truncate">{modelLabel()}</span>
                   <Icon name="chevron-down" size="small" class="shrink-0" />
                 </ModelSelectorPopover>
               </TooltipKeybind>

@@ -552,17 +552,13 @@ export namespace Server {
           validator("json", Auth.Info),
           async (c) => {
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
-              const permissions = c.get("account_permissions" as never) as string[] | undefined
-              const allowed = !!permissions && permissions.includes("provider:config_own")
-              if (!allowed) {
-                return c.json(
-                  {
-                    error: "forbidden",
-                    permission: "provider:config_own",
-                  },
-                  403,
-                )
-              }
+              return c.json(
+                {
+                  error: "forbidden",
+                  permission: "provider:config_global|provider:config_user",
+                },
+                403,
+              )
             }
             const providerID = c.req.valid("param").providerID
             const info = c.req.valid("json")
@@ -603,17 +599,13 @@ export namespace Server {
           ),
           async (c) => {
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
-              const permissions = c.get("account_permissions" as never) as string[] | undefined
-              const allowed = !!permissions && permissions.includes("provider:config_own")
-              if (!allowed) {
-                return c.json(
-                  {
-                    error: "forbidden",
-                    permission: "provider:config_own",
-                  },
-                  403,
-                )
-              }
+              return c.json(
+                {
+                  error: "forbidden",
+                  permission: "provider:config_global|provider:config_user",
+                },
+                403,
+              )
             }
             const providerID = c.req.valid("param").providerID
             if (Flag.TPCODE_ACCOUNT_ENABLED) {

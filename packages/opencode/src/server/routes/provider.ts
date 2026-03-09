@@ -9,11 +9,19 @@ import { mapValues } from "remeda"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Flag } from "@/flag/flag"
-import { Auth } from "@/auth"
 import { AccountCurrent } from "@/user/current"
 import { AccountProviderState } from "@/provider/account-provider-state"
 
 function requireProviderConfig(c: Context) {
+  if (Flag.TPCODE_ACCOUNT_ENABLED) {
+    return c.json(
+      {
+        error: "forbidden",
+        permission: "provider:config_global|provider:config_user",
+      },
+      403,
+    )
+  }
   const permissions = c.get("account_permissions" as never) as string[] | undefined
   if (!permissions) {
     return c.json(
@@ -88,14 +96,7 @@ export const ProviderRoutes = lazy(() =>
           mapValues(filteredProviders, (x) => Provider.fromModelsDevProvider(x)),
           connected,
         )
-        let connectedIDs = Object.keys(connected)
-        if (strictAccount && account) {
-          connectedIDs = Object.entries(account.providers).flatMap(([providerID, item]) => (item.auth ? [providerID] : []))
-        }
-        if (strictAccount && !user) {
-          const account = await Auth.all()
-          connectedIDs = Object.keys(account)
-        }
+        const connectedIDs = Object.keys(connected)
         return c.json({
           all: Object.values(providers),
           default: mapValues(providers, (item) => Provider.sort(Object.values(item.models))[0].id),

@@ -21,19 +21,24 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const account = useAccountAuth()
     const accountRequest = useAccountRequest()
     const [accountModel, setAccountModel] = createSignal<string | undefined>()
-    const canUseOwn = createMemo(() => account.has("provider:use_own"))
+    const [accountModelLoaded, setAccountModelLoaded] = createSignal(false)
+    const canUseOwn = createMemo(() => !account.enabled())
+    const strictGlobal = createMemo(() => account.enabled() && account.authenticated())
     const connected = createMemo(() => new Set(providers.connected().map((provider) => provider.id)))
 
     createEffect(() => {
       if (!account.enabled() || !account.authenticated()) {
         setAccountModel(undefined)
+        setAccountModelLoaded(true)
         return
       }
       const user = account.user()
       if (!user?.id) {
         setAccountModel(undefined)
+        setAccountModelLoaded(false)
         return
       }
+      setAccountModelLoaded(false)
       let done = false
       void accountRequest({ path: "/account/me/provider-control" })
         .then((response) => {
@@ -42,14 +47,31 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
         .then((row) => {
           if (done) return
-          if (!row || typeof row !== "object" || Array.isArray(row)) return
+          if (!row || typeof row !== "object" || Array.isArray(row)) {
+            setAccountModel(undefined)
+            setAccountModelLoaded(true)
+            return
+          }
           const model = (row as { model?: unknown }).model
           setAccountModel(typeof model === "string" ? model : undefined)
+          setAccountModelLoaded(true)
+        })
+        .catch(() => {
+          if (done) return
+          setAccountModelLoaded(true)
         })
       onCleanup(() => {
         done = true
       })
     })
+
+    function parseConfigured(value: string | undefined) {
+      if (!value) return
+      const [providerID, ...rest] = value.split("/")
+      const modelID = rest.join("/")
+      if (!providerID || !modelID) return
+      return { providerID, modelID }
+    }
 
     function isModelValid(model: ModelKey) {
       const provider = providers.all().find((x) => x.id === model.providerID)
@@ -112,7 +134,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const value = available[next]
           if (!value) return
           setStore("current", value.name)
-          if (value.model)
+          if (value.model && !strictGlobal())
             setModel({
               providerID: value.model.providerID,
               modelID: value.model.modelID,
@@ -130,13 +152,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         model: {},
       })
 
+      const configured = createMemo(() => (account.enabled() ? accountModel() : sync.data.config.model))
+
       const resolveConfigured = () => {
-        const value = account.enabled() ? accountModel() : sync.data.config.model
-        if (!value) return
-        const [providerID, ...rest] = value.split("/")
-        const modelID = rest.join("/")
-        if (!providerID || !modelID) return
-        const key = { providerID, modelID }
+        const key = parseConfigured(configured())
+        if (!key) return
         if (isModelValid(key)) return key
       }
 
@@ -163,17 +183,29 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
 
       const fallbackModel = createMemo<ModelKey | undefined>(() => {
+        if (strictGlobal()) return resolveConfigured()
         return resolveConfigured() ?? resolveRecent() ?? resolveDefault()
+      })
+
+      const configuredReady = createMemo(() => {
+        if (!strictGlobal()) return true
+        if (!accountModelLoaded()) return false
+        const key = parseConfigured(configured())
+        if (!key) return true
+        const provider = providers.all().find((x) => x.id === key.providerID)
+        return !!provider?.models[key.modelID]
       })
 
       const current = createMemo(() => {
         const a = agent.current()
         if (!a) return undefined
-        const key = getFirstValidModel(
-          () => ephemeral.model[a.name],
-          () => a.model,
-          fallbackModel,
-        )
+        const key = strictGlobal()
+          ? getFirstValidModel(() => ephemeral.model[a.name], resolveConfigured)
+          : getFirstValidModel(
+              () => ephemeral.model[a.name],
+              () => a.model,
+              fallbackModel,
+            )
         if (!key) return undefined
         return models.find(key)
       })
@@ -225,7 +257,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       setModel = set
 
       return {
-        ready: models.ready,
+        ready: createMemo(() => models.ready() && configuredReady()),
+        configured,
         current,
         recent,
         list: models.list,

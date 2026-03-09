@@ -1,13 +1,9 @@
 import { Project } from "@/project/project"
 import { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session"
-import { Database, eq } from "@/storage/db"
-import { Log } from "@/util/log"
+import { Database } from "@/storage/db"
 import { ulid } from "ulid"
 import { TpSavedPlanTable } from "./saved-plan.sql"
-import { TaskFeedbackService } from "./task-feedback"
-
-const log = Log.create({ service: "plan.service" })
 
 type Actor = {
   id: string
@@ -92,33 +88,7 @@ export namespace PlanService {
         })
         .run()
     })
-    if (vho_feedback_no) {
-      const feedback = await TaskFeedbackService.markAiPlan({
-        vho_feedback_no,
-        plan_id: id,
-        session_id: input.session_id,
-        message_id: input.message_id,
-      })
-      if (!feedback.ok) {
-        const rolled = await Database.use((db) => db.delete(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, id)).run())
-          .then(() => true)
-          .catch((error: unknown) => {
-            log.error("plan save rollback failed", {
-              plan_id: id,
-              session_id: input.session_id,
-              message_id: input.message_id,
-              vho_feedback_no,
-              error,
-            })
-            return false
-          })
-        return {
-          ok: false as const,
-          code: feedback.code,
-          message: rolled ? feedback.message : `${feedback.message}；本地计划回滚失败，请联系管理员`,
-        }
-      }
-    }
+    // VHO 回写暂时停用，保存计划仅落本地 tp_saved_plan。
     return {
       ok: true as const,
       id,

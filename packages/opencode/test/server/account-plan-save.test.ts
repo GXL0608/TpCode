@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import path from "path"
 import { Identifier } from "../../src/id/id"
 import { Session } from "../../src/session"
@@ -11,24 +11,6 @@ import { Flag } from "../../src/flag/flag"
 const root = path.join(__dirname, "../..")
 Log.init({ print: false })
 const on = Flag.TPCODE_ACCOUNT_ENABLED
-const feedback = {
-  calls: [] as {
-    vho_feedback_no: string
-    plan_id: string
-    session_id: string
-    message_id: string
-  }[],
-  result: undefined as { ok: false; code: string; message: string } | undefined,
-}
-
-mock.module("../../src/plan/task-feedback", () => ({
-  TaskFeedbackService: {
-    markAiPlan(input: (typeof feedback.calls)[number]) {
-      feedback.calls.push(input)
-      return Promise.resolve(feedback.result ?? { ok: true as const })
-    },
-  },
-}))
 
 async function boot() {
   const [{ Server }, { UserService }] = await Promise.all([
@@ -158,13 +140,8 @@ beforeAll(async () => {
   mem.user = ready.user
 })
 
-afterEach(() => {
-  feedback.calls.length = 0
-  feedback.result = undefined
-})
-
 describe("account plan save", () => {
-  test.skipIf(!on)("saves plan with vho feedback and writes audit", async () => {
+  test.skipIf(!on)("saves plan with vho feedback locally and writes audit", async () => {
     const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
     const sessionID = await createSession(admin.token)
     const plan = await createMessage({
@@ -202,13 +179,6 @@ describe("account plan save", () => {
     expect(row?.message_id).toBe(plan.messageID)
     expect(row?.part_id).toBe(plan.partID)
     expect(row?.vho_feedback_no).toBe("VHO-12345")
-    expect(feedback.calls).toHaveLength(1)
-    expect(feedback.calls[0]).toMatchObject({
-      vho_feedback_no: "VHO-12345",
-      plan_id: body.id,
-      session_id: sessionID,
-      message_id: plan.messageID,
-    })
 
     await new Promise((resolve) => setTimeout(resolve, 20))
     const audit = await Database.use((db) =>
@@ -250,15 +220,9 @@ describe("account plan save", () => {
     const body = (await response.json()) as { id?: string }
     const row = await Database.use((db) => db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, body.id!)).get())
     expect(row?.vho_feedback_no ?? null).toBeNull()
-    expect(feedback.calls).toHaveLength(0)
   })
 
-  test.skipIf(!on)("oracle update failure should fail save and rollback local plan", async () => {
-    feedback.result = {
-      ok: false,
-      code: "oracle_feedback_update_failed",
-      message: "Oracle回写失败：oracle_down",
-    }
+  test.skipIf(!on)("vho feedback should not block local save", async () => {
     const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
     const sessionID = await createSession(admin.token)
     const plan = await createMessage({
@@ -278,21 +242,16 @@ describe("account plan save", () => {
         vho_feedback_no: "VHO-ERR-1",
       },
     })
-    expect(response.status).toBe(502)
-    const body = (await response.json()) as { ok?: boolean; code?: string; message?: string }
-    expect(body.ok).toBe(false)
-    expect(body.code).toBe("oracle_feedback_update_failed")
-    expect(body.message).toBe("Oracle回写失败：oracle_down")
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { ok?: boolean; id?: string }
+    expect(body.ok).toBe(true)
+    expect(typeof body.id).toBe("string")
     const rows = await Database.use((db) =>
       db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.session_id, sessionID)).all(),
     )
-    expect(rows).toHaveLength(0)
-    expect(feedback.calls).toHaveLength(1)
-    expect(feedback.calls[0]).toMatchObject({
-      vho_feedback_no: "VHO-ERR-1",
-      session_id: sessionID,
-      message_id: plan.messageID,
-    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.id).toBe(body.id!)
+    expect(rows[0]?.vho_feedback_no).toBe("VHO-ERR-1")
   })
 
   test.skipIf(!on)("saving same plan twice creates two rows", async () => {
