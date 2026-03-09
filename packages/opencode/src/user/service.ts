@@ -1421,6 +1421,12 @@ export namespace UserService {
     return "inactive" as const
   }
 
+  function clean(input?: string | null) {
+    const value = input?.trim()
+    if (!value) return null
+    return value
+  }
+
   async function roleIDs(codes: string[]) {
     if (codes.length === 0) return [] as string[]
     const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, codes)).all())
@@ -1674,13 +1680,17 @@ export namespace UserService {
         id: item.id,
         username: item.username,
         display_name: item.display_name,
-        email: item.email,
-        phone: item.phone,
+        email: item.email ?? undefined,
+        phone: item.phone ?? undefined,
         vho_user_id: item.vho_user_id ?? undefined,
         status: item.status,
         account_type: item.account_type,
         org_id: item.org_id,
         department_id: item.department_id ?? undefined,
+        customer_id: item.customer_id ?? undefined,
+        customer_name: item.customer_name ?? undefined,
+        customer_department_id: item.customer_department_id ?? undefined,
+        customer_department_name: item.customer_department_name ?? undefined,
         force_password_reset: item.force_password_reset,
         last_login_at: item.last_login_at ?? undefined,
         last_login_ip: item.last_login_ip ?? undefined,
@@ -2092,6 +2102,10 @@ export namespace UserService {
             account_type: "internal",
             org_id: org.id,
             department_id: null,
+            customer_id: null,
+            customer_name: null,
+            customer_department_id: null,
+            customer_department_name: null,
             status,
             force_password_reset: false,
             failed_login_count: 0,
@@ -2133,6 +2147,10 @@ export namespace UserService {
           phone: next_phone,
           account_type: "internal",
           org_id: org.id,
+          customer_id: row.customer_id,
+          customer_name: row.customer_name,
+          customer_department_id: row.customer_department_id,
+          customer_department_name: row.customer_department_name,
           status,
           force_password_reset: false,
           external_source: "vho",
@@ -2147,6 +2165,133 @@ export namespace UserService {
     auditLater({
       actor_user_id: input.actor_user_id,
       action: "account.user.import.vho",
+      target_type: "tp_user",
+      result: "success",
+      detail_json: result,
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return {
+      ok: true as const,
+      ...result,
+    }
+  }
+
+  export async function importUserAffiliations(input: {
+    rows: {
+      username: string
+      customer_id?: string
+      customer_name?: string
+      customer_department_id?: string
+      customer_department_name?: string
+    }[]
+    dry_run?: boolean
+    actor_user_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
+    const rows = [...new Map(
+      input.rows
+        .flatMap((item) => {
+          const username = item.username.trim()
+          if (!username) return []
+          return [
+            {
+              username,
+              customer_id: clean(item.customer_id),
+              customer_name: clean(item.customer_name),
+              customer_department_id: clean(item.customer_department_id),
+              customer_department_name: clean(item.customer_department_name),
+            },
+          ]
+        })
+        .map((item) => [item.username, item]),
+    ).values()]
+    const usernames = rows.map((item) => item.username)
+    const existing =
+      usernames.length === 0
+        ? []
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpUserTable)
+              .where(inArray(TpUserTable.username, usernames))
+              .all(),
+          )
+    const users = new Map(existing.map((item) => [item.username, item]))
+    const result = {
+      updated: 0,
+      unchanged: 0,
+      missing_user: 0,
+      skipped: input.rows.length - rows.length,
+      dry_run: !!input.dry_run,
+    }
+    const updates = rows.flatMap((item) => {
+      const row = users.get(item.username)
+      if (!row) {
+        result.missing_user += 1
+        return []
+      }
+      if (
+        row.customer_id === item.customer_id &&
+        row.customer_name === item.customer_name &&
+        row.customer_department_id === item.customer_department_id &&
+        row.customer_department_name === item.customer_department_name
+      ) {
+        result.unchanged += 1
+        return []
+      }
+      result.updated += 1
+      return [
+        {
+          id: row.id,
+          customer_id: item.customer_id,
+          customer_name: item.customer_name,
+          customer_department_id: item.customer_department_id,
+          customer_department_name: item.customer_department_name,
+        },
+      ]
+    })
+
+    if (!input.dry_run && updates.length > 0) {
+      await Database.transaction(async (db) => {
+        const size = 100
+        const list = Array.from({ length: Math.ceil(updates.length / size) }, (_, index) =>
+          updates.slice(index * size, (index + 1) * size),
+        )
+        for (const part of list) {
+          const values = sql.join(
+            part.map((item) =>
+              sql`(${item.id}, ${item.customer_id}, ${item.customer_name}, ${item.customer_department_id}, ${item.customer_department_name})`,
+            ),
+            sql`, `,
+          )
+          await db.execute(sql`
+            update "tp_user" as "user_row"
+            set
+              "customer_id" = "src"."customer_id",
+              "customer_name" = "src"."customer_name",
+              "customer_department_id" = "src"."customer_department_id",
+              "customer_department_name" = "src"."customer_department_name",
+              "time_updated" = ${Date.now()}
+            from (
+              values ${values}
+            ) as "src"(
+              "id",
+              "customer_id",
+              "customer_name",
+              "customer_department_id",
+              "customer_department_name"
+            )
+            where "user_row"."id" = "src"."id"
+          `)
+        }
+      })
+    }
+
+    auditLater({
+      actor_user_id: input.actor_user_id,
+      action: "account.user.import.affiliation",
       target_type: "tp_user",
       result: "success",
       detail_json: result,

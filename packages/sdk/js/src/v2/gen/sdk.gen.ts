@@ -3,12 +3,16 @@
 import { client } from "./client.gen.js"
 import { buildClientParams, type Client, type Options as Options2, type TDataShape } from "./client/index.js"
 import type {
+  AccountAdminUsersListErrors,
+  AccountAdminUsersListResponses,
   AccountContextStateErrors,
   AccountContextStateResponses,
   AccountContextStateUpdateErrors,
   AccountContextStateUpdateResponses,
   AccountLoginErrors,
   AccountLoginResponses,
+  AccountLoginVhoErrors,
+  AccountLoginVhoResponses,
   AccountLogoutAllErrors,
   AccountLogoutAllResponses,
   AccountLogoutErrors,
@@ -71,7 +75,9 @@ import type {
   ConfigUpdateResponses,
   DeleteAccountAdminProductsProductIdResponses,
   DeleteAccountAdminProviderProviderIdGlobalResponses,
+  DeleteAccountAdminRolesRoleCodeResponses,
   DeleteAccountAdminUsersUserIdProvidersProviderIdResponses,
+  DeleteAccountAdminUsersUserIdResponses,
   DeleteAccountMeProvidersProviderIdConfigResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute,
@@ -102,7 +108,6 @@ import type {
   GetAccountAdminRolesResponses,
   GetAccountAdminRolesRoleCodeProductsResponses,
   GetAccountAdminRolesRoleCodeProjectsResponses,
-  GetAccountAdminUsersResponses,
   GetAccountAdminUsersUserIdModelPrefsResponses,
   GetAccountAdminUsersUserIdProviderControlResponses,
   GetAccountAdminUsersUserIdProvidersProviderIdConfigResponses,
@@ -527,6 +532,43 @@ export class Auth extends HeyApiClient {
   }
 }
 
+export class Login extends HeyApiClient {
+  /**
+   * VHO login
+   *
+   * Login with VHO login type and phone user id.
+   */
+  public vho<ThrowOnError extends boolean = false>(
+    parameters?: {
+      user_id?: string
+      login_type?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "user_id" },
+            { in: "body", key: "login_type" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AccountLoginVhoResponses, AccountLoginVhoErrors, ThrowOnError>({
+      url: "/account/login/vho",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Token extends HeyApiClient {
   /**
    * Refresh access token
@@ -714,6 +756,55 @@ export class Me extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+}
+
+export class Users extends HeyApiClient {
+  /**
+   * List admin users
+   *
+   * List users for TpCode account administration.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      org_id?: string
+      department_id?: string
+      keyword?: string
+      page?: number
+      page_size?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "org_id" },
+            { in: "query", key: "department_id" },
+            { in: "query", key: "keyword" },
+            { in: "query", key: "page" },
+            { in: "query", key: "page_size" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AccountAdminUsersListResponses,
+      AccountAdminUsersListErrors,
+      ThrowOnError
+    >({
+      url: "/account/admin/users",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Admin extends HeyApiClient {
+  private _users?: Users
+  get users(): Users {
+    return (this._users ??= new Users({ client: this.client }))
   }
 }
 
@@ -935,6 +1026,11 @@ export class Account extends HeyApiClient {
     })
   }
 
+  private _login?: Login
+  get login2(): Login {
+    return (this._login ??= new Login({ client: this.client }))
+  }
+
   private _token?: Token
   get token(): Token {
     return (this._token ??= new Token({ client: this.client }))
@@ -958,6 +1054,11 @@ export class Account extends HeyApiClient {
   private _me?: Me
   get me2(): Me {
     return (this._me ??= new Me({ client: this.client }))
+  }
+
+  private _admin?: Admin
+  get admin(): Admin {
+    return (this._admin ??= new Admin({ client: this.client }))
   }
 
   private _password?: Password
@@ -4800,6 +4901,20 @@ export class OpencodeClient extends HeyApiClient {
     })
   }
 
+  public deleteAccountAdminRolesRoleCode<ThrowOnError extends boolean = false>(
+    parameters: {
+      role_code: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "role_code" }] }])
+    return (options?.client ?? this.client).delete<DeleteAccountAdminRolesRoleCodeResponses, unknown, ThrowOnError>({
+      url: "/account/admin/roles/{role_code}",
+      ...options,
+      ...params,
+    })
+  }
+
   public getAccountAdminFsDirectories<ThrowOnError extends boolean = false>(
     parameters?: {
       path?: string
@@ -5275,37 +5390,6 @@ export class OpencodeClient extends HeyApiClient {
     })
   }
 
-  public getAccountAdminUsers<ThrowOnError extends boolean = false>(
-    parameters?: {
-      org_id?: string
-      department_id?: string
-      keyword?: string
-      page?: number
-      page_size?: number
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "org_id" },
-            { in: "query", key: "department_id" },
-            { in: "query", key: "keyword" },
-            { in: "query", key: "page" },
-            { in: "query", key: "page_size" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<GetAccountAdminUsersResponses, unknown, ThrowOnError>({
-      url: "/account/admin/users",
-      ...options,
-      ...params,
-    })
-  }
-
   public postAccountAdminUsers<ThrowOnError extends boolean = false>(
     parameters?: {
       username?: string
@@ -5349,6 +5433,20 @@ export class OpencodeClient extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  public deleteAccountAdminUsersUserId<ThrowOnError extends boolean = false>(
+    parameters: {
+      user_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "user_id" }] }])
+    return (options?.client ?? this.client).delete<DeleteAccountAdminUsersUserIdResponses, unknown, ThrowOnError>({
+      url: "/account/admin/users/{user_id}",
+      ...options,
+      ...params,
     })
   }
 

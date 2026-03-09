@@ -957,6 +957,175 @@ describe("account system", () => {
     expect(body.code).toBe("user_locked")
   })
 
+  test.skipIf(!accountEnabled)("user affiliation import updates customer fields without changing account department", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("affiliation_user")
+    const created = await service.createUser({
+      username,
+      password: "TpCode@123A",
+      display_name: "Affiliation User",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      department_id: "dept_tp_rnd",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) throw new Error("user_create_failed")
+
+    const preview = await service.importUserAffiliations({
+      rows: [
+        {
+          username,
+          customer_id: "customer_1",
+          customer_name: "示例客户",
+          customer_department_id: "08",
+          customer_department_name: "客户中心",
+        },
+        {
+          username: uid("affiliation_missing"),
+          customer_id: "customer_missing",
+          customer_name: "未命中客户",
+          customer_department_id: "03",
+          customer_department_name: "工程中心",
+        },
+      ],
+      dry_run: true,
+    })
+    expect(preview.ok).toBe(true)
+    expect(preview.updated).toBe(1)
+    expect(preview.unchanged).toBe(0)
+    expect(preview.missing_user).toBe(1)
+    expect(preview.skipped).toBe(0)
+    expect(preview.dry_run).toBe(true)
+
+    const dry = await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, created.id)).get())
+    expect(dry?.customer_id).toBeNull()
+    expect(dry?.customer_name).toBeNull()
+    expect(dry?.customer_department_id).toBeNull()
+    expect(dry?.customer_department_name).toBeNull()
+    expect(dry?.department_id).toBe("dept_tp_rnd")
+
+    const imported = await service.importUserAffiliations({
+      rows: [
+        {
+          username,
+          customer_id: "customer_1",
+          customer_name: "示例客户",
+          customer_department_id: "08",
+          customer_department_name: "客户中心",
+        },
+      ],
+    })
+    expect(imported.ok).toBe(true)
+    expect(imported.updated).toBe(1)
+    expect(imported.unchanged).toBe(0)
+    expect(imported.missing_user).toBe(0)
+    expect(imported.skipped).toBe(0)
+    expect(imported.dry_run).toBe(false)
+
+    const saved = await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, created.id)).get())
+    expect(saved?.customer_id).toBe("customer_1")
+    expect(saved?.customer_name).toBe("示例客户")
+    expect(saved?.customer_department_id).toBe("08")
+    expect(saved?.customer_department_name).toBe("客户中心")
+    expect(saved?.department_id).toBe("dept_tp_rnd")
+
+    const cleared = await service.importUserAffiliations({
+      rows: [
+        {
+          username,
+          customer_id: "",
+          customer_name: "",
+          customer_department_id: "",
+          customer_department_name: "",
+        },
+      ],
+    })
+    expect(cleared.ok).toBe(true)
+    expect(cleared.updated).toBe(1)
+
+    const empty = await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, created.id)).get())
+    expect(empty?.customer_id).toBeNull()
+    expect(empty?.customer_name).toBeNull()
+    expect(empty?.customer_department_id).toBeNull()
+    expect(empty?.customer_department_name).toBeNull()
+    expect(empty?.department_id).toBe("dept_tp_rnd")
+  })
+
+  test.skipIf(!accountEnabled)("admin user list returns affiliation fields and patch ignores them", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("affiliation_api")
+    const created = await service.createUser({
+      username,
+      password: "TpCode@123A",
+      display_name: "Affiliation API User",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) throw new Error("user_create_failed")
+
+    const imported = await service.importUserAffiliations({
+      rows: [
+        {
+          username,
+          customer_id: "customer_api",
+          customer_name: "接口客户",
+          customer_department_id: "03",
+          customer_department_name: "工程中心",
+        },
+      ],
+    })
+    expect(imported.ok).toBe(true)
+
+    const admin = await login("admin", "TpCode@2026")
+    const pageResponse = await call({
+      path: "/account/admin/users?page=1&page_size=20",
+      token: admin,
+    })
+    expect(pageResponse.status).toBe(200)
+    const pageBody = (await pageResponse.json()) as {
+      items?: Array<Record<string, unknown>>
+    }
+    const paged = pageBody.items?.find((item) => item.id === created.id)
+    expect(paged?.customer_name).toBe("接口客户")
+    expect(paged?.customer_department_name).toBe("工程中心")
+
+    const listResponse = await call({
+      path: "/account/admin/users",
+      token: admin,
+    })
+    expect(listResponse.status).toBe(200)
+    const listBody = (await listResponse.json()) as Array<Record<string, unknown>>
+    const listed = listBody.find((item) => item.id === created.id)
+    expect(listed?.customer_id).toBe("customer_api")
+    expect(listed?.customer_name).toBe("接口客户")
+    expect(listed?.customer_department_id).toBe("03")
+    expect(listed?.customer_department_name).toBe("工程中心")
+
+    const patched = await call({
+      path: `/account/admin/users/${encodeURIComponent(created.id)}`,
+      method: "PATCH",
+      token: admin,
+      body: {
+        display_name: "Affiliation API User Updated",
+        customer_name: "不允许修改",
+        customer_department_name: "不允许修改",
+      },
+    })
+    expect(patched.status).toBe(200)
+
+    const row = await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, created.id)).get())
+    expect(row?.display_name).toBe("Affiliation API User Updated")
+    expect(row?.customer_name).toBe("接口客户")
+    expect(row?.customer_department_name).toBe("工程中心")
+  })
+
   test.skipIf(!accountEnabled)("imported VHO user does not overwrite existing local account", async () => {
     const service = state.user
     if (!service) throw new Error("user_service_missing")

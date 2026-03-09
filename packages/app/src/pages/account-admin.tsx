@@ -33,6 +33,10 @@ type User = {
   account_type: string
   org_id: string
   department_id?: string
+  customer_id?: string
+  customer_name?: string
+  customer_department_id?: string
+  customer_department_name?: string
   status: string
   roles: string[]
 }
@@ -681,6 +685,8 @@ export default function AccountAdmin() {
                       <th class="text-left px-2 py-1">编号</th>
                       <th class="text-left px-2 py-1">用户名</th>
                       <th class="text-left px-2 py-1">显示名</th>
+                      <th class="text-left px-2 py-1">客户</th>
+                      <th class="text-left px-2 py-1">部门</th>
                       <th class="text-left px-2 py-1">手机号</th>
                       <th class="text-left px-2 py-1">VHO ID</th>
                       <th class="text-left px-2 py-1">账号类型</th>
@@ -695,6 +701,8 @@ export default function AccountAdmin() {
                           <td class="px-2 py-1">{item.id}</td>
                           <td class="px-2 py-1">{item.username}</td>
                           <td class="px-2 py-1">{item.display_name}</td>
+                          <td class="px-2 py-1">{item.customer_name ?? "-"}</td>
+                          <td class="px-2 py-1">{item.customer_department_name ?? "-"}</td>
                           <td class="px-2 py-1">{item.phone ?? "-"}</td>
                           <td class="px-2 py-1">{item.vho_user_id ?? "-"}</td>
                           <td class="px-2 py-1">{accountTypeText(item.account_type)}</td>

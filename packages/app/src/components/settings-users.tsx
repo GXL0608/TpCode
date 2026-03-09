@@ -622,6 +622,8 @@ export const SettingsUsers = () => {
                   <tr>
                     <th class="text-left px-3 py-2">用户名</th>
                     <th class="text-left px-3 py-2">姓名</th>
+                    <th class="text-left px-3 py-2">客户</th>
+                    <th class="text-left px-3 py-2">部门</th>
                     <th class="text-left px-3 py-2">角色</th>
                     <th class="w-16 text-center px-3 py-2">操作</th>
                   </tr>
@@ -632,6 +634,8 @@ export const SettingsUsers = () => {
                       <tr class="border-t border-border-weak-base hover:bg-surface-panel/45 transition-colors">
                         <td class="px-3 py-2 text-12-medium text-text-strong">{item.username}</td>
                         <td class="px-3 py-2 text-text-weak">{item.display_name || "-"}</td>
+                        <td class="px-3 py-2 text-text-weak">{item.customer_name || "-"}</td>
+                        <td class="px-3 py-2 text-text-weak">{item.customer_department_name || "-"}</td>
                         <td class="px-3 py-2">
                           <div class="max-w-[320px] truncate text-text-weak" title={roleText(item.roles)}>
                             {roleText(item.roles)}
@@ -682,7 +686,7 @@ export const SettingsUsers = () => {
                   </For>
                   <Show when={state.users.length === 0}>
                     <tr class="border-t border-border-weak-base">
-                      <td class="px-3 py-6 text-center text-text-weak" colSpan={4}>
+                      <td class="px-3 py-6 text-center text-text-weak" colSpan={6}>
                         暂无用户数据
                       </td>
                     </tr>
@@ -851,6 +855,16 @@ export const SettingsUsers = () => {
           <form class="w-full max-w-lg rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={saveEdit}>
             <div class="text-16-medium text-text-strong">编辑用户</div>
             <div class="text-12-regular text-text-weak">用户名：{editUser()?.username ?? "-"}</div>
+            <div class="grid grid-cols-2 gap-2 rounded-md border border-border-weak-base bg-surface-panel p-3">
+              <div class="min-w-0">
+                <div class="text-11-regular text-text-weak">客户</div>
+                <div class="truncate text-12-regular text-text-strong">{editUser()?.customer_name ?? "-"}</div>
+              </div>
+              <div class="min-w-0">
+                <div class="text-11-regular text-text-weak">部门</div>
+                <div class="truncate text-12-regular text-text-strong">{editUser()?.customer_department_name ?? "-"}</div>
+              </div>
+            </div>
             <input
               class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
               placeholder="显示名"

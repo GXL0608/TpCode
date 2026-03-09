@@ -17,6 +17,10 @@ export const TpUserTable = table(
       .notNull()
       .references(() => TpOrganizationTable.id, { onDelete: "cascade" }),
     department_id: text().references(() => TpDepartmentTable.id, { onDelete: "set null" }),
+    customer_id: text(),
+    customer_name: text(),
+    customer_department_id: text(),
+    customer_department_name: text(),
     status: text()
       .notNull()
       .$default(() => "active"),

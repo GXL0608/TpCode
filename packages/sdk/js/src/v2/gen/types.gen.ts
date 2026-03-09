@@ -91,13 +91,6 @@ export type EventLspUpdated = {
   }
 }
 
-export type EventFileEdited = {
-  type: "file.edited"
-  properties: {
-    file: string
-  }
-}
-
 export type OutputFormatText = {
   type: "text"
 }
@@ -694,6 +687,13 @@ export type EventSessionCompacted = {
   }
 }
 
+export type EventFileEdited = {
+  type: "file.edited"
+  properties: {
+    file: string
+  }
+}
+
 export type EventFileWatcherUpdated = {
   type: "file.watcher.updated"
   properties: {
@@ -897,6 +897,17 @@ export type EventVcsBranchUpdated = {
   }
 }
 
+export type EventServerDegraded = {
+  type: "server.degraded"
+  properties: {
+    reason: string
+    check: string
+    pending?: number
+    dropped_delta?: number
+    at: number
+  }
+}
+
 export type EventWorktreeReady = {
   type: "worktree.ready"
   properties: {
@@ -923,17 +934,6 @@ export type EventWorkspaceFailed = {
   type: "workspace.failed"
   properties: {
     message: string
-  }
-}
-
-export type EventServerDegraded = {
-  type: "server.degraded"
-  properties: {
-    reason: string
-    check: string
-    pending?: number
-    dropped_delta?: number
-    at: number
   }
 }
 
@@ -985,7 +985,6 @@ export type Event =
   | EventGlobalDisposed
   | EventLspClientDiagnostics
   | EventLspUpdated
-  | EventFileEdited
   | EventMessageUpdated
   | EventMessageRemoved
   | EventMessagePartUpdated
@@ -999,6 +998,7 @@ export type Event =
   | EventQuestionReplied
   | EventQuestionRejected
   | EventSessionCompacted
+  | EventFileEdited
   | EventFileWatcherUpdated
   | EventTodoUpdated
   | EventTuiPromptAppend
@@ -1014,11 +1014,11 @@ export type Event =
   | EventSessionDiff
   | EventSessionError
   | EventVcsBranchUpdated
+  | EventServerDegraded
   | EventWorktreeReady
   | EventWorktreeFailed
   | EventWorkspaceReady
   | EventWorkspaceFailed
-  | EventServerDegraded
   | EventPtyCreated
   | EventPtyUpdated
   | EventPtyExited
@@ -1685,6 +1685,35 @@ export type AccountPlanSaveFailure = {
     | "plan_text_missing"
     | "forbidden"
   permission?: string
+}
+
+export type AccountAdminUser = {
+  id: string
+  username: string
+  display_name: string
+  email?: string
+  phone?: string
+  vho_user_id?: string
+  status: string
+  account_type: string
+  org_id: string
+  department_id?: string
+  customer_id?: string
+  customer_name?: string
+  customer_department_id?: string
+  customer_department_name?: string
+  force_password_reset: boolean
+  last_login_at?: number
+  last_login_ip?: string
+  roles: Array<string>
+  permissions: Array<string>
+}
+
+export type AccountAdminUserPage = {
+  items: Array<AccountAdminUser>
+  total: number
+  page: number
+  page_size: number
 }
 
 export type NotFoundError = {
@@ -2396,6 +2425,34 @@ export type AccountLoginResponses = {
 
 export type AccountLoginResponse = AccountLoginResponses[keyof AccountLoginResponses]
 
+export type AccountLoginVhoData = {
+  body?: {
+    user_id: string
+    login_type: string
+  }
+  path?: never
+  query?: never
+  url: "/account/login/vho"
+}
+
+export type AccountLoginVhoErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AccountLoginVhoError = AccountLoginVhoErrors[keyof AccountLoginVhoErrors]
+
+export type AccountLoginVhoResponses = {
+  /**
+   * Login result
+   */
+  200: AccountLoginResult
+}
+
+export type AccountLoginVhoResponse = AccountLoginVhoResponses[keyof AccountLoginVhoResponses]
+
 export type AccountTokenRefreshData = {
   body?: {
     refresh_token: string
@@ -2822,6 +2879,19 @@ export type PostAccountAdminRolesResponses = {
   200: unknown
 }
 
+export type DeleteAccountAdminRolesRoleCodeData = {
+  body?: never
+  path: {
+    role_code: string
+  }
+  query?: never
+  url: "/account/admin/roles/{role_code}"
+}
+
+export type DeleteAccountAdminRolesRoleCodeResponses = {
+  200: unknown
+}
+
 export type GetAccountAdminFsDirectoriesData = {
   body?: never
   path?: never
@@ -3100,7 +3170,7 @@ export type GetAccountAdminAuditResponses = {
   200: unknown
 }
 
-export type GetAccountAdminUsersData = {
+export type AccountAdminUsersListData = {
   body?: never
   path?: never
   query?: {
@@ -3113,9 +3183,23 @@ export type GetAccountAdminUsersData = {
   url: "/account/admin/users"
 }
 
-export type GetAccountAdminUsersResponses = {
-  200: unknown
+export type AccountAdminUsersListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
 }
+
+export type AccountAdminUsersListError = AccountAdminUsersListErrors[keyof AccountAdminUsersListErrors]
+
+export type AccountAdminUsersListResponses = {
+  /**
+   * Users
+   */
+  200: Array<AccountAdminUser> | AccountAdminUserPage
+}
+
+export type AccountAdminUsersListResponse = AccountAdminUsersListResponses[keyof AccountAdminUsersListResponses]
 
 export type PostAccountAdminUsersData = {
   body?: {
@@ -3136,6 +3220,19 @@ export type PostAccountAdminUsersData = {
 }
 
 export type PostAccountAdminUsersResponses = {
+  200: unknown
+}
+
+export type DeleteAccountAdminUsersUserIdData = {
+  body?: never
+  path: {
+    user_id: string
+  }
+  query?: never
+  url: "/account/admin/users/{user_id}"
+}
+
+export type DeleteAccountAdminUsersUserIdResponses = {
   200: unknown
 }
 

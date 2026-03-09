@@ -117,6 +117,39 @@ const AccountProjectStatePatch = z.object({
   workspace_alias_by_project_branch: z.record(z.string(), z.record(z.string(), z.string())).optional(),
 })
 
+const AccountAdminUser = z
+  .object({
+    id: z.string(),
+    username: z.string(),
+    display_name: z.string(),
+    email: z.string().optional(),
+    phone: z.string().optional(),
+    vho_user_id: z.string().optional(),
+    status: z.string(),
+    account_type: z.string(),
+    org_id: z.string(),
+    department_id: z.string().optional(),
+    customer_id: z.string().optional(),
+    customer_name: z.string().optional(),
+    customer_department_id: z.string().optional(),
+    customer_department_name: z.string().optional(),
+    force_password_reset: z.boolean(),
+    last_login_at: z.number().optional(),
+    last_login_ip: z.string().optional(),
+    roles: z.array(z.string()),
+    permissions: z.array(z.string()),
+  })
+  .meta({ ref: "AccountAdminUser" })
+
+const AccountAdminUserPage = z
+  .object({
+    items: z.array(AccountAdminUser),
+    total: z.number(),
+    page: z.number(),
+    page_size: z.number(),
+  })
+  .meta({ ref: "AccountAdminUserPage" })
+
 function requireLogin(c: Context) {
   const user_id = c.get("account_user_id") as string | undefined
   if (!user_id) return c.json({ error: "unauthorized" }, 401)
@@ -1415,6 +1448,22 @@ export const AccountRoutes = lazy(() =>
     )
     .get(
       "/admin/users",
+      describeRoute({
+        summary: "List admin users",
+        description: "List users for TpCode account administration.",
+        operationId: "account.admin.users.list",
+        responses: {
+          200: {
+            description: "Users",
+            content: {
+              "application/json": {
+                schema: resolver(z.union([z.array(AccountAdminUser), AccountAdminUserPage])),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
       async (c, next) => {
         const denied = requireUserList(c)
         if (denied) return denied

@@ -5,6 +5,7 @@ import { cmd } from "./cmd"
 import { mkdirSync, writeFileSync } from "fs"
 import path from "path"
 import { ImportUsersCommand } from "./db-import-users"
+import { ImportUserAffiliationCommand } from "./db-import-user-affiliation"
 
 const QueryCommand = cmd({
   command: "$0 [query]",
@@ -142,6 +143,7 @@ export const DbCommand = cmd({
       .command(VerifyCommand)
       .command(BackupCommand)
       .command(ImportUsersCommand)
+      .command(ImportUserAffiliationCommand)
       .demandCommand()
   },
   handler: () => {},

@@ -8,6 +8,10 @@ export type AccountUser = {
   account_type: string
   org_id: string
   department_id?: string
+  customer_id?: string
+  customer_name?: string
+  customer_department_id?: string
+  customer_department_name?: string
   force_password_reset?: boolean
   roles: string[]
   permissions?: string[]
