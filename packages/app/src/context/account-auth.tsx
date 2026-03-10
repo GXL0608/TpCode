@@ -78,6 +78,7 @@ type SavePlanInput = {
   session_id: string
   message_id: string
   part_id?: string
+  project_id?: string
   vho_feedback_no?: string
 }
 

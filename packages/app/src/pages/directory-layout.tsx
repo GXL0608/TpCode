@@ -5,6 +5,7 @@ import { SDKProvider } from "@/context/sdk"
 import { SyncProvider, useSync } from "@/context/sync"
 import { LocalProvider } from "@/context/local"
 import { useAccountAuth } from "@/context/account-auth"
+import { useAccountProject } from "@/context/account-project"
 
 import { DataProvider } from "@opencode-ai/ui/context"
 import { decode64 } from "@/utils/base64"
@@ -16,6 +17,7 @@ function DirectoryDataProvider(props: ParentProps<{ directory: string }>) {
   const navigate = useNavigate()
   const sync = useSync()
   const auth = useAccountAuth()
+  const accountProject = useAccountProject()
   const language = useLanguage()
 
   return (
@@ -29,6 +31,7 @@ function DirectoryDataProvider(props: ParentProps<{ directory: string }>) {
           session_id: input.sessionID,
           message_id: input.messageID,
           part_id: input.partID,
+          project_id: accountProject.current()?.id ?? sync.project?.id ?? auth.user()?.context_project_id,
           vho_feedback_no: input.vho_feedback_no,
         })
         if (!result.ok) {

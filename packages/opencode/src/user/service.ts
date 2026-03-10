@@ -16,7 +16,6 @@ import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
 import { AccountContextService } from "./context"
 import { Project } from "@/project/project"
-import { Filesystem } from "@/util/filesystem"
 import { ServerDegraded } from "@/server/degraded"
 
 type UserRow = typeof TpUserTable.$inferSelect
@@ -1263,7 +1262,7 @@ export namespace UserService {
     const allowed = await AccountContextService.canAccessProject({ user_id: input.user_id, project_id: input.project_id })
     if (!allowed) return { ok: false as const, code: "project_forbidden" }
     const project = await Project.get(input.project_id)
-    if (!project || !(await Filesystem.isDir(project.worktree))) return { ok: false as const, code: "project_missing" }
+    if (!project) return { ok: false as const, code: "project_missing" }
     await AccountContextService.remember({ user_id: input.user_id, project_id: input.project_id })
     const roles = await rolesByUser(input.user_id)
     const permissions = await permissionsByUser(input.user_id)

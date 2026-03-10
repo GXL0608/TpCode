@@ -16,6 +16,7 @@ import { Filesystem } from "@/util/filesystem"
 import path from "path"
 import { readdir } from "fs/promises"
 import { PlanService } from "@/plan/service"
+import { PlanEvalService } from "@/plan/eval-service"
 import { Config } from "@/config/config"
 import { AccountProviderState } from "@/provider/account-provider-state"
 
@@ -45,6 +46,7 @@ const PlanSaveBody = z.object({
   session_id: z.string().min(1),
   message_id: z.string().min(1),
   part_id: z.string().min(1).optional(),
+  project_id: z.string().min(1).optional(),
   vho_feedback_no: z.string().optional(),
 })
 
@@ -77,6 +79,87 @@ const PlanSaveFailure = z
     permission: z.string().optional(),
   })
   .meta({ ref: "AccountPlanSaveFailure" })
+
+const PlanEvalRetrySuccess = z
+  .object({
+    ok: z.literal(true),
+    plan_id: z.string(),
+  })
+  .meta({ ref: "AccountPlanEvalRetrySuccess" })
+
+const PlanEvalRetryFailure = z
+  .object({
+    ok: z.literal(false),
+    code: z.enum([
+      "plan_eval_missing",
+      "plan_eval_retry_invalid",
+      "plan_eval_plan_missing",
+      "plan_eval_assistant_missing",
+      "plan_eval_user_missing",
+      "forbidden",
+    ]),
+    permission: z.string().optional(),
+  })
+  .meta({ ref: "AccountPlanEvalRetryFailure" })
+
+const PlanEvalDetailSuccess = z
+  .object({
+    ok: z.literal(true),
+    eval: z.object({
+      id: z.string(),
+      plan_id: z.string(),
+      vho_feedback_no: z.string().nullable().optional(),
+      user_id: z.string(),
+      session_id: z.string(),
+      user_message_id: z.string(),
+      assistant_message_id: z.string(),
+      part_id: z.string(),
+      status: z.string(),
+      rubric_version: z.string().nullable().optional(),
+      prompt_version: z.string().nullable().optional(),
+      judge_provider_id: z.string().nullable().optional(),
+      judge_model_id: z.string().nullable().optional(),
+      user_score: z.number().nullable().optional(),
+      assistant_score: z.number().nullable().optional(),
+      summary: z.string().nullable().optional(),
+      major_issue_side: z.string().nullable().optional(),
+      result_json: z.record(z.string(), z.unknown()).nullable().optional(),
+      error_code: z.string().nullable().optional(),
+      error_message: z.string().nullable().optional(),
+      time_started: z.number().nullable().optional(),
+      time_finished: z.number().nullable().optional(),
+      time_created: z.number(),
+      time_updated: z.number(),
+    }),
+    items: z.array(
+      z.object({
+        id: z.string(),
+        eval_id: z.string(),
+        plan_id: z.string(),
+        vho_feedback_no: z.string().nullable().optional(),
+        subject: z.string(),
+        dimension_code: z.string(),
+        dimension_name: z.string(),
+        max_deduction: z.number(),
+        deducted_score: z.number(),
+        final_score: z.number(),
+        reason: z.string(),
+        evidence_json: z.array(z.string()),
+        position: z.number(),
+        time_created: z.number(),
+        time_updated: z.number(),
+      }),
+    ),
+  })
+  .meta({ ref: "AccountPlanEvalDetailSuccess" })
+
+const PlanEvalDetailFailure = z
+  .object({
+    ok: z.literal(false),
+    code: z.enum(["plan_eval_missing", "forbidden"]),
+    permission: z.string().optional(),
+  })
+  .meta({ ref: "AccountPlanEvalDetailFailure" })
 
 const ModelPrefsBody = z.object({
   visibility: z.record(z.string(), z.enum(["show", "hide"])).optional(),
@@ -673,17 +756,25 @@ export const AccountRoutes = lazy(() =>
         const body = c.req.valid("json")
         const user = c.get("account_user" as never) as z.infer<typeof LoginResult.shape.user> | undefined
         if (!user) return c.json({ error: "unauthorized" }, 401)
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
         const result = await PlanService.save({
           session_id: body.session_id,
           message_id: body.message_id,
           part_id: body.part_id,
+          project_id: body.project_id,
           vho_feedback_no: body.vho_feedback_no,
-          actor: user,
+          actor: {
+            ...user,
+            context_project_id,
+          },
         })
         if (!result.ok) {
-          const status = result.code === "session_missing" || result.code === "message_missing"
-            ? 404
-            : 400
+          const status =
+            result.code === "project_forbidden"
+              ? 403
+              : result.code === "session_missing" || result.code === "message_missing" || result.code === "project_missing"
+                ? 404
+                : 400
           return c.json({ ...result, error_code: result.code }, status)
         }
         UserService.auditLater({
@@ -701,6 +792,132 @@ export const AccountRoutes = lazy(() =>
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })
+        return c.json(result)
+      },
+    )
+    .post(
+      "/plan/eval/:plan_id/retry",
+      describeRoute({
+        summary: "Retry saved plan evaluation",
+        description: "Retry a failed or skipped saved plan quality evaluation.",
+        operationId: "account.plan.eval.retry",
+        responses: {
+          200: {
+            description: "Retry scheduled",
+            content: {
+              "application/json": {
+                schema: resolver(PlanEvalRetrySuccess),
+              },
+            },
+          },
+          400: {
+            description: "Retry invalid",
+            content: {
+              "application/json": {
+                schema: resolver(PlanEvalRetryFailure),
+              },
+            },
+          },
+          403: {
+            description: "Forbidden",
+            content: {
+              "application/json": {
+                schema: resolver(PlanEvalRetryFailure),
+              },
+            },
+          },
+          404: {
+            description: "Not found",
+            content: {
+              "application/json": {
+                schema: resolver(PlanEvalRetryFailure),
+              },
+            },
+          },
+        },
+      }),
+      validator("param", z.object({ plan_id: z.string().min(1) })),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requirePlanUse(c)
+        if (denied) return denied
+        const plan_id = c.req.valid("param").plan_id
+        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        const result = await PlanEvalService.retry({
+          plan_id,
+          actor_user_id: user_id,
+          context_project_id,
+        })
+        if (!result.ok) {
+          const status = result.code === "forbidden"
+            ? 403
+            : result.code === "plan_eval_missing" || result.code === "plan_eval_plan_missing"
+              ? 404
+              : 400
+          return c.json(result, status)
+        }
+        UserService.auditLater({
+          actor_user_id: user_id,
+          action: "plan.eval.retry",
+          target_type: "tp_saved_plan",
+          target_id: plan_id,
+          result: "success",
+          detail_json: { plan_id },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .get(
+      "/plan/eval/:plan_id",
+      describeRoute({
+        summary: "Get saved plan evaluation",
+        description: "Get saved plan evaluation detail, including model judge request and response debug payload.",
+        operationId: "account.plan.eval.get",
+        responses: {
+          200: {
+            description: "Evaluation detail",
+            content: {
+              "application/json": {
+                schema: resolver(PlanEvalDetailSuccess),
+              },
+            },
+          },
+          403: {
+            description: "Forbidden",
+            content: {
+              "application/json": {
+                schema: resolver(PlanEvalDetailFailure),
+              },
+            },
+          },
+          404: {
+            description: "Not found",
+            content: {
+              "application/json": {
+                schema: resolver(PlanEvalDetailFailure),
+              },
+            },
+          },
+        },
+      }),
+      validator("param", z.object({ plan_id: z.string().min(1) })),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requirePlanUse(c)
+        if (denied) return denied
+        const plan_id = c.req.valid("param").plan_id
+        const result = await PlanEvalService.get({
+          plan_id,
+          actor_user_id: user_id,
+        })
+        if (!result.ok) {
+          const status = result.code === "forbidden" ? 403 : 404
+          return c.json(result, status)
+        }
         return c.json(result)
       },
     )

@@ -1427,6 +1427,10 @@ export type Config = {
    */
   small_model?: string
   /**
+   * Fallback model to use for saved plan quality evaluation in the format of provider/model
+   */
+  plan_evaluation_model?: string
+  /**
    * Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.
    */
   default_agent?: string
@@ -1693,6 +1697,23 @@ export type AccountPlanSaveFailure = {
     | "oracle_feedback_update_failed"
     | "oracle_feedback_row_count_invalid"
   message?: string
+  permission?: string
+}
+
+export type AccountPlanEvalRetrySuccess = {
+  ok: true
+  plan_id: string
+}
+
+export type AccountPlanEvalRetryFailure = {
+  ok: false
+  code:
+    | "plan_eval_missing"
+    | "plan_eval_retry_invalid"
+    | "plan_eval_plan_missing"
+    | "plan_eval_assistant_missing"
+    | "plan_eval_user_missing"
+    | "forbidden"
   permission?: string
 }
 
@@ -2757,6 +2778,7 @@ export type AccountPlanSaveData = {
     session_id: string
     message_id: string
     part_id?: string
+    project_id?: string
     vho_feedback_no?: string
   }
   path?: never
@@ -2793,6 +2815,41 @@ export type AccountPlanSaveResponses = {
 }
 
 export type AccountPlanSaveResponse = AccountPlanSaveResponses[keyof AccountPlanSaveResponses]
+
+export type AccountPlanEvalRetryData = {
+  body?: never
+  path: {
+    plan_id: string
+  }
+  query?: never
+  url: "/account/plan/eval/{plan_id}/retry"
+}
+
+export type AccountPlanEvalRetryErrors = {
+  /**
+   * Retry invalid
+   */
+  400: AccountPlanEvalRetryFailure
+  /**
+   * Forbidden
+   */
+  403: AccountPlanEvalRetryFailure
+  /**
+   * Not found
+   */
+  404: AccountPlanEvalRetryFailure
+}
+
+export type AccountPlanEvalRetryError = AccountPlanEvalRetryErrors[keyof AccountPlanEvalRetryErrors]
+
+export type AccountPlanEvalRetryResponses = {
+  /**
+   * Retry scheduled
+   */
+  200: AccountPlanEvalRetrySuccess
+}
+
+export type AccountPlanEvalRetryResponse = AccountPlanEvalRetryResponses[keyof AccountPlanEvalRetryResponses]
 
 export type AccountMeProviderData = {
   body?: never

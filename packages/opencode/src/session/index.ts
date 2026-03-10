@@ -59,8 +59,9 @@ export namespace Session {
     if (!a) return true
     if (!row.user_id) return false
     if (row.user_id !== a.user_id) return false
-    if (!a.context_project_id) return false
-    return (row.context_project_id ?? row.project_id) === a.context_project_id
+    const project_id = row.context_project_id ?? row.project_id
+    if (!a.context_project_id) return project_id === "global"
+    return project_id === a.context_project_id
   }
 
   function canWrite(row: SessionRow) {
@@ -68,8 +69,9 @@ export namespace Session {
     if (!a) return true
     if (!row.user_id) return false
     if (row.user_id !== a.user_id) return false
-    if (!a.context_project_id) return false
-    return (row.context_project_id ?? row.project_id) === a.context_project_id
+    const project_id = row.context_project_id ?? row.project_id
+    if (!a.context_project_id) return project_id === "global"
+    return project_id === a.context_project_id
   }
 
   async function assertWritable(sessionID: string) {

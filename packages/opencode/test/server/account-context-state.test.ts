@@ -1,5 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { Flag } from "../../src/flag/flag"
+import { Database, eq } from "../../src/storage/db"
+import { ProjectTable } from "../../src/project/project.sql"
 
 const on = Flag.TPCODE_ACCOUNT_ENABLED
 
@@ -203,5 +205,51 @@ describe("account context state", () => {
       token: admin,
     })
     expect(me.status).toBe(200)
+  })
+
+  test.skipIf(!on)("allows selecting an assigned project even when its worktree is unavailable on this machine", async () => {
+    const loginResult = await login("admin", "TpCode@2026")
+    const admin = loginResult.access_token
+    const projects = await req({
+      path: "/account/context/projects",
+      token: admin,
+    })
+    expect(projects.status).toBe(200)
+    const payload = (await projects.json()) as {
+      projects?: Array<{ id: string; worktree: string }>
+    }
+    const project = payload.projects?.find((item) => item.id !== "global") ?? payload.projects?.[0]
+    expect(!!project?.id).toBe(true)
+    expect(!!project?.worktree).toBe(true)
+    if (!project?.id || !project.worktree) throw new Error("project_missing")
+
+    const missing = `/tmp/tpcode-missing-${uid("project")}`
+    await Database.use((db) =>
+      db.update(ProjectTable).set({ worktree: missing, time_updated: Date.now() }).where(eq(ProjectTable.id, project.id)).run(),
+    )
+
+    const selected = await req({
+      path: "/account/context/select",
+      method: "POST",
+      token: admin,
+      body: { project_id: project.id },
+    })
+    expect(selected.status).toBe(200)
+    const body = (await selected.json()) as Record<string, unknown>
+    const token = typeof body.access_token === "string" ? body.access_token : undefined
+    expect(!!token).toBe(true)
+    if (!token) throw new Error("token_missing")
+
+    const me = await req({
+      path: "/account/me",
+      token,
+    })
+    expect(me.status).toBe(200)
+    const user = (await me.json()) as { context_project_id?: string }
+    expect(user.context_project_id).toBe(project.id)
+
+    await Database.use((db) =>
+      db.update(ProjectTable).set({ worktree: project.worktree, time_updated: Date.now() }).where(eq(ProjectTable.id, project.id)).run(),
+    )
   })
 })

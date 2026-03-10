@@ -1043,6 +1043,9 @@ export namespace Config {
       small_model: ModelId.describe(
         "Small model to use for tasks like title generation in the format of provider/model",
       ).optional(),
+      plan_evaluation_model: ModelId.describe(
+        "Fallback model to use for saved plan quality evaluation in the format of provider/model",
+      ).optional(),
       default_agent: z
         .string()
         .optional()

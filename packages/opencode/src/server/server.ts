@@ -401,18 +401,25 @@ export namespace Server {
                 const context_project_id = detail.user.context_project_id
                 if (!context_project_id) return detail.user
                 const context = await contextProject(context_project_id)
-                if (!context.project || !context.worktree_ready) {
+                if (!context.project) {
                   clearContextProject(context_project_id)
                   log.warn("invalid account context project; forcing reselect", {
                     user_id: detail.user.id,
                     context_project_id,
                     project_found: !!context.project,
-                    worktree: context.project?.worktree,
+                    worktree: undefined,
                   })
                   return {
                     ...detail.user,
                     context_project_id: undefined,
                   }
+                }
+                if (!context.worktree_ready) {
+                  log.warn("account context project worktree unavailable; keeping selected context", {
+                    user_id: detail.user.id,
+                    context_project_id,
+                    worktree: context.project.worktree,
+                  })
                 }
                 const allowed = await AccountContextService.canAccessProject({
                   user_id: detail.user.id,

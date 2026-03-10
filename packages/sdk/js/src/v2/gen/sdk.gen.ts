@@ -27,6 +27,8 @@ import type {
   AccountPasswordForgotRequestResponses,
   AccountPasswordForgotResetErrors,
   AccountPasswordForgotResetResponses,
+  AccountPlanEvalRetryErrors,
+  AccountPlanEvalRetryResponses,
   AccountPlanSaveErrors,
   AccountPlanSaveResponses,
   AccountRegisterErrors,
@@ -713,6 +715,31 @@ export class Context extends HeyApiClient {
   }
 }
 
+export class Eval extends HeyApiClient {
+  /**
+   * Retry saved plan evaluation
+   *
+   * Retry a failed or skipped saved plan quality evaluation.
+   */
+  public retry<ThrowOnError extends boolean = false>(
+    parameters: {
+      plan_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "plan_id" }] }])
+    return (options?.client ?? this.client).post<
+      AccountPlanEvalRetryResponses,
+      AccountPlanEvalRetryErrors,
+      ThrowOnError
+    >({
+      url: "/account/plan/eval/{plan_id}/retry",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Plan extends HeyApiClient {
   /**
    * Save plan
@@ -724,6 +751,7 @@ export class Plan extends HeyApiClient {
       session_id?: string
       message_id?: string
       part_id?: string
+      project_id?: string
       vho_feedback_no?: string
     },
     options?: Options<never, ThrowOnError>,
@@ -736,6 +764,7 @@ export class Plan extends HeyApiClient {
             { in: "body", key: "session_id" },
             { in: "body", key: "message_id" },
             { in: "body", key: "part_id" },
+            { in: "body", key: "project_id" },
             { in: "body", key: "vho_feedback_no" },
           ],
         },
@@ -751,6 +780,11 @@ export class Plan extends HeyApiClient {
         ...params.headers,
       },
     })
+  }
+
+  private _eval?: Eval
+  get eval(): Eval {
+    return (this._eval ??= new Eval({ client: this.client }))
   }
 }
 

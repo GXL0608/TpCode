@@ -1273,7 +1273,18 @@ export default function Layout(props: ParentProps) {
       })
       return
     }
-    await navigateToProject(target.worktree)
+    const activated = await accountProject.activate(target.project_id, true)
+    if (!activated.ok) {
+      showToast({
+        title: "找不到文件夹",
+        description: "请联系管理员检查项目路径",
+      })
+      return
+    }
+    const last = activated.state.last_session_by_project[target.project_id]
+    navigateWithSidebarReset(
+      last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(target.worktree)}/session`,
+    )
   }
 
   const deleteWorkspace = async (root: string, directory: string) => {
