@@ -12,6 +12,16 @@ import type * as SDK from "@opencode-ai/sdk/v2"
 export namespace ShareNext {
   const log = Log.create({ service: "share-next" })
 
+  function background(sessionID: string, action: string, task: () => Promise<void>) {
+    void task().catch((error) => {
+      log.error("background sync failed", {
+        error,
+        sessionID,
+        action,
+      })
+    })
+  }
+
   export async function url() {
     return Config.get().then((x) => x.enterprise?.url ?? "https://opncd.ai")
   }
@@ -20,49 +30,52 @@ export namespace ShareNext {
 
   export async function init() {
     if (disabled) return
-    Bus.subscribe(Session.Event.Updated, async (evt) => {
-      await sync(evt.properties.info.id, [
-        {
-          type: "session",
-          data: evt.properties.info,
-        },
-      ])
+    Bus.subscribe(Session.Event.Updated, (evt) => {
+      background(evt.properties.info.id, "session.updated", () =>
+        sync(evt.properties.info.id, [
+          {
+            type: "session",
+            data: evt.properties.info,
+          },
+        ]),
+      )
     })
-    Bus.subscribe(MessageV2.Event.Updated, async (evt) => {
-      await sync(evt.properties.info.sessionID, [
-        {
-          type: "message",
-          data: evt.properties.info,
-        },
-      ])
-      if (evt.properties.info.role === "user") {
+    Bus.subscribe(MessageV2.Event.Updated, (evt) => {
+      background(evt.properties.info.sessionID, "message.updated", async () => {
+        await sync(evt.properties.info.sessionID, [
+          {
+            type: "message",
+            data: evt.properties.info,
+          },
+        ])
+        if (evt.properties.info.role !== "user") return
         await sync(evt.properties.info.sessionID, [
           {
             type: "model",
-            data: [
-              await Provider.getModel(evt.properties.info.model.providerID, evt.properties.info.model.modelID).then(
-                (m) => m,
-              ),
-            ],
+            data: [await Provider.getModel(evt.properties.info.model.providerID, evt.properties.info.model.modelID)],
           },
         ])
-      }
+      })
     })
-    Bus.subscribe(MessageV2.Event.PartUpdated, async (evt) => {
-      await sync(evt.properties.part.sessionID, [
-        {
-          type: "part",
-          data: evt.properties.part,
-        },
-      ])
+    Bus.subscribe(MessageV2.Event.PartUpdated, (evt) => {
+      background(evt.properties.part.sessionID, "message.part.updated", () =>
+        sync(evt.properties.part.sessionID, [
+          {
+            type: "part",
+            data: evt.properties.part,
+          },
+        ]),
+      )
     })
-    Bus.subscribe(Session.Event.Diff, async (evt) => {
-      await sync(evt.properties.sessionID, [
-        {
-          type: "session_diff",
-          data: evt.properties.diff,
-        },
-      ])
+    Bus.subscribe(Session.Event.Diff, (evt) => {
+      background(evt.properties.sessionID, "session.diff", () =>
+        sync(evt.properties.sessionID, [
+          {
+            type: "session_diff",
+            data: evt.properties.diff,
+          },
+        ]),
+      )
     })
   }
 
@@ -88,7 +101,7 @@ export namespace ShareNext {
         })
         .run(),
     )
-    fullSync(sessionID)
+    background(sessionID, "share.create.full_sync", () => fullSync(sessionID))
     return result
   }
 
@@ -138,22 +151,24 @@ export namespace ShareNext {
       dataMap.set("id" in item ? (item.id as string) : ulid(), item)
     }
 
-    const timeout = setTimeout(async () => {
-      const queued = queue.get(sessionID)
-      if (!queued) return
-      queue.delete(sessionID)
-      const share = await get(sessionID)
-      if (!share) return
+    const timeout = setTimeout(() => {
+      background(sessionID, "share.sync", async () => {
+        const queued = queue.get(sessionID)
+        if (!queued) return
+        queue.delete(sessionID)
+        const share = await get(sessionID)
+        if (!share) return
 
-      await fetch(`${await url()}/api/share/${share.id}/sync`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          secret: share.secret,
-          data: Array.from(queued.data.values()),
-        }),
+        await fetch(`${await url()}/api/share/${share.id}/sync`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            secret: share.secret,
+            data: Array.from(queued.data.values()),
+          }),
+        })
       })
     }, 1000)
     queue.set(sessionID, { timeout, data: dataMap })

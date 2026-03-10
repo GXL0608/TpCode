@@ -70,7 +70,10 @@ export const MessageTable = table(
     ...Timestamps,
     data: text({ mode: "json" }).notNull().$type<InfoData>(),
   },
-  (table) => [index("message_session_idx").on(table.session_id)],
+  (table) => [
+    index("message_session_idx").on(table.session_id),
+    index("message_session_time_idx").on(table.session_id, table.time_created, table.id),
+  ],
 )
 
 export const PartTable = table(
