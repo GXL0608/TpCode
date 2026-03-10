@@ -110,6 +110,11 @@ function readProviderAuths(row: Awaited<ReturnType<typeof globalProviderSetting>
 export namespace AccountSystemSettingService {
   export type ProviderControl = z.output<typeof ProviderControl>
   export type ProviderAuth = z.output<typeof ProviderAuth>
+  export type GlobalProviderRow = {
+    type?: z.output<typeof ProviderAuth>["type"]
+    has_auth: boolean
+    has_config: boolean
+  }
 
   export async function projectScanRoot() {
     const env = Flag.TPCODE_PROJECT_SCAN_ROOT?.trim()
@@ -207,6 +212,23 @@ export namespace AccountSystemSettingService {
     const parsed = readProviderAuths(row)
     if (parsed) return parsed
     return {} as z.output<typeof ProviderAuthMap>
+  }
+
+  export async function providerRows() {
+    const row = await globalProviderSetting()
+    const auth = readProviderAuths(row) ?? {}
+    const config = readProviderConfigs(row) ?? {}
+    const ids = [...new Set([...Object.keys(auth), ...Object.keys(config)])].sort()
+    return Object.fromEntries(
+      ids.map((provider_id) => [
+        provider_id,
+        {
+          type: auth[provider_id]?.type,
+          has_auth: !!auth[provider_id],
+          has_config: !!config[provider_id],
+        },
+      ]),
+    ) as Record<string, GlobalProviderRow>
   }
 
   export async function providerAuth(provider_id: string) {

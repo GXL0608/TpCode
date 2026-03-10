@@ -250,45 +250,19 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       | { model?: unknown; small_model?: unknown; enabled_providers?: unknown; disabled_providers?: unknown }
       | undefined
     const disabled = new Set(list<string>(control?.disabled_providers))
-    const rowsMap = new Map<string, ManagedRow>(
-      Object.entries(
-      ((await rowsResponse.json().catch(() => undefined)) as Record<string, { type?: unknown }> | undefined) ?? {},
-      ).map(([provider_id, auth]) => [
-        provider_id,
-        {
-          provider_id,
-          configured: true,
-          auth_type: typeof auth?.type === "string" ? auth.type : undefined,
-          disabled: disabled.has(provider_id),
-        },
-      ]),
+    const rows = Object.entries(
+      ((await rowsResponse.json().catch(() => undefined)) as
+        | Record<string, { type?: unknown; has_config?: unknown }>
+        | undefined) ?? {},
     )
-    for (const provider of providers.connected()) {
-      if (rowsMap.has(provider.id)) continue
-      rowsMap.set(provider.id, {
-        provider_id: provider.id,
-        configured: false,
-        disabled: disabled.has(provider.id),
-      })
-    }
-    for (const provider_id of list<string>(control?.enabled_providers)) {
-      if (rowsMap.has(provider_id)) continue
-      rowsMap.set(provider_id, {
+      .map(([provider_id, row]) => ({
         provider_id,
-        configured: false,
+        configured: true,
+        auth_type: typeof row?.type === "string" ? row.type : undefined,
+        has_config: row?.has_config === true,
         disabled: disabled.has(provider_id),
-      })
-    }
-    const controlModel = typeof control?.model === "string" ? control.model : ""
-    const controlProvider = controlModel.split("/")[0]
-    if (controlProvider && !rowsMap.has(controlProvider)) {
-      rowsMap.set(controlProvider, {
-        provider_id: controlProvider,
-        configured: false,
-        disabled: disabled.has(controlProvider),
-      })
-    }
-    const rows = [...rowsMap.values()].sort((a, b) => {
+      }))
+      .sort((a, b) => {
       const left = name(a.provider_id)
       const right = name(b.provider_id)
       return left.localeCompare(right)

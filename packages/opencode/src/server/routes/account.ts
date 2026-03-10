@@ -1365,7 +1365,7 @@ export const AccountRoutes = lazy(() =>
       },
     )
     .get("/admin/provider/global", UserRbac.requireRole("super_admin"), async (c) =>
-      c.json(await AccountSystemSettingService.providerAuths()),
+      c.json(await AccountSystemSettingService.providerRows()),
     )
     .put(
       "/admin/provider/:provider_id/global",

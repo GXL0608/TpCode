@@ -149,7 +149,7 @@ export default function AccountAdmin() {
     roleAccess: [] as RoleAccess[],
     userAccess: [] as UserAccess[],
     vhoBinds: [] as VhoBind[],
-    globalProviders: {} as Record<string, { type: string }>,
+    globalProviders: {} as Record<string, { type?: string; has_auth?: boolean; has_config?: boolean }>,
   })
 
   const [orgName, setOrgName] = createSignal("")
@@ -325,7 +325,9 @@ export default function AccountAdmin() {
       jobs.push(
         request({ path: "/account/admin/provider/global" }).then(async (response) => {
           if (!response?.ok) return
-          const items = json<Record<string, { type: string }>>(await response.json().catch(() => undefined))
+          const items = json<Record<string, { type?: string; has_auth?: boolean; has_config?: boolean }>>(
+            await response.json().catch(() => undefined),
+          )
           setState("globalProviders", items ?? {})
         }),
       )
