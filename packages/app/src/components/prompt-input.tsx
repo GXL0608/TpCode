@@ -23,16 +23,11 @@ import { useComments } from "@/context/comments"
 import { Button } from "@opencode-ai/ui/button"
 import { DockShellForm, DockTray } from "@opencode-ai/ui/dock-surface"
 import { Icon } from "@opencode-ai/ui/icon"
-import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
-import type { IconName } from "@opencode-ai/ui/icons/provider"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Select } from "@opencode-ai/ui/select"
 import { showToast } from "@opencode-ai/ui/toast"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
-import { ModelSelectorPopover } from "@/components/dialog-select-model"
-import { DialogSelectModelUnpaid } from "@/components/dialog-select-model-unpaid"
-import { useProviders } from "@/hooks/use-providers"
 import { useCommand } from "@/context/command"
 import { Persist, persisted } from "@/utils/persist"
 import { uuid } from "@/utils/uuid"
@@ -131,7 +126,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const comments = useComments()
   const params = useParams()
   const dialog = useDialog()
-  const providers = useProviders()
   const command = useCommand()
   const permission = usePermission()
   const language = useLanguage()
@@ -154,14 +148,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const mirror = { input: false }
   const inset = 44
   const speech = createSpeechRecognition()
-  const modelLabel = createMemo(() => {
-    const current = local.model.current()
-    if (current?.name) return current.name
-    const configured = local.model.configured()
-    if (configured) return configured
-    if (!local.model.ready()) return `${language.t("common.loading")}${language.t("common.loading.ellipsis")}`
-    return language.t("dialog.model.select.title")
-  })
 
   const scrollCursorIntoView = () => {
     const container = scrollRef
@@ -581,7 +567,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       .map((agent): AtOption => ({ type: "agent", name: agent.name, display: agent.name })),
   )
   const agentNames = createMemo(() => local.agent.list().map((agent) => agent.name))
-
   const handleAtSelect = (option: AtOption | undefined) => {
     if (!option) return
     if (option.type === "agent") {
@@ -1421,7 +1406,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
   }
 
-  const variants = createMemo(() => ["default", ...local.model.variant.list()])
   const accepting = createMemo(() => {
     const id = params.id
     if (!id) return false
@@ -1716,81 +1700,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 options={agentNames()}
                 current={local.agent.current()?.name ?? ""}
                 onSelect={local.agent.set}
-                class="capitalize max-w-[160px]"
-                valueClass="truncate text-13-regular"
-                triggerStyle={{ height: "28px" }}
-                variant="ghost"
-              />
-            </TooltipKeybind>
-            <Show
-              when={providers.paid().length > 0}
-              fallback={
-                <TooltipKeybind
-                  placement="top"
-                  gutter={4}
-                  title={language.t("command.model.choose")}
-                  keybind={command.keybind("model.choose")}
-                >
-                  <Button
-                    as="div"
-                    variant="ghost"
-                    size="normal"
-                    class="min-w-0 max-w-[320px] text-13-regular group"
-                    style={{ height: "28px" }}
-                    onClick={() => dialog.show(() => <DialogSelectModelUnpaid />)}
-                  >
-                    <Show when={local.model.current()?.provider?.id}>
-                      <ProviderIcon
-                        id={local.model.current()!.provider.id as IconName}
-                        class="size-4 shrink-0 opacity-40 group-hover:opacity-100 transition-opacity duration-150"
-                        style={{ "will-change": "opacity", transform: "translateZ(0)" }}
-                      />
-                    </Show>
-                    <span class="truncate">{modelLabel()}</span>
-                    <Icon name="chevron-down" size="small" class="shrink-0" />
-                  </Button>
-                </TooltipKeybind>
-              }
-            >
-              <TooltipKeybind
-                placement="top"
-                gutter={4}
-                title={language.t("command.model.choose")}
-                keybind={command.keybind("model.choose")}
-              >
-                <ModelSelectorPopover
-                  triggerAs={Button}
-                  triggerProps={{
-                    variant: "ghost",
-                    size: "normal",
-                    style: { height: "28px" },
-                    class: "min-w-0 max-w-[320px] text-13-regular group",
-                  }}
-                >
-                  <Show when={local.model.current()?.provider?.id}>
-                    <ProviderIcon
-                      id={local.model.current()!.provider.id as IconName}
-                      class="size-4 shrink-0 opacity-40 group-hover:opacity-100 transition-opacity duration-150"
-                      style={{ "will-change": "opacity", transform: "translateZ(0)" }}
-                    />
-                  </Show>
-                  <span class="truncate">{modelLabel()}</span>
-                  <Icon name="chevron-down" size="small" class="shrink-0" />
-                </ModelSelectorPopover>
-              </TooltipKeybind>
-            </Show>
-            <TooltipKeybind
-              placement="top"
-              gutter={4}
-              title={language.t("command.model.variant.cycle")}
-              keybind={command.keybind("model.variant.cycle")}
-            >
-              <Select
-                size="normal"
-                options={variants()}
-                current={local.model.variant.current() ?? "default"}
-                label={(x) => (x === "default" ? language.t("common.default") : x)}
-                onSelect={(x) => local.model.variant.set(x === "default" ? undefined : x)}
                 class="capitalize max-w-[160px]"
                 valueClass="truncate text-13-regular"
                 triggerStyle={{ height: "28px" }}

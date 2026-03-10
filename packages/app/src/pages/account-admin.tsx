@@ -191,7 +191,7 @@ export default function AccountAdmin() {
   const canUser = createMemo(() => auth.has("user:manage"))
   const canRole = createMemo(() => auth.has("role:manage"))
   const canAudit = createMemo(() => auth.has("audit:view"))
-  const canProviderGlobal = createMemo(() => auth.has("provider:config_global"))
+  const canProviderGlobal = createMemo(() => (auth.user()?.roles ?? []).includes("super_admin"))
   const canAdmin = createMemo(
     () => canOrg() || canUser() || canRole() || canAudit() || canProviderGlobal(),
   )
@@ -414,9 +414,6 @@ export default function AccountAdmin() {
           <div class="flex items-center gap-2 text-12-regular">
             <A href="/settings/security" class="hover:text-text-strong">
               账号安全
-            </A>
-            <A href="/settings/apikeys" class="hover:text-text-strong">
-              接口密钥
             </A>
             <A href="/approval" class="hover:text-text-strong">
               审批流
@@ -1136,7 +1133,7 @@ export default function AccountAdmin() {
               <div class="rounded-md border border-border-weak-base bg-surface-base p-4 text-13-regular text-text-weak">
                 全局供应商、模型、默认项和 provider config 现在统一在“设置 / 提供商”页面维护。
                 <div class="mt-2 text-12-regular text-text-weak">
-                  成员的个人供应商配置请到“设置 / 用户管理”，在成员操作菜单中打开“设置供应商”。
+                  用户级/个人供应商配置入口已停用，不再支持按用户单独配置模型与提供商。
                 </div>
               </div>
             </section>

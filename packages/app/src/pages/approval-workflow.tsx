@@ -349,9 +349,6 @@ export default function ApprovalWorkflow() {
             <A href="/settings/security" class="hover:text-text-strong">
               账号安全
             </A>
-            <A href="/settings/apikeys" class="hover:text-text-strong">
-              接口密钥
-            </A>
             <Show
               when={
                 auth.has("org:manage") ||

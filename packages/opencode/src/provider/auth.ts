@@ -11,27 +11,25 @@ import { AccountCurrent } from "@/user/current"
 import { State } from "@/project/state"
 
 export namespace ProviderAuth {
-  function canWriteOwn() {
+  function canWriteGlobal() {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
     const current = AccountCurrent.optional()
     if (!current?.user_id) return false
-    return current.permissions.includes("provider:config_own")
+    return current.roles.includes("super_admin")
   }
 
   async function save(providerID: string, info: Auth.Info) {
     if (Flag.TPCODE_ACCOUNT_ENABLED) {
       const current = AccountCurrent.optional()
-      if (!current?.user_id || !canWriteOwn()) throw new Error("provider_config_forbidden")
-      await Auth.setUser(current.user_id, providerID, info)
+      if (!current?.user_id || !canWriteGlobal()) throw new Error("provider_config_forbidden")
+      await Auth.setGlobal(providerID, info)
       return
     }
     await Auth.set(providerID, info)
   }
 
   function stateKey() {
-    if (!Flag.TPCODE_ACCOUNT_ENABLED) return Instance.directory
-    const user = AccountCurrent.optional()?.user_id ?? "anonymous"
-    return [Instance.directory, user].join("::")
+    return Instance.directory
   }
 
   const state = State.create(stateKey, async () => {

@@ -222,12 +222,13 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         auth: "optional",
       }).catch(() => undefined)
       if (!me) {
-        setState("enabled", false)
+        setState("enabled", true)
+        clearSession()
         setState("ready", true)
         return
       }
       if (me.status === 404) {
-        setState("enabled", false)
+        setState("enabled", true)
         clearSession()
         setState("ready", true)
         return
@@ -246,14 +247,16 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         setState("ready", true)
         return
       }
-      setState("enabled", false)
+      setState("enabled", true)
+      clearSession()
       setState("ready", true)
     }
 
     const bootstrap = async () => {
       const item = current()
       if (!item) {
-        setState("enabled", false)
+        setState("enabled", true)
+        clearSession()
         setState("ready", true)
         return
       }
@@ -290,7 +293,6 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
       user: createMemo(() => state.user),
       lastError: createMemo(() => state.last_error),
       has(permission: string) {
-        if (!state.enabled) return true
         const user = state.user
         if (!user) return false
         return user.permissions.includes(permission)
@@ -306,7 +308,7 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           auth: "none",
         })
         if (response.status === 404) {
-          setState("enabled", false)
+          setState("enabled", true)
           setState("last_error", "account_disabled")
           return false
         }
@@ -335,7 +337,7 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           auth: "none",
         })
         if (response.status === 404) {
-          setState("enabled", false)
+          setState("enabled", true)
           setState("last_error", "account_disabled")
           return false
         }
@@ -361,7 +363,7 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           auth: "none",
         })
         if (response.status === 404) {
-          setState("enabled", false)
+          setState("enabled", true)
           setState("last_error", "account_disabled")
           return false
         }

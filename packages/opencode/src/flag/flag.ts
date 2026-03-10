@@ -266,7 +266,7 @@ Object.defineProperty(Flag, "OPENCODE_CLIENT", {
 
 Object.defineProperty(Flag, "TPCODE_ACCOUNT_ENABLED", {
   get() {
-    return readTPCODEAccountEnabledFromConfig()
+    return true
   },
   enumerable: true,
   configurable: false,

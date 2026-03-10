@@ -134,6 +134,7 @@ export default function Layout(props: ParentProps) {
   const colorSchemeLabel = (scheme: ColorScheme) => language.t(colorSchemeKey[scheme])
   const currentDir = createMemo(() => decode64(params.dir) ?? "")
   const projectState = createMemo(() => accountProject.data())
+  const isSuperAdmin = createMemo(() => !!auth.user()?.roles.includes("super_admin"))
 
   const projectByRoot = (root: string) => globalSync.data.project.find((project) => project.worktree === root)
   const projectIDByRoot = (root: string) => projectByRoot(root)?.id
@@ -949,12 +950,6 @@ export default function Layout(props: ParentProps) {
         onSelect: () => chooseProject(),
       },
       {
-        id: "provider.connect",
-        title: language.t("command.provider.connect"),
-        category: language.t("command.category.provider"),
-        onSelect: () => connectProvider(),
-      },
-      {
         id: "server.switch",
         title: language.t("command.server.switch"),
         category: language.t("command.category.server"),
@@ -1049,6 +1044,14 @@ export default function Layout(props: ParentProps) {
         onSelect: () => cycleTheme(1),
       },
     ]
+    if (isSuperAdmin()) {
+      commands.push({
+        id: "provider.connect",
+        title: language.t("command.provider.connect"),
+        category: language.t("command.category.provider"),
+        onSelect: () => connectProvider(),
+      })
+    }
 
     for (const [id, definition] of availableThemeEntries()) {
       commands.push({
@@ -1104,7 +1107,8 @@ export default function Layout(props: ParentProps) {
   })
 
   function connectProvider() {
-    dialog.show(() => <DialogSelectProvider />)
+    if (!isSuperAdmin()) return
+    dialog.show(() => <DialogSelectProvider scope={{ kind: "global" }} />)
   }
 
   function openServer() {
@@ -1968,7 +1972,7 @@ export default function Layout(props: ParentProps) {
         <div
           class="shrink-0 px-2 py-3 border-t border-border-weak-base"
           classList={{
-            hidden: !(providers.all().length > 0 && providers.paid().length === 0),
+            hidden: !(isSuperAdmin() && providers.all().length > 0 && providers.paid().length === 0),
           }}
         >
           <div class="rounded-md bg-background-base shadow-xs-border-base">

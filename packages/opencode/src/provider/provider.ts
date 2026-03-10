@@ -46,7 +46,7 @@ import { ProviderTransform } from "./transform"
 import { Installation } from "../installation"
 import { AccountCurrent } from "@/user/current"
 import { State } from "@/project/state"
-import { AccountProviderState } from "./account-provider-state"
+import { AccountSystemSettingService } from "@/user/system-setting"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -89,9 +89,7 @@ export namespace Provider {
 
   async function scopedAuth(providerID: string) {
     if (!strictAccountScope()) return Auth.get(providerID)
-    const uid = AccountCurrent.optional()?.user_id
-    if (!uid) return
-    return AccountProviderState.load(uid).then((x) => AccountProviderState.auth(x, providerID))
+    return Auth.sharedAll().then((all) => all[providerID])
   }
 
   const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
@@ -783,38 +781,15 @@ export namespace Provider {
     const config = strictAccount ? undefined : await Config.get()
     const modelsDev = await ModelsDev.get()
     const database = mapValues(modelsDev, fromModelsDevProvider)
-    const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
-    const account = strictAccount && uid ? await AccountProviderState.load(uid) : undefined
-    const user = account?.user
-    const ownAuth = strictAccount
-      ? Object.entries(account?.providers ?? {}).reduce(
-          (acc, [providerID, item]) => {
-            if (!item.auth) return acc
-            acc[providerID] = item.auth
-            return acc
-          },
-          {} as Record<string, Auth.Info>,
-        )
-      : {}
+    const control = strictAccount ? await AccountSystemSettingService.providerControl() : undefined
+    const sharedAuth = await Auth.sharedAll()
     const configProviders = strictAccount
-      ? Object.entries(account?.providers ?? {}).reduce(
-          (acc, [providerID, item]) => {
-            if (!item.config) return acc
-            acc.push([providerID, item.config] as const)
-            return acc
-          },
-          [] as [string, z.output<typeof Config.Provider>][],
-        )
+      ? (Object.entries(await AccountSystemSettingService.providerConfigs()) as [string, z.output<typeof Config.Provider>][])
       : (Object.entries(config?.provider ?? {}) as [string, z.output<typeof Config.Provider>][])
 
-    const disabled = new Set(strictAccount ? (account?.control.disabled_providers ?? []) : (config?.disabled_providers ?? []))
-    if (strictAccount) {
-      for (const [providerID, item] of Object.entries(user?.providers ?? {})) {
-        if (item.meta.flags?.disabled) disabled.add(providerID)
-      }
-    }
+    const disabled = new Set(strictAccount ? (control?.disabled_providers ?? []) : (config?.disabled_providers ?? []))
     const enabled = strictAccount
-      ? (account?.control.enabled_providers ? new Set(account.control.enabled_providers) : null)
+      ? (control?.enabled_providers ? new Set(control.enabled_providers) : null)
       : (config?.enabled_providers ? new Set(config.enabled_providers) : null)
 
     function isProviderAllowed(providerID: string): boolean {
@@ -957,28 +932,16 @@ export namespace Provider {
       }
     }
 
-    // load user-level apikeys (highest priority)
-    for (const [providerID, provider] of Object.entries(ownAuth)) {
+    // load shared apikeys
+    for (const [providerID, provider] of Object.entries(sharedAuth)) {
       if (!database[providerID]) {
-        log.warn("account auth provider missing from provider catalog", {
+        log.warn("shared auth provider missing from provider catalog", {
           providerID,
-          user_id: AccountCurrent.optional()?.user_id,
         })
         continue
       }
+      if (disabled.has(providerID)) continue
       if (provider.type === "api") {
-        mergeProvider(providerID, {
-          source: "api",
-          key: provider.key,
-        })
-      }
-    }
-
-    if (!strictAccount) {
-      // load shared fallback apikeys (lowest priority)
-      for (const [providerID, provider] of Object.entries(await Auth.sharedAll())) {
-        if (disabled.has(providerID)) continue
-        if (provider.type !== "api") continue
         if (providers[providerID]?.key) continue
         mergeProvider(providerID, {
           source: "api",
@@ -1290,9 +1253,8 @@ export namespace Provider {
 
   export async function getSmallModel(providerID: string) {
     const strictAccount = strictAccountScope()
-    const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
-    if (strictAccount && uid) {
-      const control = await AccountProviderState.load(uid).then((x) => x.control)
+    if (strictAccount) {
+      const control = await AccountSystemSettingService.providerControl()
       if (control.small_model) {
         const parsed = parseModel(control.small_model)
         return getModel(parsed.providerID, parsed.modelID)
@@ -1376,15 +1338,31 @@ export namespace Provider {
 
   export async function defaultModel() {
     const strictAccount = strictAccountScope()
-    const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
-    if (strictAccount && uid) {
-      const control = await AccountProviderState.load(uid).then((x) => x.control)
-      if (control.model) return parseModel(control.model)
-    }
-    const cfg = strictAccount ? undefined : await Config.get()
-    if (cfg?.model) return parseModel(cfg.model)
-
     const providers = await list()
+    if (strictAccount) {
+      const control = await AccountSystemSettingService.providerControl()
+      if (control.model) {
+        const parsed = parseModel(control.model)
+        if (providers[parsed.providerID]?.models[parsed.modelID]) return parsed
+      }
+      const ids = Object.keys(providers).sort((a, b) => a.localeCompare(b))
+      const enabled = control.enabled_providers ?? []
+      const preferred = enabled.filter((id) => ids.includes(id))
+      const rest = ids.filter((id) => !preferred.includes(id))
+      for (const providerID of [...preferred, ...rest]) {
+        const provider = providers[providerID]
+        if (!provider) continue
+        const [model] = sort(Object.values(provider.models))
+        if (!model) continue
+        return {
+          providerID: provider.id,
+          modelID: model.id,
+        }
+      }
+      throw new Error("no models found")
+    }
+    const cfg = await Config.get()
+    if (cfg.model) return parseModel(cfg.model)
     const recent = (await Filesystem.readJson<{ recent?: { providerID: string; modelID: string }[] }>(
       path.join(Global.Path.state, "model.json"),
     )
@@ -1397,7 +1375,7 @@ export namespace Provider {
       return { providerID: entry.providerID, modelID: entry.modelID }
     }
 
-    const provider = Object.values(providers).find((p) => !cfg?.provider || Object.keys(cfg.provider).includes(p.id))
+    const provider = Object.values(providers).find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))
     if (!provider) throw new Error("no providers found")
     const [model] = sort(Object.values(provider.models))
     if (!model) throw new Error("no models found")

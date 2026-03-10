@@ -7,7 +7,6 @@ import { useAccountAuth } from "@/context/account-auth"
 import { passwordError, passwordRule, phoneError, phoneRule } from "@/utils/account-rule"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { type AccountRole, type AccountUser, roleZh } from "./settings-rbac-zh"
-import { SettingsProviders } from "./settings-providers"
 
 function list<T>(input: unknown) {
   return Array.isArray(input) ? (input as T[]) : []
@@ -35,10 +34,9 @@ const pageSizes = [10, 20, 50, 100, 500] as const
 export const SettingsUsers = () => {
   const auth = useAccountAuth()
   const request = useAccountRequest()
-  const canView = createMemo(() => auth.has("user:manage") || auth.has("provider:config_user"))
+  const canView = createMemo(() => auth.has("user:manage"))
   const canManage = createMemo(() => auth.has("user:manage"))
   const canRole = createMemo(() => auth.has("role:manage"))
-  const canProviderUser = createMemo(() => auth.has("provider:config_user"))
 
   const [state, setState] = createStore({
     loading: false,
@@ -68,9 +66,6 @@ export const SettingsUsers = () => {
     roleOpen: false,
     roleUserID: "",
     roleCodes: [] as string[],
-    providerOpen: false,
-    providerUserID: "",
-    providerUserName: "",
   })
 
   const editUser = createMemo(() => state.users.find((item) => item.id === state.editUserID))
@@ -304,20 +299,6 @@ export const SettingsUsers = () => {
     await load({ page })
   }
 
-  const openProvider = (item: AccountUser) => {
-    if (!canProviderUser()) return
-    setState("providerOpen", true)
-    setState("providerUserID", item.id)
-    setState("providerUserName", item.display_name || item.username)
-  }
-
-  const closeProvider = () => {
-    if (state.pending) return
-    setState("providerOpen", false)
-    setState("providerUserID", "")
-    setState("providerUserName", "")
-  }
-
   const createUser = async (event: SubmitEvent) => {
     event.preventDefault()
     if (!canManage()) return
@@ -416,11 +397,6 @@ export const SettingsUsers = () => {
           <Show when={state.error}>
             <div class="rounded-md bg-icon-critical-base/10 px-3 py-2 text-12-regular text-icon-critical-base">{state.error}</div>
           </Show>
-          <Show when={!canProviderUser()}>
-            <div class="rounded-md bg-surface-panel px-3 py-2 text-12-regular text-text-weak">
-              当前账号没有“用户模型配置”权限。
-            </div>
-          </Show>
 
           <div class="rounded-xl border border-border-weak-base bg-surface-base overflow-hidden">
             <div class="px-4 py-3 border-b border-border-weak-base text-13-medium text-text-strong flex items-center justify-between">
@@ -477,11 +453,6 @@ export const SettingsUsers = () => {
                                   <DropdownMenu.Item onSelect={() => void resetPassword(item)} disabled={state.pending}>
                                     <DropdownMenu.ItemLabel>重置密码</DropdownMenu.ItemLabel>
                                   </DropdownMenu.Item>
-                                <Show when={canProviderUser()}>
-                                    <DropdownMenu.Item onSelect={() => void openProvider(item)}>
-                                      <DropdownMenu.ItemLabel>设置供应商</DropdownMenu.ItemLabel>
-                                    </DropdownMenu.Item>
-                                  </Show>
                                   <DropdownMenu.Separator />
                                   <DropdownMenu.Item
                                     onSelect={() => void removeUser(item)}
@@ -744,31 +715,6 @@ export const SettingsUsers = () => {
               </Button>
             </div>
           </form>
-        </div>
-      </Show>
-
-      <Show when={state.providerOpen && canProviderUser()}>
-        <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
-          <div class="w-full max-w-6xl h-[88vh] rounded-xl border border-border-weak-base bg-background-base shadow-lg overflow-hidden flex flex-col">
-            <div class="flex items-center justify-between gap-4 border-b border-border-weak-base px-5 py-4">
-              <div class="min-w-0">
-                <div class="text-16-medium text-text-strong">设置供应商</div>
-                <div class="text-12-regular text-text-weak">目标用户：{state.providerUserName || "-"}</div>
-              </div>
-              <Button type="button" variant="secondary" onClick={closeProvider} disabled={state.pending}>
-                关闭
-              </Button>
-            </div>
-            <div class="min-h-0 flex-1">
-              <SettingsProviders
-                scope={{
-                  kind: "user",
-                  userID: state.providerUserID,
-                  userName: state.providerUserName,
-                }}
-              />
-            </div>
-          </div>
         </div>
       </Show>
     </div>

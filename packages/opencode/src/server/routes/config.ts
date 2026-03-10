@@ -7,6 +7,8 @@ import { mapValues } from "remeda"
 import { errors } from "../error"
 import { Log } from "../../util/log"
 import { lazy } from "../../util/lazy"
+import { Flag } from "@/flag/flag"
+import { AccountSystemSettingService } from "@/user/system-setting"
 
 const log = Log.create({ service: "server" })
 
@@ -30,7 +32,16 @@ export const ConfigRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        return c.json(await Config.get())
+        const config = await Config.get()
+        if (!Flag.TPCODE_ACCOUNT_ENABLED) return c.json(config)
+        const control = await AccountSystemSettingService.providerControl()
+        return c.json({
+          ...config,
+          enabled_providers: control.enabled_providers ?? config.enabled_providers,
+          disabled_providers: control.disabled_providers ?? config.disabled_providers,
+          model: control.model ?? config.model,
+          small_model: control.small_model ?? config.small_model,
+        })
       },
     )
     .patch(

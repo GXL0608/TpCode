@@ -26,6 +26,17 @@ type ManagedRow = {
   has_config?: boolean
   disabled?: boolean
 }
+type ManagedModelOption = {
+  value: string
+  provider_id: string
+  provider_name: string
+  model_id: string
+  model_name: string
+}
+type ManagedProviderOption = {
+  provider_id: string
+  provider_name: string
+}
 
 const PROVIDER_NOTES = [
   { match: (id: string) => id === "opencode", key: "dialog.provider.opencode.note" },
@@ -58,13 +69,12 @@ function note(id: string) {
 }
 
 function resolveScope(auth: ReturnType<typeof useAccountAuth>, scope?: ProviderSettingsScope): ProviderSettingsScope {
+  if (auth.enabled()) return { kind: "global" }
   if (scope) return scope
-  if (!auth.enabled()) return { kind: "local" }
-  if (auth.has("provider:config_global")) return { kind: "global" }
-  return { kind: "self" }
+  return { kind: "local" }
 }
 
-const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind: "global" | "user" }> }> = (props) => {
+const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind: "global" }> }> = (props) => {
   const dialog = useDialog()
   const language = useLanguage()
   const auth = useAccountAuth()
@@ -90,15 +100,9 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
   })
   const catalogMap = createMemo(() => new Map(catalog().map((item) => [item.id, item])))
-  const canManage = createMemo(() =>
-    props.scope.kind === "global" ? auth.has("provider:config_global") : auth.has("provider:config_user"),
-  )
-  const title = createMemo(() => (props.scope.kind === "global" ? "全局提供商配置" : "个人提供商设置"))
-  const description = createMemo(() =>
-    props.scope.kind === "global"
-      ? "管理员在这里统一配置供应商、模型和默认项，所有成员直接生效。"
-      : `为 ${props.scope.userName || props.scope.userID} 单独配置个人供应商、模型和 Key。`,
-  )
+  const canManage = createMemo(() => (auth.user()?.roles ?? []).includes("super_admin"))
+  const title = createMemo(() => "全局提供商配置")
+  const description = createMemo(() => "管理员在这里统一配置供应商、模型和默认项，所有成员直接生效。")
   const [state, setState] = createStore({
     loading: false,
     pending: false,
@@ -116,6 +120,67 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   let configInputRef: HTMLInputElement | undefined
 
   const configuredIDs = createMemo(() => new Set(state.rows.map((item) => item.provider_id)))
+  const disabledSet = createMemo(() => new Set(parseList(state.disabledProviders)))
+  const modelOptions = createMemo(() => {
+    const all = providers.all()
+    const rows = state.rows.filter((item) => !item.disabled && !disabledSet().has(item.provider_id))
+    const list = [] as ManagedModelOption[]
+    for (const row of rows) {
+      const provider = all.find((item) => item.id === row.provider_id)
+      if (!provider) continue
+      const provider_name = provider.name?.trim() || provider.id
+      for (const model of Object.values(provider.models)) {
+        const model_id = model.id
+        const model_name = model.name?.trim() || model.id
+        list.push({
+          value: `${provider.id}/${model.id}`,
+          provider_id: provider.id,
+          provider_name,
+          model_id,
+          model_name,
+        })
+      }
+    }
+    return list.sort((a, b) => {
+      const providerDiff = a.provider_name.localeCompare(b.provider_name)
+      if (providerDiff !== 0) return providerDiff
+      return a.model_name.localeCompare(b.model_name)
+    })
+  })
+  const providerOptions = createMemo(() => {
+    const map = new Map<string, ManagedProviderOption>()
+    for (const item of modelOptions()) {
+      if (map.has(item.provider_id)) continue
+      map.set(item.provider_id, {
+        provider_id: item.provider_id,
+        provider_name: item.provider_name,
+      })
+    }
+    return [...map.values()].sort((a, b) => a.provider_name.localeCompare(b.provider_name))
+  })
+  const selectedProviderID = createMemo(() => state.model.trim().split("/")[0] ?? "")
+  const selectedModelID = createMemo(() => {
+    const raw = state.model.trim()
+    const [providerID, ...rest] = raw.split("/")
+    if (!providerID || rest.length === 0) return ""
+    return rest.join("/")
+  })
+  const selectedProviderModels = createMemo(() =>
+    modelOptions().filter((item) => item.provider_id === selectedProviderID()),
+  )
+  const selectedProviderKnown = createMemo(() =>
+    providerOptions().some((item) => item.provider_id === selectedProviderID()),
+  )
+  const selectedModelKnown = createMemo(() =>
+    selectedProviderModels().some((item) => item.model_id === selectedModelID()),
+  )
+  const currentModelText = createMemo(() => {
+    const value = state.model.trim()
+    if (!value) return "未指定（自动回退）"
+    const found = modelOptions().find((item) => item.value === value)
+    if (found) return `${found.provider_name} / ${found.model_name}`
+    return value
+  })
   const popular = createMemo(() =>
     popularProviders
       .map((id) => catalogMap().get(id))
@@ -125,22 +190,11 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   const name = (providerID: string) => catalogMap().get(providerID)?.name ?? providerID
 
   const paths = () => {
-    const current = props.scope
-    if (current.kind === "global") {
-      return {
-        rows: "/account/admin/provider/global",
-        control: "/account/admin/provider-control/global",
-        config: (providerID: string) => `/account/admin/providers/${encodeURIComponent(providerID)}/config/global`,
-        key: (providerID: string) => `/account/admin/provider/${encodeURIComponent(providerID)}/global`,
-      }
-    }
     return {
-      rows: `/account/admin/users/${encodeURIComponent(current.userID)}/providers`,
-      control: `/account/admin/users/${encodeURIComponent(current.userID)}/provider-control`,
-      config: (providerID: string) =>
-        `/account/admin/users/${encodeURIComponent(current.userID)}/providers/${encodeURIComponent(providerID)}/config`,
-      key: (providerID: string) =>
-        `/account/admin/users/${encodeURIComponent(current.userID)}/providers/${encodeURIComponent(providerID)}`,
+      rows: "/account/admin/provider/global",
+      control: "/account/admin/provider-control/global",
+      config: (providerID: string) => `/account/admin/providers/${encodeURIComponent(providerID)}/config/global`,
+      key: (providerID: string) => `/account/admin/provider/${encodeURIComponent(providerID)}/global`,
     }
   }
 
@@ -202,20 +256,14 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       | { model?: unknown; small_model?: unknown; enabled_providers?: unknown; disabled_providers?: unknown }
       | undefined
     const disabled = new Set(list<string>(control?.disabled_providers))
-    const rows =
-      props.scope.kind === "global"
-        ? Object.entries(
-            ((await rowsResponse.json().catch(() => undefined)) as Record<string, { type?: unknown }> | undefined) ?? {},
-          ).map(([provider_id, auth]) => ({
-            provider_id,
-            configured: true,
-            auth_type: typeof auth?.type === "string" ? auth.type : undefined,
-            disabled: disabled.has(provider_id),
-          }))
-        : list<ManagedRow>(await rowsResponse.json().catch(() => undefined)).map((item) => ({
-            ...item,
-            disabled: !!item.disabled || disabled.has(item.provider_id),
-          }))
+    const rows = Object.entries(
+      ((await rowsResponse.json().catch(() => undefined)) as Record<string, { type?: unknown }> | undefined) ?? {},
+    ).map(([provider_id, auth]) => ({
+      provider_id,
+      configured: true,
+      auth_type: typeof auth?.type === "string" ? auth.type : undefined,
+      disabled: disabled.has(provider_id),
+    }))
 
     const providerID =
       state.providerID.trim() ||
@@ -249,7 +297,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       setState("error", await parseAccountError(response))
       return
     }
-    await complete(props.scope.kind === "global" ? "全局模型控制已更新" : "个人模型控制已更新")
+    await complete("全局模型控制已更新")
   }
 
   const saveProviderConfig = async () => {
@@ -475,6 +523,68 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
           </div>
         </div>
 
+        <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-3">
+          <div class="text-14-medium text-text-strong">当前模型（全员生效）</div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <select
+              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+              value={selectedProviderID()}
+              onChange={(event) => {
+                const providerID = event.currentTarget.value.trim()
+                if (!providerID) {
+                  setState("model", "")
+                  return
+                }
+                const first = modelOptions().find((item) => item.provider_id === providerID)
+                setState("model", first?.value ?? "")
+              }}
+            >
+              <option value="">选择供应商（未指定则自动回退）</option>
+              <Show when={selectedProviderID() && !selectedProviderKnown()}>
+                <option value={selectedProviderID()}>{selectedProviderID()}（当前已设置）</option>
+              </Show>
+              <For each={providerOptions()}>
+                {(item) => (
+                  <option value={item.provider_id}>{item.provider_name}</option>
+                )}
+              </For>
+            </select>
+            <select
+              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+              value={selectedModelID()}
+              disabled={!selectedProviderID()}
+              onChange={(event) => {
+                const modelID = event.currentTarget.value.trim()
+                const providerID = selectedProviderID()
+                if (!providerID || !modelID) {
+                  setState("model", "")
+                  return
+                }
+                setState("model", `${providerID}/${modelID}`)
+              }}
+            >
+              <option value="">
+                {selectedProviderID() ? "选择模型" : "请先选择供应商"}
+              </option>
+              <Show when={selectedModelID() && !selectedModelKnown()}>
+                <option value={selectedModelID()}>{selectedModelID()}（当前已设置）</option>
+              </Show>
+              <For each={selectedProviderModels()}>
+                {(item) => <option value={item.model_id}>{item.model_name}</option>}
+              </For>
+            </select>
+          </div>
+          <div class="text-12-regular text-text-weak">当前设置：{currentModelText()}</div>
+          <div class="text-12-regular text-text-weak">
+            未指定时会自动回退到第一个全局默认模型。
+          </div>
+          <div class="flex items-center gap-2">
+            <Button type="button" onClick={() => void saveControl()} disabled={state.pending}>
+              {state.pending ? "保存中..." : "保存控制项"}
+            </Button>
+          </div>
+        </div>
+
         <div class="flex flex-col gap-1">
           <h3 class="text-14-medium text-text-strong pb-2">添加供应商</h3>
           <div class="bg-surface-raised-base px-4 rounded-lg">
@@ -525,41 +635,6 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
           </Button>
         </div>
 
-        <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-3">
-          <div class="text-14-medium text-text-strong">模型与供应商控制</div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              placeholder="默认模型（provider/model）"
-              value={state.model}
-              onInput={(event) => setState("model", event.currentTarget.value)}
-            />
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              placeholder="Small Model（provider/model）"
-              value={state.smallModel}
-              onInput={(event) => setState("smallModel", event.currentTarget.value)}
-            />
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              placeholder="启用供应商（逗号分隔，可选）"
-              value={state.enabledProviders}
-              onInput={(event) => setState("enabledProviders", event.currentTarget.value)}
-            />
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              placeholder="禁用供应商（逗号分隔，可选）"
-              value={state.disabledProviders}
-              onInput={(event) => setState("disabledProviders", event.currentTarget.value)}
-            />
-          </div>
-          <div class="flex items-center gap-2">
-            <Button type="button" onClick={() => void saveControl()} disabled={state.pending}>
-              {state.pending ? "保存中..." : "保存控制项"}
-            </Button>
-          </div>
-        </div>
-
         <div ref={configRef} class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-3">
           <div class="flex flex-col gap-1">
             <div class="text-14-medium text-text-strong">供应商配置</div>
@@ -573,9 +648,9 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
             placeholder="供应商标识（编码）"
             value={state.providerID}
             onInput={(event) => setState("providerID", event.currentTarget.value)}
-            list={`provider-config-catalog-${props.scope.kind === "global" ? "global" : props.scope.userID}`}
+            list="provider-config-catalog-global"
           />
-          <datalist id={`provider-config-catalog-${props.scope.kind === "global" ? "global" : props.scope.userID}`}>
+          <datalist id="provider-config-catalog-global">
             <For each={catalog()}>
               {(item) => <option value={item.id}>{item.name}</option>}
             </For>
@@ -950,9 +1025,7 @@ export const SettingsProviders: Component<{ scope?: ProviderSettingsScope }> = (
   const auth = useAccountAuth()
   const view = createMemo(() => {
     const current = resolveScope(auth, props.scope)
-    if (current.kind === "global" || current.kind === "user") {
-      return <ManagedProviders scope={current} />
-    }
+    if (current.kind === "global" || current.kind === "user") return <ManagedProviders scope={{ kind: "global" }} />
     return <LegacyProviders scope={current} />
   })
   return view()

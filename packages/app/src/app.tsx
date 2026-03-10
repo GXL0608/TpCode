@@ -39,7 +39,6 @@ const AccountRegister = lazy(() => import("@/pages/account-register"))
 const AccountForgot = lazy(() => import("@/pages/account-forgot"))
 const AccountReset = lazy(() => import("@/pages/account-reset"))
 const AccountAdmin = lazy(() => import("@/pages/account-admin"))
-const AccountApiKeys = lazy(() => import("@/pages/account-apikeys"))
 const AccountPasswordChange = lazy(() => import("@/pages/account-password-change"))
 const ApprovalWorkflow = lazy(() => import("@/pages/approval-workflow"))
 const Loading = () => (
@@ -102,11 +101,7 @@ const AccountAdminRoute = () => (
   </Suspense>
 )
 
-const AccountApiKeysRoute = () => (
-  <Suspense fallback={<Loading />}>
-    <AccountApiKeys />
-  </Suspense>
-)
+const AccountApiKeysRoute = () => <Navigate href="/" />
 
 const AccountPasswordChangeRoute = () => (
   <Suspense fallback={<Loading />}>
@@ -126,7 +121,7 @@ function ProtectedRoute(props: ParentProps) {
   const redirect = () => `/login${location.search}`
   return (
     <Show when={auth.ready()} fallback={<Loading />}>
-      <Show when={!auth.enabled() || auth.authenticated()} fallback={<Navigate href={redirect()} />}>
+      <Show when={auth.authenticated()} fallback={<Navigate href={redirect()} />}>
         {props.children}
       </Show>
     </Show>
@@ -137,7 +132,7 @@ function PublicAccountRoute(props: ParentProps) {
   const auth = useAccountAuth()
   return (
     <Show when={auth.ready()} fallback={<Loading />}>
-      <Show when={auth.enabled() && !auth.authenticated()} fallback={<Navigate href="/" />}>
+      <Show when={!auth.authenticated()} fallback={<Navigate href="/" />}>
         {props.children}
       </Show>
     </Show>
@@ -148,7 +143,7 @@ function ContextProtectedRoute(props: ParentProps) {
   const auth = useAccountAuth()
   return (
     <Show when={auth.ready()} fallback={<Loading />}>
-      <Show when={!auth.enabled() || !auth.needsProjectContext()} fallback={<Navigate href="/project-select" />}>
+      <Show when={!auth.needsProjectContext()} fallback={<Navigate href="/project-select" />}>
         {props.children}
       </Show>
     </Show>

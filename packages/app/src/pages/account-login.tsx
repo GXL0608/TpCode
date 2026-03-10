@@ -34,7 +34,6 @@ export default function AccountLogin() {
 
   createEffect(() => {
     if (!auth.ready()) return
-    if (!auth.enabled()) return
     if (!auth.authenticated()) return
     navigate("/")
   })
@@ -57,7 +56,6 @@ export default function AccountLogin() {
 
   createEffect(() => {
     if (!auth.ready()) return
-    if (!auth.enabled()) return
     if (auth.authenticated()) return
     if (auto()) return
     const input = vhoInput()

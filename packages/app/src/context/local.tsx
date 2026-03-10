@@ -8,7 +8,6 @@ import { useProviders } from "@/hooks/use-providers"
 import { useModels } from "@/context/models"
 import { cycleModelVariant, getConfiguredAgentVariant, resolveModelVariant } from "./model-variant"
 import { useAccountAuth } from "./account-auth"
-import { useAccountRequest } from "@/components/settings-account-api"
 
 export type ModelKey = { providerID: string; modelID: string }
 
@@ -19,51 +18,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sync = useSync()
     const providers = useProviders()
     const account = useAccountAuth()
-    const accountRequest = useAccountRequest()
-    const [accountModel, setAccountModel] = createSignal<string | undefined>()
-    const [accountModelLoaded, setAccountModelLoaded] = createSignal(false)
-    const canUseOwn = createMemo(() => !account.enabled())
-    const strictGlobal = createMemo(() => account.enabled() && account.authenticated())
+    const strictGlobal = createMemo(() => account.authenticated())
     const connected = createMemo(() => new Set(providers.connected().map((provider) => provider.id)))
-
-    createEffect(() => {
-      if (!account.enabled() || !account.authenticated()) {
-        setAccountModel(undefined)
-        setAccountModelLoaded(true)
-        return
-      }
-      const user = account.user()
-      if (!user?.id) {
-        setAccountModel(undefined)
-        setAccountModelLoaded(false)
-        return
-      }
-      setAccountModelLoaded(false)
-      let done = false
-      void accountRequest({ path: "/account/me/provider-control" })
-        .then((response) => {
-          if (!response?.ok) return
-          return response.json().catch(() => undefined)
-        })
-        .then((row) => {
-          if (done) return
-          if (!row || typeof row !== "object" || Array.isArray(row)) {
-            setAccountModel(undefined)
-            setAccountModelLoaded(true)
-            return
-          }
-          const model = (row as { model?: unknown }).model
-          setAccountModel(typeof model === "string" ? model : undefined)
-          setAccountModelLoaded(true)
-        })
-        .catch(() => {
-          if (done) return
-          setAccountModelLoaded(true)
-        })
-      onCleanup(() => {
-        done = true
-      })
-    })
 
     function parseConfigured(value: string | undefined) {
       if (!value) return
@@ -152,7 +108,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         model: {},
       })
 
-      const configured = createMemo(() => (account.enabled() ? accountModel() : sync.data.config.model))
+      const configured = createMemo(() => sync.data.config.model)
 
       const resolveConfigured = () => {
         const key = parseConfigured(configured())
@@ -168,16 +124,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       const resolveDefault = () => {
         const defaults = providers.default()
-        for (const provider of providers.connected()) {
-          const configured = defaults[provider.id]
-          if (configured) {
-            const key = { providerID: provider.id, modelID: configured }
-            if (isModelValid(key)) return key
-          }
-
-          const first = Object.values(provider.models)[0]
-          if (!first) continue
-          const key = { providerID: provider.id, modelID: first.id }
+        const connected = providers
+          .connected()
+          .map((item) => item.id)
+          .sort((a, b) => a.localeCompare(b))
+        const enabled = sync.data.config.enabled_providers ?? []
+        const preferred = enabled.filter((id) => connected.includes(id))
+        const rest = connected.filter((id) => !preferred.includes(id))
+        for (const providerID of [...preferred, ...rest]) {
+          const modelID = defaults[providerID]
+          if (!modelID) continue
+          const key = { providerID, modelID }
           if (isModelValid(key)) return key
         }
       }
@@ -188,10 +145,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       })
 
       const configuredReady = createMemo(() => {
-        if (!strictGlobal()) return true
-        if (!accountModelLoaded()) return false
         const key = parseConfigured(configured())
-        if (!key) return true
+        if (!key) return providers.all().length > 0
         const provider = providers.all().find((x) => x.id === key.providerID)
         return !!provider?.models[key.modelID]
       })
@@ -200,7 +155,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         const a = agent.current()
         if (!a) return undefined
         const key = strictGlobal()
-          ? getFirstValidModel(() => ephemeral.model[a.name], resolveConfigured)
+          ? getFirstValidModel(resolveConfigured, resolveDefault)
           : getFirstValidModel(
               () => ephemeral.model[a.name],
               () => a.model,
@@ -210,9 +165,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return models.find(key)
       })
 
-      const recent = createMemo(() => models.recent.list().map(models.find).filter(Boolean))
+      const recent = createMemo(() => {
+        if (strictGlobal()) return []
+        return models.recent.list().map(models.find).filter(Boolean)
+      })
 
       const cycle = (direction: 1 | -1) => {
+        if (strictGlobal()) return
         const recentList = recent()
         const currentModel = current()
         if (!currentModel) return
@@ -236,21 +195,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
 
       const set = (model: ModelKey | undefined, options?: { recent?: boolean }) => {
+        if (strictGlobal()) return
         batch(() => {
           const currentAgent = agent.current()
           const next = model ?? fallbackModel()
           if (currentAgent) setEphemeral("model", currentAgent.name, next)
           if (model) models.setVisibility(model, true)
           if (options?.recent && model) models.recent.push(model)
-        })
-        if (!model || !account.enabled() || !account.authenticated() || !account.has("provider:config_own") || !canUseOwn())
-          return
-        void accountRequest({
-          method: "PUT",
-          path: "/account/me/provider-control",
-          body: {
-            model: `${model.providerID}/${model.modelID}`,
-          },
         })
       }
 
@@ -281,6 +232,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             })
           },
           selected() {
+            if (strictGlobal()) return undefined
             const m = current()
             if (!m) return undefined
             return models.variant.get({ providerID: m.provider.id, modelID: m.id })
@@ -299,11 +251,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             return Object.keys(m.variants)
           },
           set(value: string | undefined) {
+            if (strictGlobal()) return
             const m = current()
             if (!m) return
             models.variant.set({ providerID: m.provider.id, modelID: m.id }, value)
           },
           cycle() {
+            if (strictGlobal()) return
             const variants = this.list()
             if (variants.length === 0) return
             this.set(

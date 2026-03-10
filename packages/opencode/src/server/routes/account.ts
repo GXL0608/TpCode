@@ -17,7 +17,6 @@ import path from "path"
 import { readdir } from "fs/promises"
 import { PlanService } from "@/plan/service"
 import { Config } from "@/config/config"
-import { UserProviderConfig } from "@/provider/user-provider-config"
 import { AccountProviderState } from "@/provider/account-provider-state"
 
 const LoginResult = z
@@ -162,49 +161,21 @@ function requireLogin(c: Context) {
   return user_id
 }
 
-function requireProviderConfig(c: Context) {
-  if (Flag.TPCODE_ACCOUNT_ENABLED) {
-    return c.json(
-      {
-        error: "forbidden",
-        permission: "provider:config_global|provider:config_user",
-      },
-      403,
-    )
+function forbidUserProviderConfig() {
+  return {
+    error: "forbidden" as const,
+    permission: "provider:config_global",
   }
-  const permissions = c.get("account_permissions" as never) as string[] | undefined
-  if (!permissions) {
-    return c.json(
-      {
-        error: "forbidden",
-        permission: "provider:config_own",
-      },
-      403,
-    )
-  }
-  if (permissions.includes("provider:config_own")) return
-  return c.json(
-    {
-      error: "forbidden",
-      permission: "provider:config_own",
-    },
-    403,
-  )
 }
 
 function requireUserList(c: Context) {
   const permissions = c.get("account_permissions" as never) as string[] | undefined
   if (!permissions) return
-  if (
-    permissions.includes("user:manage") ||
-    permissions.includes("role:manage") ||
-    permissions.includes("provider:config_user")
-  )
-    return
+  if (permissions.includes("user:manage") || permissions.includes("role:manage")) return
   return c.json(
     {
       error: "forbidden",
-      permission: "user:manage|role:manage|provider:config_user",
+      permission: "user:manage|role:manage",
     },
     403,
   )
@@ -759,132 +730,49 @@ export const AccountRoutes = lazy(() =>
         },
       }),
       validator("param", z.object({ provider_id: z.string() })),
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const param = c.req.valid("param")
-        const state = await AccountProviderState.load(user_id)
-        const auth = AccountProviderState.auth(state, param.provider_id)
-        const source = AccountProviderState.authSource(state, param.provider_id)
-        if (auth) {
-          return c.json({
-            provider_id: param.provider_id,
-            configured: true,
-            source,
-            auth_type: auth.type,
-          })
-        }
-        return c.json({
-          provider_id: param.provider_id,
-          configured: false,
-          source: "none" as const,
-        })
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(
       "/me/provider-control",
       async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        return c.json(await AccountProviderState.load(user_id).then((x) => x.control))
+        return c.json(forbidUserProviderConfig(), 403)
       },
     )
     .put(
       "/me/provider-control",
       validator("json", ProviderControlBody),
-      async (c) => {
-        const denied = requireProviderConfig(c)
-        if (denied) return denied
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const body = c.req.valid("json")
-        await UserProviderConfig.setUserControl(user_id, body)
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(
       "/me/providers/:provider_id/config",
       validator("param", z.object({ provider_id: z.string() })),
-      async (c) => {
-        const denied = requireProviderConfig(c)
-        if (denied) return denied
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const param = c.req.valid("param")
-        const config = await UserProviderConfig.getProviderConfig(user_id, param.provider_id)
-        return c.json({ provider_id: param.provider_id, config: config ?? null })
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/me/providers/:provider_id/config",
       validator("param", z.object({ provider_id: z.string() })),
       validator("json", Config.Provider),
-      async (c) => {
-        const denied = requireProviderConfig(c)
-        if (denied) return denied
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        await UserProviderConfig.setProviderConfig(user_id, param.provider_id, body)
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .delete(
       "/me/providers/:provider_id/config",
       validator("param", z.object({ provider_id: z.string() })),
-      async (c) => {
-        const denied = requireProviderConfig(c)
-        if (denied) return denied
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const param = c.req.valid("param")
-        await UserProviderConfig.removeProviderConfig(user_id, param.provider_id)
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .patch(
       "/me/providers/:provider_id/disabled",
       validator("param", z.object({ provider_id: z.string() })),
       validator("json", z.object({ disabled: z.boolean() })),
-      async (c) => {
-        const denied = requireProviderConfig(c)
-        if (denied) return denied
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        await UserProviderConfig.setProviderDisabled(user_id, param.provider_id, body.disabled)
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(
       "/me/model-prefs",
-      async (c) => {
-        const denied = requireProviderConfig(c)
-        if (denied) return denied
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        return c.json(await UserProviderConfig.getModelPrefs(user_id))
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/me/model-prefs",
       validator("json", ModelPrefsBody),
-      async (c) => {
-        const denied = requireProviderConfig(c)
-        if (denied) return denied
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const body = c.req.valid("json")
-        await UserProviderConfig.setModelPrefs(user_id, body)
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(
       "/admin/roles",
@@ -1260,10 +1148,10 @@ export const AccountRoutes = lazy(() =>
         return c.json(result)
       },
     )
-    .get("/admin/provider/global", UserRbac.require("provider:config_global"), async (c) => c.json(await Auth.sharedAll()))
+    .get("/admin/provider/global", UserRbac.requireRole("super_admin"), async (c) => c.json(await Auth.sharedAll()))
     .put(
       "/admin/provider/:provider_id/global",
-      UserRbac.require("provider:config_global"),
+      UserRbac.requireRole("super_admin"),
       validator("param", z.object({ provider_id: z.string() })),
       validator("json", Auth.Info),
       async (c) => {
@@ -1291,7 +1179,7 @@ export const AccountRoutes = lazy(() =>
     )
     .delete(
       "/admin/provider/:provider_id/global",
-      UserRbac.require("provider:config_global"),
+      UserRbac.requireRole("super_admin"),
       validator("param", z.object({ provider_id: z.string() })),
       async (c) => {
         const actor_user_id = requireLogin(c)
@@ -1314,12 +1202,12 @@ export const AccountRoutes = lazy(() =>
         return c.json(true)
       },
     )
-    .get("/admin/provider-control/global", UserRbac.require("provider:config_global"), async (c) =>
+    .get("/admin/provider-control/global", UserRbac.requireRole("super_admin"), async (c) =>
       c.json(await AccountSystemSettingService.providerControl()),
     )
     .put(
       "/admin/provider-control/global",
-      UserRbac.require("provider:config_global"),
+      UserRbac.requireRole("super_admin"),
       validator("json", ProviderControlBody),
       async (c) => {
         const actor_user_id = requireLogin(c)
@@ -1342,7 +1230,7 @@ export const AccountRoutes = lazy(() =>
     )
     .get(
       "/admin/providers/:provider_id/config/global",
-      UserRbac.require("provider:config_global"),
+      UserRbac.requireRole("super_admin"),
       validator("param", z.object({ provider_id: z.string() })),
       async (c) => {
         const param = c.req.valid("param")
@@ -1352,7 +1240,7 @@ export const AccountRoutes = lazy(() =>
     )
     .put(
       "/admin/providers/:provider_id/config/global",
-      UserRbac.require("provider:config_global"),
+      UserRbac.requireRole("super_admin"),
       validator("param", z.object({ provider_id: z.string() })),
       validator("json", Config.Provider),
       async (c) => {
@@ -1379,7 +1267,7 @@ export const AccountRoutes = lazy(() =>
     )
     .delete(
       "/admin/providers/:provider_id/config/global",
-      UserRbac.require("provider:config_global"),
+      UserRbac.requireRole("super_admin"),
       validator("param", z.object({ provider_id: z.string() })),
       async (c) => {
         const actor_user_id = requireLogin(c)
@@ -1732,172 +1620,58 @@ export const AccountRoutes = lazy(() =>
     )
     .get(
       "/admin/users/:user_id/providers",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string() })),
-      async (c) => {
-        const param = c.req.valid("param")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        const rows = await UserProviderConfig.state(param.user_id)
-        return c.json(
-          Object.entries(rows.providers).map(([provider_id, row]) => ({
-            provider_id,
-            configured: !!row.auth || !!row.meta.provider_config || !!row.meta.flags?.disabled,
-            auth_type: row.auth?.type,
-            has_config: !!row.meta.provider_config,
-            disabled: !!row.meta.flags?.disabled,
-          })),
-        )
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/admin/users/:user_id/providers/:provider_id",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
       validator("json", Auth.Info),
-      async (c) => {
-        const actor_user_id = requireLogin(c)
-        if (typeof actor_user_id !== "string") return actor_user_id
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await Auth.setUser(param.user_id, param.provider_id, body, "admin")
-        await UserService.audit({
-          actor_user_id,
-          action: "account.user.provider.set",
-          target_type: "tp_user",
-          target_id: param.user_id,
-          result: "success",
-          detail_json: {
-            provider_id: param.provider_id,
-            auth_type: body.type,
-          },
-          ip: c.req.header("x-forwarded-for"),
-          user_agent: c.req.header("user-agent"),
-        })
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .delete(
       "/admin/users/:user_id/providers/:provider_id",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
-      async (c) => {
-        const actor_user_id = requireLogin(c)
-        if (typeof actor_user_id !== "string") return actor_user_id
-        const param = c.req.valid("param")
-        await Auth.purgeUser(param.user_id, param.provider_id)
-        await UserService.audit({
-          actor_user_id,
-          action: "account.user.provider.remove",
-          target_type: "tp_user",
-          target_id: param.user_id,
-          result: "success",
-          detail_json: {
-            provider_id: param.provider_id,
-          },
-          ip: c.req.header("x-forwarded-for"),
-          user_agent: c.req.header("user-agent"),
-        })
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(
       "/admin/users/:user_id/provider-control",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string() })),
-      async (c) => {
-        const param = c.req.valid("param")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        return c.json(await UserProviderConfig.getUserControl(param.user_id))
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/admin/users/:user_id/provider-control",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string() })),
       validator("json", ProviderControlBody),
-      async (c) => {
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await UserProviderConfig.setUserControl(param.user_id, body, "admin")
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(
       "/admin/users/:user_id/providers/:provider_id/config",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
-      async (c) => {
-        const param = c.req.valid("param")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        const config = await UserProviderConfig.getProviderConfig(param.user_id, param.provider_id)
-        return c.json({ provider_id: param.provider_id, config: config ?? null })
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/admin/users/:user_id/providers/:provider_id/config",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
       validator("json", Config.Provider),
-      async (c) => {
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await UserProviderConfig.setProviderConfig(param.user_id, param.provider_id, body, "admin")
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .patch(
       "/admin/users/:user_id/providers/:provider_id/disabled",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
       validator("json", z.object({ disabled: z.boolean() })),
-      async (c) => {
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await UserProviderConfig.setProviderDisabled(param.user_id, param.provider_id, body.disabled, "admin")
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(
       "/admin/users/:user_id/model-prefs",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string() })),
-      async (c) => {
-        const param = c.req.valid("param")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        return c.json(await UserProviderConfig.getModelPrefs(param.user_id))
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/admin/users/:user_id/model-prefs",
-      UserRbac.require("provider:config_user"),
       validator("param", z.object({ user_id: z.string() })),
       validator("json", ModelPrefsBody),
-      async (c) => {
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        const user = await UserService.userByID(param.user_id)
-        if (!user) return c.json({ ok: false, code: "user_missing" }, 400)
-        await UserProviderConfig.setModelPrefs(param.user_id, body)
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
+      async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .post(
       "/admin/users/:user_id/roles",

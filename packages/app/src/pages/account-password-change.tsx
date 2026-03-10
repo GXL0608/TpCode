@@ -80,9 +80,6 @@ export default function AccountPasswordChange() {
           {pending() ? "保存中..." : "确认修改"}
         </Button>
         <div class="flex items-center justify-between text-12-regular text-text-weak">
-          <A href="/settings/apikeys" class="hover:text-text-strong">
-            接口密钥
-          </A>
           <A href="/approval" class="hover:text-text-strong">
             审批流
           </A>

@@ -8,7 +8,6 @@ import { useAccountAuth } from "@/context/account-auth"
 import { SettingsGeneral } from "./settings-general"
 import { SettingsKeybinds } from "./settings-keybinds"
 import { SettingsProviders } from "./settings-providers"
-import { SettingsModels } from "./settings-models"
 import { SettingsAccount } from "./settings-account"
 import { SettingsUsers } from "./settings-users"
 import { SettingsRoles } from "./settings-roles"
@@ -19,12 +18,12 @@ export const DialogSettings: Component = () => {
   const language = useLanguage()
   const platform = usePlatform()
   const auth = useAccountAuth()
-  const canManageUsers = createMemo(() => auth.has("user:manage") || auth.has("provider:config_user"))
+  const isSuperAdmin = createMemo(() => (auth.user()?.roles ?? []).includes("super_admin"))
+  const canManageUsers = createMemo(() => auth.has("user:manage"))
   const canManageRoles = createMemo(() => auth.has("role:manage"))
   const canManageProjects = createMemo(() => auth.has("role:manage"))
   const canManageSystem = createMemo(() => auth.has("role:manage"))
-  const canViewProviders = createMemo(() => auth.has("ui:settings.providers:view"))
-  const canViewModels = createMemo(() => auth.has("ui:settings.models:view"))
+  const canViewProviders = createMemo(() => isSuperAdmin())
 
   return (
     <Dialog size="xx-large" transition>
@@ -54,12 +53,6 @@ export const DialogSettings: Component = () => {
                       <Tabs.Trigger value="providers">
                         <Icon name="providers" />
                         {language.t("settings.providers.title")}
-                      </Tabs.Trigger>
-                    </Show>
-                    <Show when={canViewModels()}>
-                      <Tabs.Trigger value="models">
-                        <Icon name="models" />
-                        {language.t("settings.models.title")}
                       </Tabs.Trigger>
                     </Show>
                     <Tabs.Trigger value="my">
@@ -109,11 +102,6 @@ export const DialogSettings: Component = () => {
         <Show when={canViewProviders()}>
           <Tabs.Content value="providers" class="no-scrollbar">
             <SettingsProviders />
-          </Tabs.Content>
-        </Show>
-        <Show when={canViewModels()}>
-          <Tabs.Content value="models" class="no-scrollbar">
-            <SettingsModels />
           </Tabs.Content>
         </Show>
         <Tabs.Content value="my" class="no-scrollbar">

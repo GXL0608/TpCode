@@ -56,10 +56,6 @@ export default function AccountProjectSelect() {
 
   createEffect(() => {
     if (!auth.ready()) return
-    if (!auth.enabled()) {
-      navigate("/")
-      return
-    }
     if (!auth.authenticated()) return
     void load()
   })

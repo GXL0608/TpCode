@@ -173,7 +173,22 @@ export function DialogCustomProvider(props: Props) {
   const language = useLanguage()
   const auth = useAccountAuth()
   const accountRequest = useAccountRequest()
-  const scope = () => props.scope ?? (auth.enabled() ? ({ kind: "self" } satisfies ProviderSettingsScope) : ({ kind: "local" } satisfies ProviderSettingsScope))
+  const scope = () =>
+    props.scope ?? (auth.enabled() ? ({ kind: "global" } satisfies ProviderSettingsScope) : ({ kind: "local" } satisfies ProviderSettingsScope))
+  const canManage = () => {
+    const current = scope()
+    if (current.kind === "global") return (auth.user()?.roles ?? []).includes("super_admin")
+    if (current.kind === "local") return true
+    return false
+  }
+
+  if (!canManage()) {
+    return (
+      <Dialog title={language.t("provider.custom.title")} transition>
+        <div class="text-14-regular text-text-weak">当前账号没有供应商配置权限。</div>
+      </Dialog>
+    )
+  }
 
   const [form, setForm] = createStore<FormState>({
     providerID: "",
@@ -249,34 +264,6 @@ export function DialogCustomProvider(props: Props) {
       return
     }
     const current = scope()
-    if (current.kind === "user") {
-      const control = await accountRequest({
-        path: `/account/admin/users/${encodeURIComponent(current.userID)}/provider-control`,
-      }).catch(() => undefined)
-      const body = control?.ok
-        ? ((await control.json().catch(() => undefined)) as {
-            model?: string
-            small_model?: string
-            enabled_providers?: string[]
-            disabled_providers?: string[]
-            model_prefs?: Record<string, unknown>
-          } | undefined)
-        : undefined
-      const enabled =
-        body?.enabled_providers && body.enabled_providers.length > 0 && !body.enabled_providers.includes(providerID)
-          ? [...body.enabled_providers, providerID]
-          : body?.enabled_providers
-      const response = await accountRequest({
-        method: "PUT",
-        path: `/account/admin/users/${encodeURIComponent(current.userID)}/provider-control`,
-        body: {
-          enabled_providers: enabled,
-          disabled_providers: (body?.disabled_providers ?? []).filter((item) => item !== providerID),
-        },
-      }).catch(() => undefined)
-      if (!response?.ok) throw new Error(await parseAccountError(response))
-      return
-    }
     if (current.kind === "global") {
       const control = await accountRequest({
         path: "/account/admin/provider-control/global",
@@ -308,33 +295,7 @@ export function DialogCustomProvider(props: Props) {
       if (!response?.ok) throw new Error(await parseAccountError(response))
       return
     }
-    if (current.kind === "self") {
-      const control = await accountRequest({
-        path: "/account/me/provider-control",
-      }).catch(() => undefined)
-      const body = control?.ok
-        ? ((await control.json().catch(() => undefined)) as {
-            model?: string
-            small_model?: string
-            enabled_providers?: string[]
-            disabled_providers?: string[]
-            model_prefs?: Record<string, unknown>
-          } | undefined)
-        : undefined
-      const enabled =
-        body?.enabled_providers && body.enabled_providers.length > 0 && !body.enabled_providers.includes(providerID)
-          ? [...body.enabled_providers, providerID]
-          : body?.enabled_providers
-      const enable = await accountRequest({
-        method: "PUT",
-        path: "/account/me/provider-control",
-        body: {
-          enabled_providers: enabled,
-          disabled_providers: (body?.disabled_providers ?? []).filter((item) => item !== providerID),
-        },
-      }).catch(() => undefined)
-      if (!enable?.ok) throw new Error(await parseAccountError(enable))
-    }
+    throw new Error("provider_config_forbidden")
   }
 
   const save = async (e: SubmitEvent) => {
@@ -358,28 +319,15 @@ export function DialogCustomProvider(props: Props) {
           }).then(async (response) => {
             if (!response?.ok) throw new Error(await parseAccountError(response))
           })
-        : scope().kind === "user"
-          ? (() => {
-              const current = scope()
-              if (current.kind !== "user") return Promise.resolve()
-              return accountRequest({
-              method: "PUT",
-              path: `/account/admin/users/${encodeURIComponent(current.userID)}/providers/${encodeURIComponent(result.providerID)}`,
-              body: {
-                type: "api",
-                key: result.key,
-              },
-            }).then(async (response) => {
-              if (!response?.ok) throw new Error(await parseAccountError(response))
-            })
-            })()
-          : globalSDK.client.auth.set({
+        : scope().kind === "local"
+          ? globalSDK.client.auth.set({
               providerID: result.providerID,
               auth: {
                 type: "api",
                 key: result.key,
               },
             })
+          : Promise.reject(new Error("provider_config_forbidden"))
       : Promise.resolve()
 
     authWrite
@@ -391,15 +339,10 @@ export function DialogCustomProvider(props: Props) {
           return
         }
         const current = scope()
-        const path =
-          current.kind === "global"
-            ? `/account/admin/providers/${encodeURIComponent(result.providerID)}/config/global`
-            : current.kind === "user"
-              ? `/account/admin/users/${encodeURIComponent(current.userID)}/providers/${encodeURIComponent(result.providerID)}/config`
-              : `/account/me/providers/${encodeURIComponent(result.providerID)}/config`
+        if (current.kind !== "global") throw new Error("provider_config_forbidden")
         const write = await accountRequest({
           method: "PUT",
-          path,
+          path: `/account/admin/providers/${encodeURIComponent(result.providerID)}/config/global`,
           body: result.config as unknown as Record<string, unknown>,
         }).catch(() => undefined)
         if (!write?.ok) throw new Error(await parseAccountError(write))

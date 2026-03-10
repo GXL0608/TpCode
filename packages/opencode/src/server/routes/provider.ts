@@ -9,15 +9,14 @@ import { mapValues } from "remeda"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Flag } from "@/flag/flag"
-import { AccountCurrent } from "@/user/current"
-import { AccountProviderState } from "@/provider/account-provider-state"
+import { AccountSystemSettingService } from "@/user/system-setting"
 
 function requireProviderConfig(c: Context) {
   if (Flag.TPCODE_ACCOUNT_ENABLED) {
     return c.json(
       {
         error: "forbidden",
-        permission: "provider:config_global|provider:config_user",
+        permission: "provider:config_global",
       },
       403,
     )
@@ -73,17 +72,10 @@ export const ProviderRoutes = lazy(() =>
 
         const strictAccount = Flag.TPCODE_ACCOUNT_ENABLED
         const config = strictAccount ? undefined : await Config.get()
-        const uid = strictAccount ? AccountCurrent.optional()?.user_id : undefined
-        const account = strictAccount && uid ? await AccountProviderState.load(uid) : undefined
-        const user = account?.user
-        const disabled = new Set(strictAccount ? (account?.control.disabled_providers ?? []) : (config?.disabled_providers ?? []))
-        if (strictAccount) {
-          for (const [providerID, item] of Object.entries(user?.providers ?? {})) {
-            if (item.meta.flags?.disabled) disabled.add(providerID)
-          }
-        }
+        const control = strictAccount ? await AccountSystemSettingService.providerControl() : undefined
+        const disabled = new Set(strictAccount ? (control?.disabled_providers ?? []) : (config?.disabled_providers ?? []))
         const enabled = strictAccount
-          ? (account?.control.enabled_providers ? new Set(account.control.enabled_providers) : undefined)
+          ? (control?.enabled_providers ? new Set(control.enabled_providers) : undefined)
           : (config?.enabled_providers ? new Set(config.enabled_providers) : undefined)
 
         const filteredProviders: Record<string, (typeof allProviders)[string]> = {}
@@ -208,9 +200,6 @@ export const ProviderRoutes = lazy(() =>
           method,
           code,
         })
-        if (Flag.TPCODE_ACCOUNT_ENABLED) {
-          await AccountProviderState.invalidate()
-        }
         return c.json(true)
       },
     ),

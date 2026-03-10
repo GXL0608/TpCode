@@ -24,10 +24,13 @@ export const DialogSelectProvider: Component<{ scope?: ProviderSettingsScope; on
   const providers = useProviders()
   const language = useLanguage()
   const account = useAccountAuth()
+  const scope = () =>
+    props.scope ?? (account.enabled() ? ({ kind: "global" } satisfies ProviderSettingsScope) : ({ kind: "local" } satisfies ProviderSettingsScope))
   const canManage = () => {
-    if (props.scope?.kind === "global") return account.has("provider:config_global")
-    if (props.scope?.kind === "user") return account.has("provider:config_user")
-    return !account.enabled() || account.has("provider:config_own")
+    const current = scope()
+    if (current.kind === "global") return (account.user()?.roles ?? []).includes("super_admin")
+    if (current.kind === "local") return true
+    return false
   }
 
   if (!canManage()) {
@@ -77,10 +80,10 @@ export const DialogSelectProvider: Component<{ scope?: ProviderSettingsScope; on
         onSelect={(x) => {
           if (!x) return
           if (x.id === CUSTOM_ID) {
-            dialog.show(() => <DialogCustomProvider back="providers" scope={props.scope} onComplete={props.onComplete} />)
+            dialog.show(() => <DialogCustomProvider back="providers" scope={scope()} onComplete={props.onComplete} />)
             return
           }
-          dialog.show(() => <DialogConnectProvider provider={x.id} scope={props.scope} onComplete={props.onComplete} />)
+          dialog.show(() => <DialogConnectProvider provider={x.id} scope={scope()} onComplete={props.onComplete} />)
         }}
       >
         {(i) => (

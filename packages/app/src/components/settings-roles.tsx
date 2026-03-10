@@ -52,6 +52,14 @@ function sameSet(a: string[], b: string[]) {
 
 const pageSizes = [10, 20, 50, 100, 500] as const
 const builtinRoleSet = new Set(["super_admin", "dev_lead", "developer", "ops", "pm", "value_ops", "hospital_admin", "dept_director", "hospital_user", "dean"])
+const hiddenPermissionCodes = new Set([
+  "provider:config_global",
+  "provider:config_user",
+  "provider:config_own",
+  "provider:use_own",
+  "ui:settings.providers:view",
+  "ui:settings.models:view",
+])
 
 export const SettingsRoles = () => {
   const auth = useAccountAuth()
@@ -94,9 +102,6 @@ export const SettingsRoles = () => {
   })
 
   const permissionQuickCodes = [
-    "ui:settings.providers:view",
-    "ui:settings.models:view",
-    "provider:config_user",
     "agent:use_docs",
     "agent:use_build",
   ] as const
@@ -115,7 +120,7 @@ export const SettingsRoles = () => {
   )
   const filteredPermissions = createMemo(() => {
     const query = state.permQuery.trim().toLowerCase()
-    const rows = state.permissions.filter((item) => !permissionQuickSet.has(item.code))
+    const rows = state.permissions.filter((item) => !permissionQuickSet.has(item.code) && !hiddenPermissionCodes.has(item.code))
     if (!query) return rows
     return rows.filter((item) => {
       const name = permissionZh(item.code).toLowerCase()
