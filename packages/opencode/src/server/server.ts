@@ -42,6 +42,7 @@ import { QuestionRoutes } from "./routes/question"
 import { PermissionRoutes } from "./routes/permission"
 import { GlobalRoutes } from "./routes/global"
 import { ApprovalRoutes } from "./routes/approval"
+import { FeedbackRoutes } from "./routes/feedback"
 import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
@@ -315,6 +316,7 @@ export namespace Server {
               "/config",
               "/event",
               "/experimental",
+              "/feedback",
               "/file",
               "/find",
               "/format",
@@ -685,6 +687,7 @@ export namespace Server {
         .route("/session", SessionRoutes())
         .route("/permission", PermissionRoutes())
         .route("/approval", ApprovalRoutes())
+        .route("/feedback", FeedbackRoutes())
         .route("/question", QuestionRoutes())
         .route("/provider", ProviderRoutes())
         .route("/", FileRoutes())

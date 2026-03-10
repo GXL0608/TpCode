@@ -10,6 +10,7 @@ import {
   ParentProps,
   Show,
   untrack,
+  lazy,
   type JSX,
 } from "solid-js"
 import { A, useNavigate, useParams } from "@solidjs/router"
@@ -82,6 +83,8 @@ import {
 import { workspaceOpenState } from "./layout/sidebar-workspace-helpers"
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
+
+const FeedbackLauncher = lazy(() => import("@/components/feedback-launcher").then((item) => ({ default: item.FeedbackLauncher })))
 
 function flag(key: string, fallback = true) {
   if (typeof window !== "object") return fallback
@@ -2117,6 +2120,9 @@ export default function Layout(props: ParentProps) {
           {props.children}
         </main>
       </div>
+      <Show when={auth.authenticated()}>
+        <FeedbackLauncher />
+      </Show>
       <Toast.Region />
     </div>
   )

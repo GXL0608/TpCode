@@ -14,6 +14,13 @@ const accountEnabledCache = {
   value: true,
 }
 
+const feedbackEnabledCache = {
+  cwd: "",
+  configPath: undefined as string | undefined,
+  mtimeMs: undefined as number | undefined,
+  value: true,
+}
+
 function findTPCODEConfigPath(start: string) {
   let dir = start
   while (true) {
@@ -81,6 +88,59 @@ function readTPCODEAccountEnabledFromConfig() {
   return accountEnabledCache.value
 }
 
+function parseTPCODEFeedbackEnabled(filepath: string) {
+  try {
+    const text = readFileSync(filepath, "utf-8")
+    const errors: JsoncParseError[] = []
+    const parsed = parseJsonc(text, errors, { allowTrailingComma: true })
+    if (errors.length > 0) return
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+    const value = (parsed as Record<string, unknown>).TPCODE_FEEDBACK_ENABLED
+    if (typeof value === "boolean") return value
+  } catch {
+    return
+  }
+  return
+}
+
+function readTPCODEFeedbackEnabledFromConfig() {
+  const cwd = process.cwd()
+  if (feedbackEnabledCache.cwd !== cwd) {
+    feedbackEnabledCache.cwd = cwd
+    feedbackEnabledCache.configPath = findTPCODEConfigPath(cwd)
+    feedbackEnabledCache.mtimeMs = undefined
+  }
+
+  if (!feedbackEnabledCache.configPath) {
+    feedbackEnabledCache.value = true
+    return feedbackEnabledCache.value
+  }
+
+  let mtimeMs: number
+  try {
+    mtimeMs = statSync(feedbackEnabledCache.configPath).mtimeMs
+  } catch {
+    feedbackEnabledCache.configPath = findTPCODEConfigPath(cwd)
+    feedbackEnabledCache.mtimeMs = undefined
+    if (!feedbackEnabledCache.configPath) {
+      feedbackEnabledCache.value = true
+      return feedbackEnabledCache.value
+    }
+    try {
+      mtimeMs = statSync(feedbackEnabledCache.configPath).mtimeMs
+    } catch {
+      feedbackEnabledCache.value = true
+      return feedbackEnabledCache.value
+    }
+  }
+
+  if (feedbackEnabledCache.mtimeMs === mtimeMs) return feedbackEnabledCache.value
+
+  feedbackEnabledCache.mtimeMs = mtimeMs
+  feedbackEnabledCache.value = parseTPCODEFeedbackEnabled(feedbackEnabledCache.configPath) ?? true
+  return feedbackEnabledCache.value
+}
+
 export namespace Flag {
   export const OPENCODE_AUTO_SHARE = truthy("OPENCODE_AUTO_SHARE")
   export const OPENCODE_GIT_BASH_PATH = process.env["OPENCODE_GIT_BASH_PATH"]
@@ -110,6 +170,7 @@ export namespace Flag {
   export const OPENCODE_SERVER_PASSWORD = process.env["OPENCODE_SERVER_PASSWORD"]
   export const OPENCODE_SERVER_USERNAME = process.env["OPENCODE_SERVER_USERNAME"]
   export declare const TPCODE_ACCOUNT_ENABLED: boolean
+  export declare const TPCODE_FEEDBACK_ENABLED: boolean
   export declare const TPCODE_ACCOUNT_JWT_SECRET: string | undefined
   export declare const TPCODE_ACCOUNT_INVITE_CODE: string | undefined
   export declare const TPCODE_ADMIN_PASSWORD: string | undefined
@@ -206,6 +267,14 @@ Object.defineProperty(Flag, "OPENCODE_CLIENT", {
 Object.defineProperty(Flag, "TPCODE_ACCOUNT_ENABLED", {
   get() {
     return readTPCODEAccountEnabledFromConfig()
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_FEEDBACK_ENABLED", {
+  get() {
+    return readTPCODEFeedbackEnabledFromConfig()
   },
   enumerable: true,
   configurable: false,

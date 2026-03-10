@@ -69,6 +69,10 @@ const permissionTextMap: Record<string, string> = {
   "ui:settings.providers:view": "查看供应商设置页",
   "ui:settings.models:view": "查看模型设置页",
   "audit:view": "查看审计日志",
+  "feedback:create": "提交反馈",
+  "feedback:reply": "回复反馈",
+  "feedback:resolve": "处理反馈",
+  "feedback:manage": "管理反馈",
 }
 
 export function accountTypeZh(value?: string) {

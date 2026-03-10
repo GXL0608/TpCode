@@ -91,6 +91,13 @@ export type EventLspUpdated = {
   }
 }
 
+export type EventFileEdited = {
+  type: "file.edited"
+  properties: {
+    file: string
+  }
+}
+
 export type OutputFormatText = {
   type: "text"
 }
@@ -687,13 +694,6 @@ export type EventSessionCompacted = {
   }
 }
 
-export type EventFileEdited = {
-  type: "file.edited"
-  properties: {
-    file: string
-  }
-}
-
 export type EventFileWatcherUpdated = {
   type: "file.watcher.updated"
   properties: {
@@ -897,17 +897,6 @@ export type EventVcsBranchUpdated = {
   }
 }
 
-export type EventServerDegraded = {
-  type: "server.degraded"
-  properties: {
-    reason: string
-    check: string
-    pending?: number
-    dropped_delta?: number
-    at: number
-  }
-}
-
 export type EventWorktreeReady = {
   type: "worktree.ready"
   properties: {
@@ -934,6 +923,17 @@ export type EventWorkspaceFailed = {
   type: "workspace.failed"
   properties: {
     message: string
+  }
+}
+
+export type EventServerDegraded = {
+  type: "server.degraded"
+  properties: {
+    reason: string
+    check: string
+    pending?: number
+    dropped_delta?: number
+    at: number
   }
 }
 
@@ -985,6 +985,7 @@ export type Event =
   | EventGlobalDisposed
   | EventLspClientDiagnostics
   | EventLspUpdated
+  | EventFileEdited
   | EventMessageUpdated
   | EventMessageRemoved
   | EventMessagePartUpdated
@@ -998,7 +999,6 @@ export type Event =
   | EventQuestionReplied
   | EventQuestionRejected
   | EventSessionCompacted
-  | EventFileEdited
   | EventFileWatcherUpdated
   | EventTodoUpdated
   | EventTuiPromptAppend
@@ -1014,11 +1014,11 @@ export type Event =
   | EventSessionDiff
   | EventSessionError
   | EventVcsBranchUpdated
-  | EventServerDegraded
   | EventWorktreeReady
   | EventWorktreeFailed
   | EventWorkspaceReady
   | EventWorkspaceFailed
+  | EventServerDegraded
   | EventPtyCreated
   | EventPtyUpdated
   | EventPtyExited
@@ -1362,6 +1362,10 @@ export type Config = {
    * Enable TpCode account system
    */
   TPCODE_ACCOUNT_ENABLED?: boolean
+  /**
+   * Enable TpCode feedback forum
+   */
+  TPCODE_FEEDBACK_ENABLED?: boolean
   logLevel?: LogLevel
   server?: ServerConfig
   /**
@@ -1636,6 +1640,7 @@ export type AccountLoginResult = {
     context_project_id?: string
     roles: Array<string>
     permissions: Array<string>
+    feedback_enabled: boolean
   }
 }
 
@@ -1950,6 +1955,70 @@ export type SubtaskPartInput = {
     modelID: string
   }
   command?: string
+}
+
+export type FeedbackSourcePlatform = "pc_web" | "mobile_web"
+
+export type FeedbackStatus = "open" | "processing" | "resolved"
+
+export type FeedbackThread = {
+  id: string
+  project_id: string
+  product_id: string
+  product_name: string
+  page_name: string
+  menu_path?: string
+  source_platform: FeedbackSourcePlatform
+  user_id: string
+  username: string
+  display_name: string
+  org_id: string
+  department_id?: string
+  title: string
+  content: string
+  status: FeedbackStatus
+  resolved_by?: string
+  resolved_name?: string
+  resolved_at?: number
+  last_reply_at: number
+  reply_count: number
+  time_created: number
+  time_updated: number
+}
+
+export type FeedbackPost = {
+  id: string
+  thread_id: string
+  user_id: string
+  username: string
+  display_name: string
+  org_id: string
+  department_id?: string
+  content: string
+  official_reply: boolean
+  time_created: number
+  time_updated: number
+}
+
+export type FeedbackDetail = {
+  ok: true
+  thread: FeedbackThread
+  posts: Array<FeedbackPost>
+}
+
+export type FeedbackThreadCreateResult = {
+  ok: true
+  thread: FeedbackThread
+}
+
+export type FeedbackPostCreateResult = {
+  ok: true
+  post: FeedbackPost
+}
+
+export type FeedbackThreadStatusResult = {
+  ok: true
+  thread: FeedbackThread
 }
 
 export type ProviderAuthMethod = {
@@ -2565,6 +2634,7 @@ export type AccountMeResponses = {
     context_project_id?: string
     roles: Array<string>
     permissions: Array<string>
+    feedback_enabled: boolean
   }
 }
 
@@ -2749,7 +2819,7 @@ export type AccountMeProviderResponses = {
   200: {
     provider_id: string
     configured: boolean
-    source: "none" | "user"
+    source: "none" | "user" | "global"
     auth_type?: string
   }
 }
@@ -3076,6 +3146,71 @@ export type PutAccountAdminProviderProviderIdGlobalData = {
 }
 
 export type PutAccountAdminProviderProviderIdGlobalResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminProviderControlGlobalData = {
+  body?: {
+    enabled_providers?: Array<string>
+    disabled_providers?: Array<string>
+    model?: string
+    small_model?: string
+    model_prefs?: {
+      visibility?: {
+        [key: string]: "show" | "hide"
+      }
+      favorite?: Array<string>
+      recent?: Array<string>
+      variant?: {
+        [key: string]: string
+      }
+    }
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/provider-control/global"
+}
+
+export type PutAccountAdminProviderControlGlobalResponses = {
+  200: unknown
+}
+
+export type DeleteAccountAdminProvidersProviderIdConfigGlobalData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/providers/{provider_id}/config/global"
+}
+
+export type DeleteAccountAdminProvidersProviderIdConfigGlobalResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminProvidersProviderIdConfigGlobalData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/providers/{provider_id}/config/global"
+}
+
+export type GetAccountAdminProvidersProviderIdConfigGlobalResponses = {
+  200: unknown
+}
+
+export type PutAccountAdminProvidersProviderIdConfigGlobalData = {
+  body?: ProviderConfig
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/providers/{provider_id}/config/global"
+}
+
+export type PutAccountAdminProvidersProviderIdConfigGlobalResponses = {
   200: unknown
 }
 
@@ -5716,6 +5851,180 @@ export type ApprovalReviewRejectResponses = {
 }
 
 export type ApprovalReviewRejectResponse = ApprovalReviewRejectResponses[keyof ApprovalReviewRejectResponses]
+
+export type FeedbackListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    status?: FeedbackStatus
+    mine?: boolean
+    limit?: number
+  }
+  url: "/feedback/threads"
+}
+
+export type FeedbackListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type FeedbackListError = FeedbackListErrors[keyof FeedbackListErrors]
+
+export type FeedbackListResponses = {
+  /**
+   * Feedback thread list
+   */
+  200: Array<FeedbackThread>
+}
+
+export type FeedbackListResponse = FeedbackListResponses[keyof FeedbackListResponses]
+
+export type FeedbackCreateData = {
+  body?: {
+    title: string
+    content: string
+    page_name?: string
+    menu_path?: string
+    source_platform: FeedbackSourcePlatform
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/feedback/threads"
+}
+
+export type FeedbackCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type FeedbackCreateError = FeedbackCreateErrors[keyof FeedbackCreateErrors]
+
+export type FeedbackCreateResponses = {
+  /**
+   * Create result
+   */
+  200: FeedbackThreadCreateResult
+}
+
+export type FeedbackCreateResponse = FeedbackCreateResponses[keyof FeedbackCreateResponses]
+
+export type FeedbackGetData = {
+  body?: never
+  path: {
+    thread_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/feedback/threads/{thread_id}"
+}
+
+export type FeedbackGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type FeedbackGetError = FeedbackGetErrors[keyof FeedbackGetErrors]
+
+export type FeedbackGetResponses = {
+  /**
+   * Feedback detail
+   */
+  200: FeedbackDetail
+}
+
+export type FeedbackGetResponse = FeedbackGetResponses[keyof FeedbackGetResponses]
+
+export type FeedbackReplyData = {
+  body?: {
+    content: string
+  }
+  path: {
+    thread_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/feedback/threads/{thread_id}/posts"
+}
+
+export type FeedbackReplyErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type FeedbackReplyError = FeedbackReplyErrors[keyof FeedbackReplyErrors]
+
+export type FeedbackReplyResponses = {
+  /**
+   * Reply result
+   */
+  200: FeedbackPostCreateResult
+}
+
+export type FeedbackReplyResponse = FeedbackReplyResponses[keyof FeedbackReplyResponses]
+
+export type FeedbackUpdateStatusData = {
+  body?: {
+    status: FeedbackStatus
+  }
+  path: {
+    thread_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/feedback/threads/{thread_id}/status"
+}
+
+export type FeedbackUpdateStatusErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type FeedbackUpdateStatusError = FeedbackUpdateStatusErrors[keyof FeedbackUpdateStatusErrors]
+
+export type FeedbackUpdateStatusResponses = {
+  /**
+   * Update result
+   */
+  200: FeedbackThreadStatusResult
+}
+
+export type FeedbackUpdateStatusResponse = FeedbackUpdateStatusResponses[keyof FeedbackUpdateStatusResponses]
 
 export type QuestionListData = {
   body?: never

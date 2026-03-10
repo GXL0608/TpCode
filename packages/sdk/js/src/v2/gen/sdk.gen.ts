@@ -75,6 +75,7 @@ import type {
   ConfigUpdateResponses,
   DeleteAccountAdminProductsProductIdResponses,
   DeleteAccountAdminProviderProviderIdGlobalResponses,
+  DeleteAccountAdminProvidersProviderIdConfigGlobalResponses,
   DeleteAccountAdminRolesRoleCodeResponses,
   DeleteAccountAdminUsersUserIdProvidersProviderIdResponses,
   DeleteAccountAdminUsersUserIdResponses,
@@ -91,6 +92,18 @@ import type {
   ExperimentalWorkspaceListResponses,
   ExperimentalWorkspaceRemoveErrors,
   ExperimentalWorkspaceRemoveResponses,
+  FeedbackCreateErrors,
+  FeedbackCreateResponses,
+  FeedbackGetErrors,
+  FeedbackGetResponses,
+  FeedbackListErrors,
+  FeedbackListResponses,
+  FeedbackReplyErrors,
+  FeedbackReplyResponses,
+  FeedbackSourcePlatform,
+  FeedbackStatus,
+  FeedbackUpdateStatusErrors,
+  FeedbackUpdateStatusResponses,
   FileListResponses,
   FilePartInput,
   FilePartSource,
@@ -105,6 +118,7 @@ import type {
   GetAccountAdminProjectAccessRoleResponses,
   GetAccountAdminProjectAccessUserResponses,
   GetAccountAdminProjectsCatalogResponses,
+  GetAccountAdminProvidersProviderIdConfigGlobalResponses,
   GetAccountAdminRolesResponses,
   GetAccountAdminRolesRoleCodeProductsResponses,
   GetAccountAdminRolesRoleCodeProjectsResponses,
@@ -193,7 +207,9 @@ import type {
   PtyRemoveResponses,
   PtyUpdateErrors,
   PtyUpdateResponses,
+  PutAccountAdminProviderControlGlobalResponses,
   PutAccountAdminProviderProviderIdGlobalResponses,
+  PutAccountAdminProvidersProviderIdConfigGlobalResponses,
   PutAccountAdminRolesRoleCodeProductsResponses,
   PutAccountAdminRolesRoleCodeProjectsResponses,
   PutAccountAdminSettingsProjectScanRootResponses,
@@ -3372,6 +3388,193 @@ export class Approval extends HeyApiClient {
   }
 }
 
+export class Feedback extends HeyApiClient {
+  /**
+   * List feedback threads
+   *
+   * List feedback forum threads inside the current project context.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      status?: FeedbackStatus
+      mine?: boolean
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "status" },
+            { in: "query", key: "mine" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<FeedbackListResponses, FeedbackListErrors, ThrowOnError>({
+      url: "/feedback/threads",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Create feedback thread
+   *
+   * Create a new feedback thread in the current project context.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      title?: string
+      content?: string
+      page_name?: string
+      menu_path?: string
+      source_platform?: FeedbackSourcePlatform
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "title" },
+            { in: "body", key: "content" },
+            { in: "body", key: "page_name" },
+            { in: "body", key: "menu_path" },
+            { in: "body", key: "source_platform" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<FeedbackCreateResponses, FeedbackCreateErrors, ThrowOnError>({
+      url: "/feedback/threads",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Get feedback thread detail
+   *
+   * Get one feedback thread and its replies inside the current project context.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      thread_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "thread_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<FeedbackGetResponses, FeedbackGetErrors, ThrowOnError>({
+      url: "/feedback/threads/{thread_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Reply feedback thread
+   *
+   * Reply to an existing feedback thread in the current project context.
+   */
+  public reply<ThrowOnError extends boolean = false>(
+    parameters: {
+      thread_id: string
+      directory?: string
+      content?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "thread_id" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "content" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<FeedbackReplyResponses, FeedbackReplyErrors, ThrowOnError>({
+      url: "/feedback/threads/{thread_id}/posts",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Update feedback status
+   *
+   * Update an existing feedback thread status inside the current project context.
+   */
+  public updateStatus<ThrowOnError extends boolean = false>(
+    parameters: {
+      thread_id: string
+      directory?: string
+      status?: FeedbackStatus
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "thread_id" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "status" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      FeedbackUpdateStatusResponses,
+      FeedbackUpdateStatusErrors,
+      ThrowOnError
+    >({
+      url: "/feedback/threads/{thread_id}/status",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Question extends HeyApiClient {
   /**
    * List pending questions
@@ -5216,6 +5419,121 @@ export class OpencodeClient extends HeyApiClient {
     })
   }
 
+  public putAccountAdminProviderControlGlobal<ThrowOnError extends boolean = false>(
+    parameters?: {
+      enabled_providers?: Array<string>
+      disabled_providers?: Array<string>
+      model?: string
+      small_model?: string
+      model_prefs?: {
+        visibility?: {
+          [key: string]: "show" | "hide"
+        }
+        favorite?: Array<string>
+        recent?: Array<string>
+        variant?: {
+          [key: string]: string
+        }
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "enabled_providers" },
+            { in: "body", key: "disabled_providers" },
+            { in: "body", key: "model" },
+            { in: "body", key: "small_model" },
+            { in: "body", key: "model_prefs" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<PutAccountAdminProviderControlGlobalResponses, unknown, ThrowOnError>({
+      url: "/account/admin/provider-control/global",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public deleteAccountAdminProvidersProviderIdConfigGlobal<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).delete<
+      DeleteAccountAdminProvidersProviderIdConfigGlobalResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/providers/{provider_id}/config/global",
+      ...options,
+      ...params,
+    })
+  }
+
+  public getAccountAdminProvidersProviderIdConfigGlobal<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).get<
+      GetAccountAdminProvidersProviderIdConfigGlobalResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/providers/{provider_id}/config/global",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountAdminProvidersProviderIdConfigGlobal<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+      providerConfig?: ProviderConfig
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "provider_id" },
+            { key: "providerConfig", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      PutAccountAdminProvidersProviderIdConfigGlobalResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/providers/{provider_id}/config/global",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
   public getAccountAdminProjectAccessRole<ThrowOnError extends boolean = false>(
     parameters?: {
       project_id?: string
@@ -5902,6 +6220,11 @@ export class OpencodeClient extends HeyApiClient {
   private _approval?: Approval
   get approval(): Approval {
     return (this._approval ??= new Approval({ client: this.client }))
+  }
+
+  private _feedback?: Feedback
+  get feedback(): Feedback {
+    return (this._feedback ??= new Feedback({ client: this.client }))
   }
 
   private _question?: Question

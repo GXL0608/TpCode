@@ -16,6 +16,7 @@ type User = {
   context_project_id?: string
   roles: string[]
   permissions: string[]
+  feedback_enabled: boolean
 }
 
 type ContextProject = {

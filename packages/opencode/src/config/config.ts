@@ -1003,6 +1003,7 @@ export namespace Config {
     .object({
       $schema: z.string().optional().describe("JSON schema reference for configuration validation"),
       TPCODE_ACCOUNT_ENABLED: z.boolean().optional().describe("Enable TpCode account system"),
+      TPCODE_FEEDBACK_ENABLED: z.boolean().optional().describe("Enable TpCode feedback forum"),
       logLevel: Log.Level.optional().describe("Log level"),
       server: Server.optional().describe("Server configuration for opencode serve and web commands"),
       command: z

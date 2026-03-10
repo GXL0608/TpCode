@@ -37,6 +37,7 @@ const LoginResult = z
       context_project_id: z.string().optional(),
       roles: z.array(z.string()),
       permissions: z.array(z.string()),
+      feedback_enabled: z.boolean(),
     }),
   })
   .meta({ ref: "AccountLoginResult" })

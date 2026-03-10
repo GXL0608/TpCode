@@ -76,6 +76,10 @@ function permissions() {
     { code: "ui:settings.providers:view", name: "查看供应商设置页", group_name: "ui" },
     { code: "ui:settings.models:view", name: "查看模型设置页", group_name: "ui" },
     { code: "audit:view", name: "查看审计日志", group_name: "audit" },
+    { code: "feedback:create", name: "提交反馈", group_name: "feedback" },
+    { code: "feedback:reply", name: "回复反馈", group_name: "feedback" },
+    { code: "feedback:resolve", name: "处理反馈", group_name: "feedback" },
+    { code: "feedback:manage", name: "管理反馈", group_name: "feedback" },
   ]
 }
 
@@ -104,6 +108,10 @@ const rolePerm = {
     "ui:settings.providers:view",
     "ui:settings.models:view",
     "audit:view",
+    "feedback:create",
+    "feedback:reply",
+    "feedback:resolve",
+    "feedback:manage",
   ],
   dev_lead: [
     "session:create",
@@ -119,9 +127,30 @@ const rolePerm = {
     "prototype:approve",
     "file:browse",
     "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
+    "feedback:resolve",
   ],
-  developer: ["session:create", "session:view_own", "code:generate", "prototype:view", "file:browse", "agent:use_plan"],
-  ops: ["session:create", "session:view_own", "code:deploy", "prototype:view", "file:browse", "agent:use_plan"],
+  developer: [
+    "session:create",
+    "session:view_own",
+    "code:generate",
+    "prototype:view",
+    "file:browse",
+    "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
+  ],
+  ops: [
+    "session:create",
+    "session:view_own",
+    "code:deploy",
+    "prototype:view",
+    "file:browse",
+    "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
+  ],
   pm: [
     "session:create",
     "session:view_own",
@@ -130,8 +159,19 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
+    "feedback:resolve",
   ],
-  value_ops: ["session:create", "session:view_own", "session:view_all", "prototype:view", "agent:use_plan"],
+  value_ops: [
+    "session:create",
+    "session:view_own",
+    "session:view_all",
+    "prototype:view",
+    "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
+  ],
   hospital_admin: [
     "session:create",
     "session:view_own",
@@ -139,6 +179,9 @@ const rolePerm = {
     "session:view_org",
     "prototype:view",
     "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
+    "feedback:resolve",
   ],
   dept_director: [
     "session:create",
@@ -147,8 +190,18 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
+    "feedback:resolve",
   ],
-  hospital_user: ["session:create", "session:view_own", "prototype:view", "agent:use_plan"],
+  hospital_user: [
+    "session:create",
+    "session:view_own",
+    "prototype:view",
+    "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
+  ],
   dean: [
     "session:view_own",
     "session:view_org",
@@ -156,6 +209,8 @@ const rolePerm = {
     "prototype:view",
     "prototype:approve",
     "agent:use_plan",
+    "feedback:create",
+    "feedback:reply",
   ],
 } as const
 
@@ -196,6 +251,10 @@ const permissionNameMap = {
   "ui:settings.providers:view": "查看供应商设置页",
   "ui:settings.models:view": "查看模型设置页",
   "audit:view": "查看审计日志",
+  "feedback:create": "提交反馈",
+  "feedback:reply": "回复反馈",
+  "feedback:resolve": "处理反馈",
+  "feedback:manage": "管理反馈",
 } as const
 
 function roleName(code: string) {
@@ -231,6 +290,7 @@ function profile(input: { user: UserRow; roles: string[]; permissions: string[];
     context_project_id: input.context_project_id,
     roles: input.roles,
     permissions: input.permissions,
+    feedback_enabled: Flag.TPCODE_FEEDBACK_ENABLED,
   }
 }
 
