@@ -322,9 +322,7 @@ Object.defineProperty(Flag, "TPCODE_FORBIDDEN_WORDS", {
 
 Object.defineProperty(Flag, "TPCODE_PROVIDER_STRICT_ACCOUNT", {
   get() {
-    const value = process.env["TPCODE_PROVIDER_STRICT_ACCOUNT"]?.toLowerCase()
-    if (value === undefined) return true
-    return value === "true" || value === "1"
+    return true
   },
   enumerable: true,
   configurable: false,

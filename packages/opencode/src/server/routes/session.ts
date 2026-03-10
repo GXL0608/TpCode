@@ -12,6 +12,7 @@ import { SessionSummary } from "@/session/summary"
 import { SessionVoice } from "@/session/voice"
 import { Todo } from "../../session/todo"
 import { Agent } from "../../agent/agent"
+import { Provider } from "@/provider/provider"
 import { Snapshot } from "@/snapshot"
 import { Log } from "../../util/log"
 import { PermissionNext } from "@/permission/next"
@@ -726,10 +727,7 @@ export const SessionRoutes = lazy(() =>
         await SessionCompaction.create({
           sessionID,
           agent: currentAgent,
-          model: {
-            providerID: body.providerID,
-            modelID: body.modelID,
-          },
+          model: Flag.TPCODE_ACCOUNT_ENABLED ? await Provider.defaultModel() : { providerID: body.providerID, modelID: body.modelID },
           auto: body.auto,
         })
         await SessionPrompt.loop({ sessionID })

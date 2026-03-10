@@ -71,9 +71,6 @@ function permissions() {
     { code: "agent:use_build", name: "使用 Build 智能体", group_name: "agent" },
     { code: "agent:use_plan", name: "使用 Plan 智能体", group_name: "agent" },
     { code: "provider:config_global", name: "配置全局模型密钥", group_name: "provider" },
-    { code: "provider:config_user", name: "配置用户模型密钥", group_name: "provider" },
-    { code: "ui:settings.providers:view", name: "查看供应商设置页", group_name: "ui" },
-    { code: "ui:settings.models:view", name: "查看模型设置页", group_name: "ui" },
     { code: "audit:view", name: "查看审计日志", group_name: "audit" },
     { code: "feedback:create", name: "提交反馈", group_name: "feedback" },
     { code: "feedback:reply", name: "回复反馈", group_name: "feedback" },
@@ -243,9 +240,6 @@ const permissionNameMap = {
   "agent:use_build": "使用 Build 智能体",
   "agent:use_plan": "使用 Plan 智能体",
   "provider:config_global": "配置全局模型密钥",
-  "provider:config_user": "配置用户模型密钥",
-  "ui:settings.providers:view": "查看供应商设置页",
-  "ui:settings.models:view": "查看模型设置页",
   "audit:view": "查看审计日志",
   "feedback:create": "提交反馈",
   "feedback:reply": "回复反馈",
@@ -539,8 +533,23 @@ export namespace UserService {
         .delete(TpRolePermissionTable)
         .where(eq(TpRolePermissionTable.permission_id, id("perm_provider:use_own")))
         .run()
+      await db
+        .delete(TpRolePermissionTable)
+        .where(eq(TpRolePermissionTable.permission_id, id("perm_provider:config_user")))
+        .run()
+      await db
+        .delete(TpRolePermissionTable)
+        .where(eq(TpRolePermissionTable.permission_id, id("perm_ui:settings.providers:view")))
+        .run()
+      await db
+        .delete(TpRolePermissionTable)
+        .where(eq(TpRolePermissionTable.permission_id, id("perm_ui:settings.models:view")))
+        .run()
       await db.delete(TpPermissionTable).where(eq(TpPermissionTable.id, id("perm_provider:config_own"))).run()
       await db.delete(TpPermissionTable).where(eq(TpPermissionTable.id, id("perm_provider:use_own"))).run()
+      await db.delete(TpPermissionTable).where(eq(TpPermissionTable.id, id("perm_provider:config_user"))).run()
+      await db.delete(TpPermissionTable).where(eq(TpPermissionTable.id, id("perm_ui:settings.providers:view"))).run()
+      await db.delete(TpPermissionTable).where(eq(TpPermissionTable.id, id("perm_ui:settings.models:view"))).run()
       for (const code of builtinCodes) {
         await db.delete(TpRolePermissionTable).where(eq(TpRolePermissionTable.role_id, id("role_" + code))).run()
         const perms = [...new Set(rolePerm[code as keyof typeof rolePerm] ?? [])]

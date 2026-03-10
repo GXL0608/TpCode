@@ -173,12 +173,10 @@ export function DialogCustomProvider(props: Props) {
   const language = useLanguage()
   const auth = useAccountAuth()
   const accountRequest = useAccountRequest()
-  const scope = () =>
-    props.scope ?? (auth.enabled() ? ({ kind: "global" } satisfies ProviderSettingsScope) : ({ kind: "local" } satisfies ProviderSettingsScope))
+  const scope = () => props.scope ?? ({ kind: "global" } satisfies ProviderSettingsScope)
   const canManage = () => {
     const current = scope()
     if (current.kind === "global") return (auth.user()?.roles ?? []).includes("super_admin")
-    if (current.kind === "local") return true
     return false
   }
 
@@ -242,7 +240,7 @@ export function DialogCustomProvider(props: Props) {
     const output = validateCustomProvider({
       form,
       t: language.t,
-      disabledProviders: auth.enabled() ? [] : (globalSync.data.config.disabled_providers ?? []),
+      disabledProviders: [],
       existingProviderIDs: new Set(globalSync.data.provider.all.map((p) => p.id)),
     })
     setErrors(output.errors)
@@ -250,52 +248,34 @@ export function DialogCustomProvider(props: Props) {
   }
 
   async function enableProvider(providerID: string) {
-    if (scope().kind === "local") {
-      const disabled = globalSync.data.config.disabled_providers ?? []
-      const enabled = globalSync.data.config.enabled_providers
-      const nextDisabled = disabled.filter((item) => item !== providerID)
-      const nextEnabled =
-        enabled && enabled.length > 0 && !enabled.includes(providerID) ? [...enabled, providerID] : enabled
-      if (nextDisabled.length === disabled.length && nextEnabled === enabled) return
-      await globalSync.updateConfig({
-        disabled_providers: nextDisabled,
-        enabled_providers: nextEnabled,
-      })
-      return
-    }
     const current = scope()
-    if (current.kind === "global") {
-      const control = await accountRequest({
-        path: "/account/admin/provider-control/global",
-      }).catch(() => undefined)
-      const body = control?.ok
-        ? ((await control.json().catch(() => undefined)) as {
-            model?: string
-            small_model?: string
-            enabled_providers?: string[]
-            disabled_providers?: string[]
-            model_prefs?: Record<string, unknown>
-          } | undefined)
-        : undefined
-      const enabled =
-        body?.enabled_providers && body.enabled_providers.length > 0 && !body.enabled_providers.includes(providerID)
-          ? [...body.enabled_providers, providerID]
-          : body?.enabled_providers
-      const response = await accountRequest({
-        method: "PUT",
-        path: "/account/admin/provider-control/global",
-        body: {
-          model: body?.model,
-          small_model: body?.small_model,
-          enabled_providers: enabled,
-          disabled_providers: (body?.disabled_providers ?? []).filter((item) => item !== providerID),
-          model_prefs: body?.model_prefs,
-        },
-      }).catch(() => undefined)
-      if (!response?.ok) throw new Error(await parseAccountError(response))
-      return
-    }
-    throw new Error("provider_config_forbidden")
+    if (current.kind !== "global") throw new Error("provider_config_forbidden")
+    const control = await accountRequest({
+      path: "/account/admin/provider-control/global",
+    }).catch(() => undefined)
+    const body = control?.ok
+      ? ((await control.json().catch(() => undefined)) as {
+          model?: string
+          small_model?: string
+          enabled_providers?: string[]
+          disabled_providers?: string[]
+        } | undefined)
+      : undefined
+    const enabled =
+      body?.enabled_providers && body.enabled_providers.length > 0 && !body.enabled_providers.includes(providerID)
+        ? [...body.enabled_providers, providerID]
+        : body?.enabled_providers
+    const response = await accountRequest({
+      method: "PUT",
+      path: "/account/admin/provider-control/global",
+      body: {
+        model: body?.model,
+        small_model: body?.small_model,
+        enabled_providers: enabled,
+        disabled_providers: (body?.disabled_providers ?? []).filter((item) => item !== providerID),
+      },
+    }).catch(() => undefined)
+    if (!response?.ok) throw new Error(await parseAccountError(response))
   }
 
   const save = async (e: SubmitEvent) => {
@@ -308,36 +288,20 @@ export function DialogCustomProvider(props: Props) {
     setForm("saving", true)
 
     const authWrite = result.key
-      ? scope().kind === "global"
-        ? accountRequest({
-            method: "PUT",
-            path: `/account/admin/provider/${encodeURIComponent(result.providerID)}/global`,
-            body: {
-              type: "api",
-              key: result.key,
-            },
-          }).then(async (response) => {
-            if (!response?.ok) throw new Error(await parseAccountError(response))
-          })
-        : scope().kind === "local"
-          ? globalSDK.client.auth.set({
-              providerID: result.providerID,
-              auth: {
-                type: "api",
-                key: result.key,
-              },
-            })
-          : Promise.reject(new Error("provider_config_forbidden"))
+      ? accountRequest({
+          method: "PUT",
+          path: `/account/admin/provider/${encodeURIComponent(result.providerID)}/global`,
+          body: {
+            type: "api",
+            key: result.key,
+          },
+        }).then(async (response) => {
+          if (!response?.ok) throw new Error(await parseAccountError(response))
+        })
       : Promise.resolve()
 
     authWrite
       .then(async () => {
-        if (scope().kind === "local") {
-          const disabledProviders = globalSync.data.config.disabled_providers ?? []
-          const nextDisabled = disabledProviders.filter((id) => id !== result.providerID)
-          await globalSync.updateConfig({ provider: { [result.providerID]: result.config }, disabled_providers: nextDisabled })
-          return
-        }
         const current = scope()
         if (current.kind !== "global") throw new Error("provider_config_forbidden")
         const write = await accountRequest({

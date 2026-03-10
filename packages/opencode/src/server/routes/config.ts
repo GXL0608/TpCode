@@ -35,12 +35,23 @@ export const ConfigRoutes = lazy(() =>
         const config = await Config.get()
         if (!Flag.TPCODE_ACCOUNT_ENABLED) return c.json(config)
         const control = await AccountSystemSettingService.providerControl()
+        const model = await Provider.defaultModel()
+          .then((value) => `${value.providerID}/${value.modelID}`)
+          .catch(() => undefined)
+        const {
+          provider: _provider,
+          model: _model,
+          small_model: _smallModel,
+          enabled_providers: _enabledProviders,
+          disabled_providers: _disabledProviders,
+          ...rest
+        } = config
         return c.json({
-          ...config,
-          enabled_providers: control.enabled_providers ?? config.enabled_providers,
-          disabled_providers: control.disabled_providers ?? config.disabled_providers,
-          model: control.model ?? config.model,
-          small_model: control.small_model ?? config.small_model,
+          ...rest,
+          enabled_providers: control.enabled_providers,
+          disabled_providers: control.disabled_providers,
+          model,
+          small_model: control.small_model,
         })
       },
     )
@@ -65,6 +76,20 @@ export const ConfigRoutes = lazy(() =>
       validator("json", Config.Info),
       async (c) => {
         const config = c.req.valid("json")
+        if (Flag.TPCODE_ACCOUNT_ENABLED) {
+          const managed = (
+            ["provider", "model", "small_model", "enabled_providers", "disabled_providers"] as const
+          ).some((key) => key in config)
+          if (managed) {
+            return c.json(
+              {
+                error: "forbidden",
+                reason: "provider_model_managed_by_global_account_admin",
+              },
+              403,
+            )
+          }
+        }
         await Config.update(config)
         return c.json(config)
       },
@@ -94,6 +119,39 @@ export const ConfigRoutes = lazy(() =>
       async (c) => {
         using _ = log.time("providers")
         const scoped = await Provider.list().then((x) => mapValues(x, (item) => item))
+        if (Flag.TPCODE_ACCOUNT_ENABLED) {
+          const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+          const superAdmin = roles.includes("super_admin")
+          if (!superAdmin) {
+            const current = await Provider.defaultModel().catch(() => undefined)
+            if (!current) {
+              return c.json({
+                providers: [],
+                default: {},
+              })
+            }
+            const provider = scoped[current.providerID]
+            const model = provider?.models[current.modelID]
+            if (!provider || !model) {
+              return c.json({
+                providers: [],
+                default: {},
+              })
+            }
+            const currentProvider = {
+              ...provider,
+              models: {
+                [model.id]: model,
+              },
+            }
+            return c.json({
+              providers: [currentProvider],
+              default: {
+                [currentProvider.id]: model.id,
+              },
+            })
+          }
+        }
         return c.json({
           providers: Object.values(scoped),
           default: mapValues(scoped, (item) => Provider.sort(Object.values(item.models))[0].id),

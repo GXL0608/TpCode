@@ -38,11 +38,10 @@ async function loginWithEmptyBody() {
 }
 
 describe("account enabled from config", () => {
-  test("returns 404 when TPCODE_ACCOUNT_ENABLED is false", async () => {
+  test("returns 400 when TPCODE_ACCOUNT_ENABLED is false", async () => {
     await withProjectConfig({ enabled: false }, async () => {
       const response = await loginWithEmptyBody()
-      expect(response.status).toBe(404)
-      expect(await response.json()).toEqual({ error: "account_disabled" })
+      expect(response.status).toBe(400)
     })
   })
 

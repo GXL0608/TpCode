@@ -1,17 +1,11 @@
-import path from "path"
-import { Global } from "../global"
 import z from "zod"
-import { Filesystem } from "../util/filesystem"
-import { Flag } from "@/flag/flag"
-import { AccountCurrent } from "@/user/current"
-import { Database, and, eq } from "@/storage/db"
-import { TpUserProviderTable } from "@/user/user-provider.sql"
-import { UserCipher } from "@/user/cipher"
-import { Log } from "@/util/log"
+import { Database, eq } from "@/storage/db"
+import { TpSystemProviderSettingTable } from "@/user/system-provider-setting.sql"
 
 export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
 export const ACCOUNT_META_DUMMY_KEY = "__tpcode_meta__"
-const log = Log.create({ service: "auth" })
+
+const GLOBAL_PROVIDER_SETTING_ID = "global"
 
 export namespace Auth {
   export const Oauth = z
@@ -43,29 +37,9 @@ export namespace Auth {
   export const Info = z.discriminatedUnion("type", [Oauth, Api, WellKnown]).meta({ ref: "Auth" })
   export type Info = z.infer<typeof Info>
 
-  const filepath = path.join(Global.Path.data, "auth.json")
-
-  function userID() {
-    if (!Flag.TPCODE_ACCOUNT_ENABLED) return
-    return AccountCurrent.optional()?.user_id
-  }
-
-  function parseJson(raw: string) {
-    try {
-      return JSON.parse(raw) as unknown
-    } catch {
-      return
-    }
-  }
-
-  function obj(input: unknown) {
+  function parseMap(input: unknown): Record<string, Info> {
     if (!input || typeof input !== "object" || Array.isArray(input)) return {}
-    return input as Record<string, unknown>
-  }
-
-  async function globalAll(): Promise<Record<string, Info>> {
-    const data = await Filesystem.readJson<Record<string, unknown>>(filepath).catch(() => ({}))
-    return Object.entries(data).reduce(
+    return Object.entries(input).reduce(
       (acc, [key, value]) => {
         const parsed = Info.safeParse(value)
         if (!parsed.success) return acc
@@ -76,72 +50,37 @@ export namespace Auth {
     )
   }
 
-  async function fromDb(uid: string): Promise<Record<string, Info>> {
-    const rows = await Database.use((db) =>
+  async function systemAll(): Promise<Record<string, Info>> {
+    const row = await Database.use((db) =>
       db
-        .select()
-        .from(TpUserProviderTable)
-        .where(and(eq(TpUserProviderTable.user_id, uid), eq(TpUserProviderTable.is_active, true)))
-        .all(),
+        .select({
+          provider_auth_json: TpSystemProviderSettingTable.provider_auth_json,
+        })
+        .from(TpSystemProviderSettingTable)
+        .where(eq(TpSystemProviderSettingTable.id, GLOBAL_PROVIDER_SETTING_ID))
+        .get(),
     )
-    const fixed = [] as { id: string; auth: Info }[]
-    const result = rows.reduce(
-      (acc, row) => {
-        const resolved = UserCipher.decode(row.secret_cipher)
-        if (!resolved) {
-          log.warn("user provider auth decode failed", {
-            user_id: uid,
-            provider_id: row.provider_id,
-          })
-          return acc
-        }
-        const json = parseJson(resolved.raw)
-        if (json === undefined) {
-          log.warn("user provider auth parse failed", {
-            user_id: uid,
-            provider_id: row.provider_id,
-          })
-          return acc
-        }
-        const parsed = Info.safeParse(json)
-        if (!parsed.success) {
-          log.warn("user provider auth invalid", {
-            user_id: uid,
-            provider_id: row.provider_id,
-          })
-          return acc
-        }
-        if (parsed.data.type === "api" && parsed.data.key === ACCOUNT_META_DUMMY_KEY) return acc
-        if (resolved.encrypted) fixed.push({ id: row.id, auth: parsed.data })
-        acc[row.provider_id] = parsed.data
-        return acc
-      },
-      {} as Record<string, Info>,
+    return parseMap(row?.provider_auth_json)
+  }
+
+  async function writeSystemAll(input: Record<string, Info>) {
+    await Database.use((db) =>
+      db
+        .insert(TpSystemProviderSettingTable)
+        .values({
+          id: GLOBAL_PROVIDER_SETTING_ID,
+          provider_auth_json: Object.keys(input).length > 0 ? input : null,
+          time_updated: Date.now(),
+        })
+        .onConflictDoUpdate({
+          target: TpSystemProviderSettingTable.id,
+          set: {
+            provider_auth_json: Object.keys(input).length > 0 ? input : null,
+            time_updated: Date.now(),
+          },
+        })
+        .run(),
     )
-    if (fixed.length > 0) {
-      void Database.use((db) =>
-        Promise.all(
-          fixed.map((item) =>
-            db
-              .update(TpUserProviderTable)
-              .set({
-                auth_type: item.auth.type,
-                secret_cipher: JSON.stringify(item.auth),
-                time_updated: Date.now(),
-              })
-              .where(eq(TpUserProviderTable.id, item.id))
-              .run(),
-          ),
-        ),
-      ).catch((error) =>
-        log.warn("user provider auth decode fallback write failed", {
-          user_id: uid,
-          count: fixed.length,
-          error,
-        }),
-      )
-    }
-    return result
   }
 
   export async function get(providerID: string) {
@@ -150,150 +89,53 @@ export namespace Auth {
   }
 
   export async function all(): Promise<Record<string, Info>> {
-    const uid = userID()
-    if (Flag.TPCODE_ACCOUNT_ENABLED) {
-      if (!uid) return {}
-      return fromDb(uid)
-    }
-    if (!uid) return globalAll()
-    return fromDb(uid)
+    return systemAll()
   }
 
   export async function userAll() {
-    const uid = userID()
-    if (!uid) return {} as Record<string, Info>
-    return fromDb(uid)
+    return {} as Record<string, Info>
   }
 
-  export async function userAllByID(uid: string) {
-    return fromDb(uid)
+  export async function userAllByID(_uid: string) {
+    return {} as Record<string, Info>
   }
 
   export async function sharedAll() {
-    return globalAll()
+    return systemAll()
   }
 
   export async function setGlobal(key: string, info: Info) {
-    const data = await globalAll()
-    await Filesystem.writeJson(filepath, { ...data, [key]: info }, 0o600)
+    const current = await systemAll()
+    await writeSystemAll({
+      ...current,
+      [key]: info,
+    })
   }
 
   export async function removeGlobal(key: string) {
-    const data = await globalAll()
-    delete data[key]
-    await Filesystem.writeJson(filepath, data, 0o600)
+    const current = await systemAll()
+    const next = { ...current }
+    delete next[key]
+    await writeSystemAll(next)
   }
 
-  export async function setUser(user_id: string, key: string, info: Info, source: "self" | "admin" = "self") {
-    const secret = JSON.stringify(info)
-    const current = await Database.use((db) =>
-      db
-        .select()
-        .from(TpUserProviderTable)
-        .where(and(eq(TpUserProviderTable.user_id, user_id), eq(TpUserProviderTable.provider_id, key)))
-        .get(),
-    )
-    const meta = {
-      ...obj(current?.meta_json),
-      _source: {
-        ...obj(obj(current?.meta_json)._source),
-        auth: source,
-      },
-    }
-    await Database.use(async (db) => {
-      await db
-        .insert(TpUserProviderTable)
-        .values({
-          id: crypto.randomUUID(),
-          user_id,
-          provider_id: key,
-          auth_type: info.type,
-          secret_cipher: secret,
-          meta_json: meta,
-          is_active: true,
-        })
-        .onConflictDoUpdate({
-          target: [TpUserProviderTable.user_id, TpUserProviderTable.provider_id],
-          set: {
-            auth_type: info.type,
-            secret_cipher: secret,
-            meta_json: meta,
-            is_active: true,
-            time_updated: Date.now(),
-          },
-        })
-        .run()
-    })
+  export async function setUser(_user_id: string, _key: string, _info: Info, _source: "self" | "admin" = "self") {
+    throw new Error("account_user_provider_config_disabled")
   }
 
-  export async function removeUser(user_id: string, key: string, source: "self" | "admin" = "self") {
-    const secret = JSON.stringify({ type: "api", key: ACCOUNT_META_DUMMY_KEY } satisfies Info)
-    const current = await Database.use((db) =>
-      db
-        .select()
-        .from(TpUserProviderTable)
-        .where(and(eq(TpUserProviderTable.user_id, user_id), eq(TpUserProviderTable.provider_id, key)))
-        .get(),
-    )
-    const meta = {
-      ...obj(current?.meta_json),
-      _source: {
-        ...obj(obj(current?.meta_json)._source),
-        auth: source,
-      },
-    }
-    await Database.use(async (db) => {
-      await db
-        .insert(TpUserProviderTable)
-        .values({
-          id: crypto.randomUUID(),
-          user_id,
-          provider_id: key,
-          auth_type: "api",
-          secret_cipher: secret,
-          meta_json: meta,
-          is_active: true,
-        })
-        .onConflictDoUpdate({
-          target: [TpUserProviderTable.user_id, TpUserProviderTable.provider_id],
-          set: {
-            auth_type: "api",
-            secret_cipher: secret,
-            meta_json: meta,
-            is_active: true,
-            time_updated: Date.now(),
-          },
-        })
-        .run()
-    })
+  export async function removeUser(_user_id: string, _key: string, _source: "self" | "admin" = "self") {
+    throw new Error("account_user_provider_config_disabled")
   }
 
-  export async function purgeUser(user_id: string, key: string) {
-    await Database.use(async (db) => {
-      await db
-        .delete(TpUserProviderTable)
-        .where(and(eq(TpUserProviderTable.user_id, user_id), eq(TpUserProviderTable.provider_id, key)))
-        .run()
-    })
+  export async function purgeUser(_user_id: string, _key: string) {
+    throw new Error("account_user_provider_config_disabled")
   }
 
-  export async function set(key: string, info: Info) {
-    const uid = userID()
-    if (Flag.TPCODE_ACCOUNT_ENABLED) {
-      if (!uid) throw new Error("account_user_missing")
-      await setUser(uid, key, info, "self")
-      return
-    }
-    await setGlobal(key, info)
+  export async function set(_key: string, _info: Info) {
+    throw new Error("account_user_provider_config_disabled")
   }
 
-  export async function remove(key: string) {
-    const uid = userID()
-    if (Flag.TPCODE_ACCOUNT_ENABLED) {
-      if (!uid) throw new Error("account_user_missing")
-      await removeUser(uid, key, "self")
-      return
-    }
-    await removeGlobal(key)
+  export async function remove(_key: string) {
+    throw new Error("account_user_provider_config_disabled")
   }
 }

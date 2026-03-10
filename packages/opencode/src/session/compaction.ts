@@ -14,6 +14,7 @@ import { Agent } from "@/agent/agent"
 import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
 import { ProviderTransform } from "@/provider/transform"
+import { Flag } from "@/flag/flag"
 
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
@@ -106,10 +107,17 @@ export namespace SessionCompaction {
     auto: boolean
   }) {
     const userMessage = input.messages.findLast((m) => m.info.id === input.parentID)!.info as MessageV2.User
+    const runtimeUser: MessageV2.User = Flag.TPCODE_ACCOUNT_ENABLED
+      ? {
+          ...userMessage,
+          variant: undefined,
+        }
+      : userMessage
+    const modelRef = Flag.TPCODE_ACCOUNT_ENABLED ? await Provider.defaultModel() : runtimeUser.model
     const agent = await Agent.get("compaction")
-    const model = agent.model
+    const model = !Flag.TPCODE_ACCOUNT_ENABLED && agent.model
       ? await Provider.getModel(agent.model.providerID, agent.model.modelID)
-      : await Provider.getModel(userMessage.model.providerID, userMessage.model.modelID)
+      : await Provider.getModel(modelRef.providerID, modelRef.modelID)
     const msg = (await Session.updateMessage({
       id: Identifier.ascending("message"),
       role: "assistant",
@@ -117,7 +125,7 @@ export namespace SessionCompaction {
       sessionID: input.sessionID,
       mode: "compaction",
       agent: "compaction",
-      variant: userMessage.variant,
+      variant: runtimeUser.variant,
       summary: true,
       path: {
         cwd: Instance.directory,
@@ -178,7 +186,7 @@ When constructing the summary, try to stick to this template:
 
     const promptText = compacting.prompt ?? [defaultPrompt, ...compacting.context].join("\n\n")
     const result = await processor.process({
-      user: userMessage,
+      user: runtimeUser,
       agent,
       abort: input.abort,
       sessionID: input.sessionID,
@@ -207,8 +215,8 @@ When constructing the summary, try to stick to this template:
         time: {
           created: Date.now(),
         },
-        agent: userMessage.agent,
-        model: userMessage.model,
+        agent: runtimeUser.agent,
+        model: modelRef,
       })
       await Session.updatePart({
         id: Identifier.ascending("part"),

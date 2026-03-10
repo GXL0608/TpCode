@@ -71,6 +71,40 @@ export const ProviderRoutes = lazy(() =>
         const connected = await Provider.list()
 
         const strictAccount = Flag.TPCODE_ACCOUNT_ENABLED
+        const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+        const superAdmin = roles.includes("super_admin")
+        if (strictAccount && !superAdmin) {
+          const current = await Provider.defaultModel().catch(() => undefined)
+          if (!current) {
+            return c.json({
+              all: [],
+              default: {},
+              connected: [],
+            })
+          }
+          const provider = connected[current.providerID]
+          const model = provider?.models[current.modelID]
+          if (!provider || !model) {
+            return c.json({
+              all: [],
+              default: {},
+              connected: [],
+            })
+          }
+          const scoped = {
+            ...provider,
+            models: {
+              [model.id]: model,
+            },
+          }
+          return c.json({
+            all: [scoped],
+            default: {
+              [scoped.id]: model.id,
+            },
+            connected: [scoped.id],
+          })
+        }
         const config = strictAccount ? undefined : await Config.get()
         const control = strictAccount ? await AccountSystemSettingService.providerControl() : undefined
         const disabled = new Set(strictAccount ? (control?.disabled_providers ?? []) : (config?.disabled_providers ?? []))

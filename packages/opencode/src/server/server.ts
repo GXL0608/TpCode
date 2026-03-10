@@ -305,7 +305,6 @@ export namespace Server {
               "/account/token/refresh",
               "/global/health",
               "/global/ready",
-              "/doc",
             ]
             const protectedPaths = [
               "/account",

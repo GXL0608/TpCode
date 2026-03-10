@@ -63,11 +63,24 @@ export namespace Provider {
     return isGpt5OrLater(modelID) && !modelID.startsWith("gpt-5-mini")
   }
 
+  function env(key: string) {
+    if (strictAccountScope()) return
+    return Env.get(key)
+  }
+
+  function envs() {
+    if (strictAccountScope()) return {} as Record<string, string | undefined>
+    return Env.all()
+  }
+
+  function procEnv(key: string) {
+    if (strictAccountScope()) return
+    return process.env[key]
+  }
+
   function googleVertexVars(options: Record<string, any>) {
-    const project =
-      options["project"] ?? Env.get("GOOGLE_CLOUD_PROJECT") ?? Env.get("GCP_PROJECT") ?? Env.get("GCLOUD_PROJECT")
-    const location =
-      options["location"] ?? Env.get("GOOGLE_CLOUD_LOCATION") ?? Env.get("VERTEX_LOCATION") ?? "us-central1"
+    const project = options["project"] ?? env("GOOGLE_CLOUD_PROJECT") ?? env("GCP_PROJECT") ?? env("GCLOUD_PROJECT")
+    const location = options["location"] ?? env("GOOGLE_CLOUD_LOCATION") ?? env("VERTEX_LOCATION") ?? "us-central1"
     const endpoint = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`
 
     return {
@@ -82,14 +95,14 @@ export namespace Provider {
     if (typeof raw !== "string") return raw
     const vars = model.providerID === "google-vertex" ? googleVertexVars(options) : undefined
     return raw.replace(/\$\{([^}]+)\}/g, (match, key) => {
-      const val = Env.get(String(key)) ?? vars?.[String(key) as keyof typeof vars]
+      const val = env(String(key)) ?? vars?.[String(key) as keyof typeof vars]
       return val ?? match
     })
   }
 
   async function scopedAuth(providerID: string) {
     if (!strictAccountScope()) return Auth.get(providerID)
-    return Auth.sharedAll().then((all) => all[providerID])
+    return AccountSystemSettingService.providerAuth(providerID)
   }
 
   const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
@@ -138,8 +151,8 @@ export namespace Provider {
     },
     async opencode(input) {
       const hasKey = await (async () => {
-        const env = Env.all()
-        if (input.env.some((item) => env[item])) return true
+        const values = envs()
+        if (input.env.some((item) => values[item])) return true
         if (await scopedAuth(input.id)) return true
         if (!strictAccountScope()) {
           const config = await Config.get()
@@ -203,7 +216,7 @@ export namespace Provider {
       }
     },
     "azure-cognitive-services": async () => {
-      const resourceName = Env.get("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME")
+      const resourceName = env("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME")
       return {
         autoload: false,
         async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
@@ -225,20 +238,20 @@ export namespace Provider {
 
       // Region precedence: 1) config file, 2) env var, 3) default
       const configRegion = providerConfig?.options?.region
-      const envRegion = Env.get("AWS_REGION")
+      const envRegion = env("AWS_REGION")
       const defaultRegion = configRegion ?? envRegion ?? "us-east-1"
 
       // Profile: config file takes precedence over env var
       const configProfile = providerConfig?.options?.profile
-      const envProfile = Env.get("AWS_PROFILE")
+      const envProfile = env("AWS_PROFILE")
       const profile = configProfile ?? envProfile
 
-      const awsAccessKeyId = Env.get("AWS_ACCESS_KEY_ID")
+      const awsAccessKeyId = env("AWS_ACCESS_KEY_ID")
 
       // TODO: Using process.env directly because Env.set only updates a process.env shallow copy,
       // until the scope of the Env API is clarified (test only or runtime?)
       const awsBearerToken = iife(() => {
-        const envToken = process.env.AWS_BEARER_TOKEN_BEDROCK
+        const envToken = procEnv("AWS_BEARER_TOKEN_BEDROCK")
         if (envToken) return envToken
         if (auth?.type === "api") {
           process.env.AWS_BEARER_TOKEN_BEDROCK = auth.key
@@ -247,11 +260,9 @@ export namespace Provider {
         return undefined
       })
 
-      const awsWebIdentityTokenFile = Env.get("AWS_WEB_IDENTITY_TOKEN_FILE")
+      const awsWebIdentityTokenFile = env("AWS_WEB_IDENTITY_TOKEN_FILE")
 
-      const containerCreds = Boolean(
-        process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI || process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI,
-      )
+      const containerCreds = Boolean(procEnv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") || procEnv("AWS_CONTAINER_CREDENTIALS_FULL_URI"))
 
       if (!profile && !awsAccessKeyId && !awsBearerToken && !awsWebIdentityTokenFile && !containerCreds)
         return { autoload: false }
@@ -388,14 +399,9 @@ export namespace Provider {
       }
     },
     "google-vertex": async (provider) => {
-      const project =
-        provider.options?.project ??
-        Env.get("GOOGLE_CLOUD_PROJECT") ??
-        Env.get("GCP_PROJECT") ??
-        Env.get("GCLOUD_PROJECT")
+      const project = provider.options?.project ?? env("GOOGLE_CLOUD_PROJECT") ?? env("GCP_PROJECT") ?? env("GCLOUD_PROJECT")
 
-      const location =
-        provider.options?.location ?? Env.get("GOOGLE_CLOUD_LOCATION") ?? Env.get("VERTEX_LOCATION") ?? "us-central1"
+      const location = provider.options?.location ?? env("GOOGLE_CLOUD_LOCATION") ?? env("VERTEX_LOCATION") ?? "us-central1"
 
       const autoload = Boolean(project)
       if (!autoload) return { autoload: false }
@@ -422,8 +428,8 @@ export namespace Provider {
       }
     },
     "google-vertex-anthropic": async () => {
-      const project = Env.get("GOOGLE_CLOUD_PROJECT") ?? Env.get("GCP_PROJECT") ?? Env.get("GCLOUD_PROJECT")
-      const location = Env.get("GOOGLE_CLOUD_LOCATION") ?? Env.get("VERTEX_LOCATION") ?? "global"
+      const project = env("GOOGLE_CLOUD_PROJECT") ?? env("GCP_PROJECT") ?? env("GCLOUD_PROJECT")
+      const location = env("GOOGLE_CLOUD_LOCATION") ?? env("VERTEX_LOCATION") ?? "global"
       const autoload = Boolean(project)
       if (!autoload) return { autoload: false }
       return {
@@ -443,7 +449,7 @@ export namespace Provider {
       // TODO: Using process.env directly because Env.set only updates a shallow copy (not process.env),
       // until the scope of the Env API is clarified (test only or runtime?)
       const envServiceKey = iife(() => {
-        const envAICoreServiceKey = process.env.AICORE_SERVICE_KEY
+        const envAICoreServiceKey = procEnv("AICORE_SERVICE_KEY")
         if (envAICoreServiceKey) return envAICoreServiceKey
         if (auth?.type === "api") {
           process.env.AICORE_SERVICE_KEY = auth.key
@@ -451,8 +457,8 @@ export namespace Provider {
         }
         return undefined
       })
-      const deploymentId = process.env.AICORE_DEPLOYMENT_ID
-      const resourceGroup = process.env.AICORE_RESOURCE_GROUP
+      const deploymentId = procEnv("AICORE_DEPLOYMENT_ID")
+      const resourceGroup = procEnv("AICORE_RESOURCE_GROUP")
 
       return {
         autoload: !!envServiceKey,
@@ -474,13 +480,13 @@ export namespace Provider {
       }
     },
     gitlab: async (input) => {
-      const instanceUrl = Env.get("GITLAB_INSTANCE_URL") || "https://gitlab.com"
+      const instanceUrl = env("GITLAB_INSTANCE_URL") || "https://gitlab.com"
 
       const auth = await scopedAuth(input.id)
       const apiKey = await (async () => {
         if (auth?.type === "oauth") return auth.access
         if (auth?.type === "api") return auth.key
-        return Env.get("GITLAB_TOKEN")
+        return env("GITLAB_TOKEN")
       })()
 
       const providerConfig = strictAccountScope() ? ({ options: input.options ?? {} } as { options?: Record<string, any> }) : await Config.get().then((x) => x.provider?.["gitlab"])
@@ -515,11 +521,11 @@ export namespace Provider {
       }
     },
     "cloudflare-workers-ai": async (input) => {
-      const accountId = Env.get("CLOUDFLARE_ACCOUNT_ID")
+      const accountId = env("CLOUDFLARE_ACCOUNT_ID")
       if (!accountId) return { autoload: false }
 
       const apiKey = await iife(async () => {
-        const envToken = Env.get("CLOUDFLARE_API_KEY")
+        const envToken = env("CLOUDFLARE_API_KEY")
         if (envToken) return envToken
         const auth = await scopedAuth(input.id)
         if (auth?.type === "api") return auth.key
@@ -538,14 +544,14 @@ export namespace Provider {
       }
     },
     "cloudflare-ai-gateway": async (input) => {
-      const accountId = Env.get("CLOUDFLARE_ACCOUNT_ID")
-      const gateway = Env.get("CLOUDFLARE_GATEWAY_ID")
+      const accountId = env("CLOUDFLARE_ACCOUNT_ID")
+      const gateway = env("CLOUDFLARE_GATEWAY_ID")
 
       if (!accountId || !gateway) return { autoload: false }
 
       // Get API token from env or auth - required for authenticated gateways
       const apiToken = await (async () => {
-        const envToken = Env.get("CLOUDFLARE_API_TOKEN") || Env.get("CF_AIG_TOKEN")
+        const envToken = env("CLOUDFLARE_API_TOKEN") || env("CF_AIG_TOKEN")
         if (envToken) return envToken
         const auth = await scopedAuth(input.id)
         if (auth?.type === "api") return auth.key
@@ -770,8 +776,6 @@ export namespace Provider {
 
   function strictAccountScope() {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
-    const current = AccountCurrent.optional()
-    if (!current?.user_id) return false
     return true
   }
 
@@ -782,10 +786,21 @@ export namespace Provider {
     const modelsDev = await ModelsDev.get()
     const database = mapValues(modelsDev, fromModelsDevProvider)
     const control = strictAccount ? await AccountSystemSettingService.providerControl() : undefined
-    const sharedAuth = await Auth.sharedAll()
+    const sharedAuth = strictAccount ? await AccountSystemSettingService.providerAuths() : await Auth.sharedAll()
     const configProviders = strictAccount
       ? (Object.entries(await AccountSystemSettingService.providerConfigs()) as [string, z.output<typeof Config.Provider>][])
       : (Object.entries(config?.provider ?? {}) as [string, z.output<typeof Config.Provider>][])
+    const configuredProviders = strictAccount
+      ? new Set(
+          [
+            ...Object.keys(sharedAuth),
+            ...configProviders.map(([providerID]) => providerID),
+            ...(control?.enabled_providers ?? []),
+            control?.model ? parseModel(control.model).providerID : undefined,
+            control?.small_model ? parseModel(control.small_model).providerID : undefined,
+          ].filter((item): item is string => !!item),
+        )
+      : undefined
 
     const disabled = new Set(strictAccount ? (control?.disabled_providers ?? []) : (config?.disabled_providers ?? []))
     const enabled = strictAccount
@@ -821,8 +836,15 @@ export namespace Provider {
         })),
       }
     }
+    if (strictAccount && configuredProviders) {
+      for (const providerID of Object.keys(database)) {
+        if (configuredProviders.has(providerID)) continue
+        delete database[providerID]
+      }
+    }
 
     function mergeProvider(providerID: string, provider: Partial<Info>) {
+      if (strictAccount && configuredProviders && !configuredProviders.has(providerID)) return
       const existing = providers[providerID]
       if (existing) {
         // @ts-expect-error
@@ -954,6 +976,7 @@ export namespace Provider {
       if (!plugin.auth) continue
       const providerID = plugin.auth.provider
       if (disabled.has(providerID)) continue
+      if (strictAccount && configuredProviders && !configuredProviders.has(providerID)) continue
 
       // For github-copilot plugin, check if auth exists for either github-copilot or github-copilot-enterprise
       let hasAuth = false
@@ -981,6 +1004,7 @@ export namespace Provider {
       if (providerID === "github-copilot") {
         const enterpriseProviderID = "github-copilot-enterprise"
         if (!disabled.has(enterpriseProviderID)) {
+          if (strictAccount && configuredProviders && !configuredProviders.has(enterpriseProviderID)) continue
           const enterpriseAuth = await scopedAuth(enterpriseProviderID)
           if (enterpriseAuth) {
             const enterpriseOptions = await plugin.auth.loader(
@@ -999,6 +1023,7 @@ export namespace Provider {
 
     for (const [providerID, fn] of Object.entries(CUSTOM_LOADERS)) {
       if (disabled.has(providerID)) continue
+      if (strictAccount && configuredProviders && !configuredProviders.has(providerID)) continue
       const data = database[providerID]
       if (!data) {
         log.error("Provider does not exist in model list " + providerID)
@@ -1023,6 +1048,10 @@ export namespace Provider {
     }
 
     for (const [providerID, provider] of Object.entries(providers)) {
+      if (strictAccount && configuredProviders && !configuredProviders.has(providerID)) {
+        delete providers[providerID]
+        continue
+      }
       if (!isProviderAllowed(providerID)) {
         delete providers[providerID]
         continue
@@ -1259,6 +1288,8 @@ export namespace Provider {
         const parsed = parseModel(control.small_model)
         return getModel(parsed.providerID, parsed.modelID)
       }
+      const current = await defaultModel()
+      return getModel(current.providerID, current.modelID)
     }
     if (!strictAccount) {
       const cfg = await Config.get()
@@ -1340,26 +1371,56 @@ export namespace Provider {
     const strictAccount = strictAccountScope()
     const providers = await list()
     if (strictAccount) {
-      const control = await AccountSystemSettingService.providerControl()
+      const [control, providerConfigs] = await Promise.all([
+        AccountSystemSettingService.providerControl(),
+        AccountSystemSettingService.providerConfigs(),
+      ])
       if (control.model) {
         const parsed = parseModel(control.model)
         if (providers[parsed.providerID]?.models[parsed.modelID]) return parsed
       }
-      const ids = Object.keys(providers).sort((a, b) => a.localeCompare(b))
-      const enabled = control.enabled_providers ?? []
-      const preferred = enabled.filter((id) => ids.includes(id))
-      const rest = ids.filter((id) => !preferred.includes(id))
-      for (const providerID of [...preferred, ...rest]) {
+
+      const seen = new Set<string>()
+      const providerIDs = [
+        ...(control.enabled_providers ?? []),
+        ...Object.keys(providerConfigs),
+        ...Object.keys(providers),
+      ].filter((providerID) => {
+        if (!providers[providerID]) return false
+        if (seen.has(providerID)) return false
+        seen.add(providerID)
+        return true
+      })
+
+      for (const providerID of providerIDs) {
         const provider = providers[providerID]
         if (!provider) continue
-        const [model] = sort(Object.values(provider.models))
-        if (!model) continue
-        return {
-          providerID: provider.id,
-          modelID: model.id,
+
+        const configuredModels = providerConfigs[providerID]?.models
+        if (configuredModels && Object.keys(configuredModels).length > 0) {
+          const configured = sort(
+            Object.keys(configuredModels)
+              .map((modelID) => provider.models[modelID])
+              .filter((model): model is Model => !!model),
+          )
+          const firstConfigured = configured[0]
+          if (firstConfigured) {
+            return {
+              providerID: provider.id,
+              modelID: firstConfigured.id,
+            }
+          }
+        }
+
+        const [fallback] = sort(Object.values(provider.models))
+        if (fallback) {
+          return {
+            providerID: provider.id,
+            modelID: fallback.id,
+          }
         }
       }
-      throw new Error("no models found")
+      throw new Error("no global model configured")
     }
     const cfg = await Config.get()
     if (cfg.model) return parseModel(cfg.model)

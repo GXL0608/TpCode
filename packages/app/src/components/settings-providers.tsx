@@ -2,12 +2,10 @@ import { Button } from "@opencode-ai/ui/button"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { Tag } from "@opencode-ai/ui/tag"
-import { showToast } from "@opencode-ai/ui/toast"
 import { iconNames, type IconName } from "@opencode-ai/ui/icons/provider"
 import { createEffect, createMemo, For, Show, type Component } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { useGlobalSDK } from "@/context/global-sdk"
-import { useGlobalSync } from "@/context/global-sync"
 import { useAccountAuth } from "@/context/account-auth"
 import { popularProviders, useProviders } from "@/hooks/use-providers"
 import { createStore } from "solid-js/store"
@@ -17,8 +15,6 @@ import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogCustomProvider } from "./dialog-custom-provider"
 import type { ProviderSettingsScope } from "./provider-settings-scope"
 
-type ProviderSource = "env" | "api" | "config" | "custom"
-type ProviderItem = ReturnType<ReturnType<typeof useProviders>["connected"]>[number]
 type ManagedRow = {
   provider_id: string
   configured: boolean
@@ -66,12 +62,6 @@ function icon(id: string): IconName {
 
 function note(id: string) {
   return PROVIDER_NOTES.find((item) => item.match(id))?.key
-}
-
-function resolveScope(auth: ReturnType<typeof useAccountAuth>, scope?: ProviderSettingsScope): ProviderSettingsScope {
-  if (auth.enabled()) return { kind: "global" }
-  if (scope) return scope
-  return { kind: "local" }
 }
 
 const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind: "global" }> }> = (props) => {
@@ -122,12 +112,16 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   const configuredIDs = createMemo(() => new Set(state.rows.map((item) => item.provider_id)))
   const disabledSet = createMemo(() => new Set(parseList(state.disabledProviders)))
   const modelOptions = createMemo(() => {
-    const all = providers.all()
-    const rows = state.rows.filter((item) => !item.disabled && !disabledSet().has(item.provider_id))
+    const selectedProviderID = state.model.trim().split("/")[0] ?? ""
+    const ids = new Set([
+      ...state.rows.map((item) => item.provider_id),
+      ...parseList(state.enabledProviders),
+      ...(selectedProviderID ? [selectedProviderID] : []),
+    ])
+    const source = providers.connected().length > 0 ? providers.connected() : providers.all()
+    const rows = source.filter((item) => !disabledSet().has(item.id) && ids.has(item.id))
     const list = [] as ManagedModelOption[]
-    for (const row of rows) {
-      const provider = all.find((item) => item.id === row.provider_id)
-      if (!provider) continue
+    for (const provider of rows) {
       const provider_name = provider.name?.trim() || provider.id
       for (const model of Object.values(provider.models)) {
         const model_id = model.id
@@ -256,14 +250,49 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       | { model?: unknown; small_model?: unknown; enabled_providers?: unknown; disabled_providers?: unknown }
       | undefined
     const disabled = new Set(list<string>(control?.disabled_providers))
-    const rows = Object.entries(
+    const rowsMap = new Map<string, ManagedRow>(
+      Object.entries(
       ((await rowsResponse.json().catch(() => undefined)) as Record<string, { type?: unknown }> | undefined) ?? {},
-    ).map(([provider_id, auth]) => ({
-      provider_id,
-      configured: true,
-      auth_type: typeof auth?.type === "string" ? auth.type : undefined,
-      disabled: disabled.has(provider_id),
-    }))
+      ).map(([provider_id, auth]) => [
+        provider_id,
+        {
+          provider_id,
+          configured: true,
+          auth_type: typeof auth?.type === "string" ? auth.type : undefined,
+          disabled: disabled.has(provider_id),
+        },
+      ]),
+    )
+    for (const provider of providers.connected()) {
+      if (rowsMap.has(provider.id)) continue
+      rowsMap.set(provider.id, {
+        provider_id: provider.id,
+        configured: false,
+        disabled: disabled.has(provider.id),
+      })
+    }
+    for (const provider_id of list<string>(control?.enabled_providers)) {
+      if (rowsMap.has(provider_id)) continue
+      rowsMap.set(provider_id, {
+        provider_id,
+        configured: false,
+        disabled: disabled.has(provider_id),
+      })
+    }
+    const controlModel = typeof control?.model === "string" ? control.model : ""
+    const controlProvider = controlModel.split("/")[0]
+    if (controlProvider && !rowsMap.has(controlProvider)) {
+      rowsMap.set(controlProvider, {
+        provider_id: controlProvider,
+        configured: false,
+        disabled: disabled.has(controlProvider),
+      })
+    }
+    const rows = [...rowsMap.values()].sort((a, b) => {
+      const left = name(a.provider_id)
+      const right = name(b.provider_id)
+      return left.localeCompare(right)
+    })
 
     const providerID =
       state.providerID.trim() ||
@@ -691,342 +720,8 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   )
 }
 
-const LegacyProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind: "local" | "self" }> }> = (props) => {
-  const dialog = useDialog()
-  const language = useLanguage()
-  const globalSDK = useGlobalSDK()
-  const globalSync = useGlobalSync()
-  const auth = useAccountAuth()
-  const accountRequest = useAccountRequest()
-  const providers = useProviders()
+// Legacy per-user/local provider configuration has been fully removed by design.
 
-  const connected = createMemo(() => {
-    return providers
-      .connected()
-      .filter((p) => p.id !== "opencode" || Object.values(p.models).find((m) => m.cost?.input))
-  })
-
-  const popular = createMemo(() => {
-    const connectedIDs = new Set(connected().map((p) => p.id))
-    const items = providers
-      .popular()
-      .filter((p) => !connectedIDs.has(p.id))
-      .slice()
-    items.sort((a, b) => popularProviders.indexOf(a.id) - popularProviders.indexOf(b.id))
-    return items
-  })
-
-  const source = (item: ProviderItem): ProviderSource | undefined => {
-    if (!("source" in item)) return
-    const value = item.source
-    if (value === "env" || value === "api" || value === "config" || value === "custom") return value
-    return
-  }
-
-  const type = (item: ProviderItem) => {
-    const current = source(item)
-    if (current === "env") return language.t("settings.providers.tag.environment")
-    if (current === "api") return language.t("provider.connect.method.apiKey")
-    if (current === "config") {
-      if (isConfigCustom(item.id)) return language.t("settings.providers.tag.custom")
-      return language.t("settings.providers.tag.config")
-    }
-    if (current === "custom") return language.t("settings.providers.tag.custom")
-    return language.t("settings.providers.tag.other")
-  }
-
-  const canDisconnect = (item: ProviderItem) => source(item) !== "env"
-  const canManageProvider = createMemo(() => {
-    if (props.scope.kind === "local") return true
-    return auth.has("provider:config_own")
-  })
-  const key = (item: ProviderItem) => {
-    if (!("key" in item)) return
-    return typeof item.key === "string" ? item.key : undefined
-  }
-  const optionKey = (item: ProviderItem) => {
-    if (!("options" in item)) return
-    const options = item.options as Record<string, unknown> | undefined
-    if (!options || typeof options !== "object") return
-    const apiKey = options["apiKey"]
-    if (typeof apiKey === "string" && apiKey.trim()) return apiKey
-    const apiKeySnake = options["api_key"]
-    if (typeof apiKeySnake === "string" && apiKeySnake.trim()) return apiKeySnake
-    return
-  }
-
-  const isConfigCustom = (providerID: string) => {
-    if (auth.enabled()) return false
-    const provider = globalSync.data.config.provider?.[providerID]
-    if (!provider) return false
-    if (provider.npm !== "@ai-sdk/openai-compatible") return false
-    if (!provider.models || Object.keys(provider.models).length === 0) return false
-    return true
-  }
-
-  const disableProvider = async (providerID: string, name: string) => {
-    if (auth.enabled()) {
-      const response = await accountRequest({
-        method: "PATCH",
-        path: `/account/me/providers/${encodeURIComponent(providerID)}/disabled`,
-        body: { disabled: true },
-      }).catch(() => undefined)
-      if (!response?.ok) {
-        const message = await parseAccountError(response)
-        showToast({ title: language.t("common.requestFailed"), description: message })
-        return
-      }
-      await globalSDK.client.global.dispose().catch(() => undefined)
-      showToast({
-        variant: "success",
-        icon: "circle-check",
-        title: language.t("provider.disconnect.toast.disconnected.title", { provider: name }),
-        description: language.t("provider.disconnect.toast.disconnected.description", { provider: name }),
-      })
-      return
-    }
-
-    const before = globalSync.data.config.disabled_providers ?? []
-    const next = before.includes(providerID) ? before : [...before, providerID]
-    globalSync.set("config", "disabled_providers", next)
-
-    await globalSync
-      .updateConfig({ disabled_providers: next })
-      .then(async () => {
-        await globalSDK.client.global.dispose().catch(() => undefined)
-        showToast({
-          variant: "success",
-          icon: "circle-check",
-          title: language.t("provider.disconnect.toast.disconnected.title", { provider: name }),
-          description: language.t("provider.disconnect.toast.disconnected.description", { provider: name }),
-        })
-      })
-      .catch((err: unknown) => {
-        globalSync.set("config", "disabled_providers", before)
-        const message = err instanceof Error ? err.message : String(err)
-        showToast({ title: language.t("common.requestFailed"), description: message })
-      })
-  }
-
-  const disconnect = async (item: ProviderItem) => {
-    const providerID = item.id
-    const name = item.name
-    const current = source(item)
-
-    await globalSDK.client.auth.remove({ providerID }).catch(() => undefined)
-    if (auth.enabled()) {
-      await disableProvider(providerID, name)
-      return
-    }
-
-    if (current === "config" || current === "custom" || isConfigCustom(providerID)) {
-      await disableProvider(providerID, name)
-      return
-    }
-
-    await globalSDK.client.global.dispose().catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err)
-      showToast({ title: language.t("common.requestFailed"), description: message })
-    })
-    showToast({
-      variant: "success",
-      icon: "circle-check",
-      title: language.t("provider.disconnect.toast.disconnected.title", { provider: name }),
-      description: language.t("provider.disconnect.toast.disconnected.description", { provider: name }),
-    })
-  }
-
-  const keyText = (item: ProviderItem) => {
-    if (!providerKey(item)) return "未配置"
-    return "••••••••••••••••"
-  }
-  const providerKey = (item: ProviderItem) => {
-    const value = key(item)?.trim() || optionKey(item)?.trim()
-    if (!value) return
-    return value
-  }
-
-  return (
-    <div class="flex flex-col h-full overflow-y-auto no-scrollbar px-4 pb-10 sm:px-10 sm:pb-10">
-      <div class="sticky top-0 z-10 bg-[linear-gradient(to_bottom,var(--surface-stronger-non-alpha)_calc(100%_-_24px),transparent)]">
-        <div class="flex flex-col gap-1 pt-6 pb-8 max-w-[720px]">
-          <h2 class="text-16-medium text-text-strong">{language.t("settings.providers.title")}</h2>
-        </div>
-      </div>
-
-      <div class="flex flex-col gap-8 max-w-[720px]">
-        <Show when={!canManageProvider()}>
-          <div class="rounded-lg border border-border-warning-base bg-surface-warning-base/10 px-4 py-3 text-13-regular text-text-warning-base">
-            当前账号无“提供商配置”权限，仅可查看已连接状态。
-          </div>
-        </Show>
-        <div class="flex flex-col gap-1" data-component="connected-providers-section">
-          <h3 class="text-14-medium text-text-strong pb-2">{language.t("settings.providers.section.connected")}</h3>
-          <div class="flex flex-col gap-2">
-            <Show
-              when={connected().length > 0}
-              fallback={
-                <div class="rounded-xl border border-border-weak-base bg-surface-raised-base px-4 py-4 text-14-regular text-text-weak">
-                  {language.t("settings.providers.connected.empty")}
-                </div>
-              }
-            >
-              <For each={connected()}>
-                {(item) => (
-                  <div class="group rounded-xl border border-border-weak-base bg-surface-raised-base px-4 py-3">
-                    <div class="flex flex-wrap items-start justify-between gap-4">
-                      <div class="flex flex-col gap-2 min-w-0 flex-1">
-                        <div class="flex items-center gap-3 min-w-0">
-                          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface-base border border-border-weak-base">
-                            <ProviderIcon id={icon(item.id)} class="size-4 icon-strong-base" />
-                          </div>
-                          <span class="text-14-medium text-text-strong truncate">{item.name}</span>
-                          <Tag>{type(item)}</Tag>
-                        </div>
-                        <Show when={source(item) !== "env"}>
-                          <div class="pl-11 flex flex-wrap items-center gap-2">
-                            <span class="text-12-regular text-text-weak">当前密钥</span>
-                            <code
-                              class={
-                                providerKey(item)
-                                  ? "text-12-regular text-text-strong bg-surface-base px-2 py-1 rounded border border-border-weak-base break-all"
-                                  : "text-12-regular text-text-weak bg-surface-base px-2 py-1 rounded border border-border-weak-base"
-                              }
-                            >
-                              {keyText(item)}
-                            </code>
-                          </div>
-                        </Show>
-                      </div>
-                      <Show
-                        when={canManageProvider()}
-                        fallback={<span class="text-13-regular text-text-weak pr-1 cursor-default">只读</span>}
-                      >
-                        <div class="flex items-center gap-2">
-                          <Button
-                            size="small"
-                            variant="secondary"
-                            onClick={() => {
-                              dialog.show(() => <DialogConnectProvider provider={item.id} scope={props.scope} />)
-                            }}
-                          >
-                            更新密钥
-                          </Button>
-                          <Show
-                            when={canDisconnect(item)}
-                            fallback={
-                              <span class="text-12-regular text-text-weak pr-1 cursor-default">
-                                {language.t("settings.providers.connected.environmentDescription")}
-                              </span>
-                            }
-                          >
-                            <Button size="large" variant="ghost" onClick={() => void disconnect(item)}>
-                              {language.t("common.disconnect")}
-                            </Button>
-                          </Show>
-                        </div>
-                      </Show>
-                    </div>
-                  </div>
-                )}
-              </For>
-            </Show>
-          </div>
-        </div>
-
-        <div class="flex flex-col gap-1">
-          <h3 class="text-14-medium text-text-strong pb-2">{language.t("settings.providers.section.popular")}</h3>
-          <div class="bg-surface-raised-base px-4 rounded-lg">
-            <For each={popular()}>
-              {(item) => (
-                <div class="flex flex-wrap items-center justify-between gap-4 min-h-16 py-3 border-b border-border-weak-base last:border-none">
-                  <div class="flex flex-col min-w-0">
-                    <div class="flex items-center gap-x-3">
-                      <ProviderIcon id={icon(item.id)} class="size-5 shrink-0 icon-strong-base" />
-                      <span class="text-14-medium text-text-strong">{item.name}</span>
-                      <Show when={item.id === "opencode"}>
-                        <span class="text-14-regular text-text-weak">{language.t("dialog.provider.opencode.tagline")}</span>
-                      </Show>
-                      <Show when={item.id === "opencode"}>
-                        <Tag>{language.t("dialog.provider.tag.recommended")}</Tag>
-                      </Show>
-                      <Show when={item.id === "opencode-go"}>
-                        <>
-                          <span class="text-14-regular text-text-weak">{language.t("dialog.provider.opencodeGo.tagline")}</span>
-                          <Tag>{language.t("dialog.provider.tag.recommended")}</Tag>
-                        </>
-                      </Show>
-                    </div>
-                    <Show when={note(item.id)}>
-                      {(key) => <span class="text-12-regular text-text-weak pl-8">{language.t(key())}</span>}
-                    </Show>
-                  </div>
-                  <Show when={canManageProvider()}>
-                    <Button
-                      size="large"
-                      variant="secondary"
-                      icon="plus-small"
-                      onClick={() => {
-                        dialog.show(() => <DialogConnectProvider provider={item.id} scope={props.scope} />)
-                      }}
-                    >
-                      {language.t("common.connect")}
-                    </Button>
-                  </Show>
-                </div>
-              )}
-            </For>
-
-            <div
-              class="flex items-center justify-between gap-4 min-h-16 border-b border-border-weak-base last:border-none flex-wrap py-3"
-              data-component="custom-provider-section"
-            >
-              <div class="flex flex-col min-w-0">
-                <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <ProviderIcon id={icon("synthetic")} class="size-5 shrink-0 icon-strong-base" />
-                  <span class="text-14-medium text-text-strong">{language.t("provider.custom.title")}</span>
-                  <Tag>{language.t("settings.providers.tag.custom")}</Tag>
-                </div>
-                <span class="text-12-regular text-text-weak pl-8">{language.t("settings.providers.custom.description")}</span>
-              </div>
-              <Show when={canManageProvider()}>
-                <Button
-                  size="large"
-                  variant="secondary"
-                  icon="plus-small"
-                  onClick={() => {
-                    dialog.show(() => <DialogCustomProvider back="close" scope={props.scope} />)
-                  }}
-                >
-                  {language.t("common.connect")}
-                </Button>
-              </Show>
-            </div>
-          </div>
-
-          <Show when={canManageProvider()}>
-            <Button
-              variant="ghost"
-              class="px-0 py-0 mt-5 text-14-medium text-text-interactive-base text-left justify-start hover:bg-transparent active:bg-transparent"
-              onClick={() => {
-                dialog.show(() => <DialogSelectProvider scope={props.scope} />)
-              }}
-            >
-              {language.t("dialog.provider.viewAll")}
-            </Button>
-          </Show>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-export const SettingsProviders: Component<{ scope?: ProviderSettingsScope }> = (props) => {
-  const auth = useAccountAuth()
-  const view = createMemo(() => {
-    const current = resolveScope(auth, props.scope)
-    if (current.kind === "global" || current.kind === "user") return <ManagedProviders scope={{ kind: "global" }} />
-    return <LegacyProviders scope={current} />
-  })
-  return view()
+export const SettingsProviders: Component<{ scope?: ProviderSettingsScope }> = () => {
+  return <ManagedProviders scope={{ kind: "global" }} />
 }

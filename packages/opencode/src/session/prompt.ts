@@ -424,16 +424,16 @@ export namespace SessionPrompt {
         break
       }
 
-      step++
-      if (step === 1)
-        ensureTitle({
-          session,
-          modelID: lastUser.model.modelID,
-          providerID: lastUser.model.providerID,
-          history: msgs,
-        })
+      const runtimeUser: MessageV2.User = Flag.TPCODE_ACCOUNT_ENABLED
+        ? {
+            ...lastUser,
+            variant: undefined,
+          }
+        : lastUser
 
-      const model = await Provider.getModel(lastUser.model.providerID, lastUser.model.modelID).catch((e) => {
+      step++
+      const modelRef = Flag.TPCODE_ACCOUNT_ENABLED ? await Provider.defaultModel() : runtimeUser.model
+      const model = await Provider.getModel(modelRef.providerID, modelRef.modelID).catch((e) => {
         if (Provider.ModelNotFoundError.isInstance(e)) {
           const hint = e.data.suggestions?.length ? ` Did you mean: ${e.data.suggestions.join(", ")}?` : ""
           Bus.publish(Session.Event.Error, {
@@ -445,21 +445,31 @@ export namespace SessionPrompt {
         }
         throw e
       })
+      if (step === 1)
+        ensureTitle({
+          session,
+          modelID: model.id,
+          providerID: model.providerID,
+          history: msgs,
+        })
       const task = tasks.pop()
 
       // pending subtask
       // TODO: centralize "invoke tool" logic
       if (task?.type === "subtask") {
         const taskTool = await TaskTool.init()
-        const taskModel = task.model ? await Provider.getModel(task.model.providerID, task.model.modelID) : model
+        const taskModel =
+          Flag.TPCODE_ACCOUNT_ENABLED || !task.model
+            ? model
+            : await Provider.getModel(task.model.providerID, task.model.modelID)
         const assistantMessage = (await Session.updateMessage({
           id: Identifier.ascending("message"),
           role: "assistant",
-          parentID: lastUser.id,
+          parentID: runtimeUser.id,
           sessionID,
           mode: task.agent,
           agent: task.agent,
-          variant: lastUser.variant,
+          variant: runtimeUser.variant,
           path: {
             cwd: Instance.directory,
             root: Instance.worktree,
@@ -608,8 +618,8 @@ export namespace SessionPrompt {
             time: {
               created: Date.now(),
             },
-            agent: lastUser.agent,
-            model: lastUser.model,
+            agent: runtimeUser.agent,
+            model: modelRef,
           }
           await Session.updateMessage(summaryUserMsg)
           await Session.updatePart({
@@ -646,15 +656,15 @@ export namespace SessionPrompt {
       ) {
         await SessionCompaction.create({
           sessionID,
-          agent: lastUser.agent,
-          model: lastUser.model,
+          agent: runtimeUser.agent,
+          model: modelRef,
           auto: true,
         })
         continue
       }
 
       // normal processing
-      const agent = await Agent.get(lastUser.agent)
+      const agent = await Agent.get(runtimeUser.agent)
       const maxSteps = agent.steps ?? Infinity
       const isLastStep = step >= maxSteps
       msgs = await insertReminders({
@@ -666,11 +676,11 @@ export namespace SessionPrompt {
       const processor = SessionProcessor.create({
         assistantMessage: (await Session.updateMessage({
           id: Identifier.ascending("message"),
-          parentID: lastUser.id,
+          parentID: runtimeUser.id,
           role: "assistant",
           mode: agent.name,
           agent: agent.name,
-          variant: lastUser.variant,
+          variant: runtimeUser.variant,
           path: {
             cwd: Instance.directory,
             root: Instance.worktree,
@@ -703,16 +713,16 @@ export namespace SessionPrompt {
         agent,
         session,
         model,
-        tools: lastUser.tools,
+        tools: runtimeUser.tools,
         processor,
         bypassAgentCheck,
         messages: msgs,
       })
 
       // Inject StructuredOutput tool if JSON schema mode enabled
-      if (lastUser.format?.type === "json_schema") {
+      if (runtimeUser.format?.type === "json_schema") {
         tools["StructuredOutput"] = createStructuredOutputTool({
-          schema: lastUser.format.schema,
+          schema: runtimeUser.format.schema,
           onSuccess(output) {
             structuredOutput = output
           },
@@ -750,17 +760,17 @@ export namespace SessionPrompt {
       // Build system prompt, adding structured output instruction if needed
       const system = [...(await SystemPrompt.environment(model)), ...(await InstructionPrompt.system())]
       const systemText = system.join("\n\n")
-      if (lastUser.system !== systemText) {
-        lastUser.system = systemText
-        await Session.updateMessage(lastUser)
+      if (runtimeUser.system !== systemText) {
+        runtimeUser.system = systemText
+        await Session.updateMessage(runtimeUser)
       }
-      const format = lastUser.format ?? { type: "text" }
+      const format = runtimeUser.format ?? { type: "text" }
       if (format.type === "json_schema") {
         system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
       }
 
       const result = await processor.process({
-        user: lastUser,
+        user: runtimeUser,
         agent,
         abort,
         sessionID,
@@ -809,8 +819,8 @@ export namespace SessionPrompt {
       if (result === "compact") {
         await SessionCompaction.create({
           sessionID,
-          agent: lastUser.agent,
-          model: lastUser.model,
+          agent: runtimeUser.agent,
+          model: modelRef,
           auto: true,
         })
       }
@@ -831,6 +841,7 @@ export namespace SessionPrompt {
   })
 
   async function lastModel(sessionID: string) {
+    if (Flag.TPCODE_ACCOUNT_ENABLED) return Provider.defaultModel()
     for await (const item of MessageV2.stream(sessionID)) {
       if (item.info.role === "user" && item.info.model) return item.info.model
     }
@@ -1061,12 +1072,16 @@ export namespace SessionPrompt {
   async function createUserMessage(input: PromptInput) {
     const agent = await Agent.get(input.agent ?? (await Agent.defaultAgent()))
 
-    const model = input.model ?? agent.model ?? (await lastModel(input.sessionID))
+    const model = Flag.TPCODE_ACCOUNT_ENABLED
+      ? await Provider.defaultModel()
+      : input.model ?? agent.model ?? (await lastModel(input.sessionID))
     const full =
       !input.variant && agent.variant
         ? await Provider.getModel(model.providerID, model.modelID).catch(() => undefined)
         : undefined
-    const variant = input.variant ?? (agent.variant && full?.variants?.[agent.variant] ? agent.variant : undefined)
+    const variant = Flag.TPCODE_ACCOUNT_ENABLED
+      ? undefined
+      : input.variant ?? (agent.variant && full?.variants?.[agent.variant] ? agent.variant : undefined)
 
     const info: MessageV2.Info = {
       id: input.messageID ?? Identifier.ascending("message"),
@@ -1709,7 +1724,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       await SessionRevert.cleanup(session)
     }
     const agent = await Agent.get(input.agent)
-    const model = input.model ?? agent.model ?? (await lastModel(input.sessionID))
+    const model = Flag.TPCODE_ACCOUNT_ENABLED
+      ? await Provider.defaultModel()
+      : input.model ?? agent.model ?? (await lastModel(input.sessionID))
     const userMsg: MessageV2.User = {
       id: Identifier.ascending("message"),
       sessionID: input.sessionID,
@@ -2007,6 +2024,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     template = template.trim()
 
     const taskModel = await (async () => {
+      if (Flag.TPCODE_ACCOUNT_ENABLED) return Provider.defaultModel()
       if (command.model) {
         return Provider.parseModel(command.model)
       }
@@ -2065,11 +2083,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       : [...templateParts, ...(input.parts ?? [])]
 
     const userAgent = isSubtask ? (input.agent ?? (await Agent.defaultAgent())) : agentName
-    const userModel = isSubtask
-      ? input.model
-        ? Provider.parseModel(input.model)
-        : await lastModel(input.sessionID)
-      : taskModel
+    const userModel = Flag.TPCODE_ACCOUNT_ENABLED
+      ? taskModel
+      : isSubtask
+        ? input.model
+          ? Provider.parseModel(input.model)
+          : await lastModel(input.sessionID)
+        : taskModel
 
     await Plugin.trigger(
       "command.execute.before",
@@ -2133,7 +2153,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const agent = await Agent.get("title")
     if (!agent) return
     const model = await iife(async () => {
-      if (agent.model) return await Provider.getModel(agent.model.providerID, agent.model.modelID)
+      if (!Flag.TPCODE_ACCOUNT_ENABLED && agent.model)
+        return await Provider.getModel(agent.model.providerID, agent.model.modelID)
       return (
         (await Provider.getSmallModel(input.providerID)) ?? (await Provider.getModel(input.providerID, input.modelID))
       )

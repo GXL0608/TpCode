@@ -173,7 +173,6 @@ const ProviderControlBody = z.object({
   disabled_providers: z.array(z.string()).optional(),
   model: z.string().optional(),
   small_model: z.string().optional(),
-  model_prefs: ModelPrefsBody.optional(),
 })
 
 const AccountProjectStateLastSession = z.object({
@@ -1365,7 +1364,9 @@ export const AccountRoutes = lazy(() =>
         return c.json(result)
       },
     )
-    .get("/admin/provider/global", UserRbac.requireRole("super_admin"), async (c) => c.json(await Auth.sharedAll()))
+    .get("/admin/provider/global", UserRbac.requireRole("super_admin"), async (c) =>
+      c.json(await AccountSystemSettingService.providerAuths()),
+    )
     .put(
       "/admin/provider/:provider_id/global",
       UserRbac.requireRole("super_admin"),
@@ -1376,7 +1377,7 @@ export const AccountRoutes = lazy(() =>
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
         const body = c.req.valid("json")
-        await Auth.setGlobal(param.provider_id, body)
+        await AccountSystemSettingService.setProviderAuth(param.provider_id, body)
         await UserService.audit({
           actor_user_id,
           action: "account.provider.global.set",
@@ -1402,7 +1403,7 @@ export const AccountRoutes = lazy(() =>
         const actor_user_id = requireLogin(c)
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
-        await Auth.removeGlobal(param.provider_id)
+        await AccountSystemSettingService.removeProviderAuth(param.provider_id)
         await UserService.audit({
           actor_user_id,
           action: "account.provider.global.remove",

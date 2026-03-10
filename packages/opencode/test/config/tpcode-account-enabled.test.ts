@@ -30,7 +30,7 @@ async function withProjectConfig(content: string, fn: () => Promise<void>) {
   }
 }
 
-test("reads true from opencode.jsonc", async () => {
+test("always returns true when opencode.jsonc is true", async () => {
   await withProjectConfig(
     `{
       "$schema": "https://opencode.ai/config.json",
@@ -42,14 +42,14 @@ test("reads true from opencode.jsonc", async () => {
   )
 })
 
-test("reads false from opencode.jsonc", async () => {
+test("always returns true when opencode.jsonc is false", async () => {
   await withProjectConfig(
     `{
       "$schema": "https://opencode.ai/config.json",
       "TPCODE_ACCOUNT_ENABLED": false
     }`,
     async () => {
-      expect(Flag.TPCODE_ACCOUNT_ENABLED).toBe(false)
+      expect(Flag.TPCODE_ACCOUNT_ENABLED).toBe(true)
     },
   )
 })

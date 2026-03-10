@@ -146,21 +146,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       const configuredReady = createMemo(() => {
         const key = parseConfigured(configured())
-        if (!key) return providers.all().length > 0
+        if (!key) return strictGlobal() ? false : providers.all().length > 0
         const provider = providers.all().find((x) => x.id === key.providerID)
-        return !!provider?.models[key.modelID]
+        return !!provider?.models[key.modelID] && connected().has(key.providerID)
       })
 
       const current = createMemo(() => {
         const a = agent.current()
         if (!a) return undefined
         const key = strictGlobal()
-          ? getFirstValidModel(resolveConfigured, resolveDefault)
-          : getFirstValidModel(
-              () => ephemeral.model[a.name],
-              () => a.model,
-              fallbackModel,
-            )
+          ? getFirstValidModel(resolveConfigured)
+          : getFirstValidModel(() => ephemeral.model[a.name], () => a.model, fallbackModel)
         if (!key) return undefined
         return models.find(key)
       })
@@ -238,6 +234,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             return models.variant.get({ providerID: m.provider.id, modelID: m.id })
           },
           current() {
+            if (strictGlobal()) return undefined
             return resolveModelVariant({
               variants: this.list(),
               selected: this.selected(),

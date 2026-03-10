@@ -1,5 +1,3 @@
-import { Auth } from "@/auth"
-import { UserProviderConfig } from "./user-provider-config"
 import { AccountSystemSettingService } from "@/user/system-setting"
 import { Config } from "@/config/config"
 import z from "zod"
@@ -10,7 +8,7 @@ import { GlobalBus } from "@/bus/global"
 type ProviderConfig = z.output<typeof Config.Provider>
 
 type ProviderState = {
-  auth?: Auth.Info
+  auth?: AccountSystemSettingService.ProviderAuth
   auth_source?: "global" | "user"
   config?: ProviderConfig
   config_source?: "global" | "user"
@@ -19,42 +17,34 @@ type ProviderState = {
 
 export namespace AccountProviderState {
   export type Effective = {
-    control: UserProviderConfig.Control
-    global_control: UserProviderConfig.Control
-    global_auth: Record<string, Auth.Info>
+    control: AccountSystemSettingService.ProviderControl
+    global_control: AccountSystemSettingService.ProviderControl
+    global_auth: Record<string, AccountSystemSettingService.ProviderAuth>
     global_configs: Record<string, ProviderConfig>
-    user: UserProviderConfig.State
     providers: Record<string, ProviderState>
   }
 
-  export async function load(user_id: string): Promise<Effective> {
-    const [global_auth, global_control, global_configs, user] = await Promise.all([
-      Auth.sharedAll(),
+  export async function load(_user_id: string): Promise<Effective> {
+    const [global_auth, global_control, global_configs] = await Promise.all([
+      AccountSystemSettingService.providerAuths(),
       AccountSystemSettingService.providerControl(),
       AccountSystemSettingService.providerConfigs(),
-      UserProviderConfig.state(user_id),
     ])
-    const own = user
+    const disabled = new Set(global_control.disabled_providers ?? [])
     const ids = new Set([
       ...Object.keys(global_auth),
       ...Object.keys(global_configs),
-      ...Object.keys(own.providers),
     ])
     const providers = [...ids].reduce(
       (acc, provider_id) => {
-        const user_row = own.providers[provider_id]
-        const auth = user_row?.auth ?? global_auth[provider_id]
-        const config = user_row?.meta.provider_config ?? global_configs[provider_id]
+        const auth = global_auth[provider_id]
+        const config = global_configs[provider_id]
         const state = {
           auth,
-          auth_source: user_row?.auth ? ("user" as const) : global_auth[provider_id] ? ("global" as const) : undefined,
+          auth_source: global_auth[provider_id] ? ("global" as const) : undefined,
           config,
-          config_source: user_row?.meta.provider_config
-            ? ("user" as const)
-            : global_configs[provider_id]
-              ? ("global" as const)
-              : undefined,
-          disabled: user_row?.meta.flags?.disabled,
+          config_source: global_configs[provider_id] ? ("global" as const) : undefined,
+          disabled: disabled.has(provider_id),
         }
         if (!state.auth && !state.config && state.disabled === undefined) return acc
         acc[provider_id] = state
@@ -63,14 +53,10 @@ export namespace AccountProviderState {
       {} as Record<string, ProviderState>,
     )
     return {
-      control: {
-        ...global_control,
-        ...own.control,
-      },
+      control: global_control,
       global_control,
       global_auth,
       global_configs,
-      user: own,
       providers,
     }
   }

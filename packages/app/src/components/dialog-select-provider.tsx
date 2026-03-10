@@ -24,12 +24,10 @@ export const DialogSelectProvider: Component<{ scope?: ProviderSettingsScope; on
   const providers = useProviders()
   const language = useLanguage()
   const account = useAccountAuth()
-  const scope = () =>
-    props.scope ?? (account.enabled() ? ({ kind: "global" } satisfies ProviderSettingsScope) : ({ kind: "local" } satisfies ProviderSettingsScope))
+  const scope = () => props.scope ?? ({ kind: "global" } satisfies ProviderSettingsScope)
   const canManage = () => {
     const current = scope()
     if (current.kind === "global") return (account.user()?.roles ?? []).includes("super_admin")
-    if (current.kind === "local") return true
     return false
   }
 
