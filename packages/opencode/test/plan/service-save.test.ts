@@ -8,6 +8,7 @@ import { TpProjectUserAccessTable } from "../../src/user/project-user-access.sql
 import type { MessageV2 } from "../../src/session/message-v2"
 
 const { PlanEvalService } = await import("../../src/plan/eval-service")
+const { TaskFeedbackService } = await import("../../src/plan/task-feedback")
 const calls: Parameters<typeof PlanEvalService.start>[0][] = []
 const { PlanService } = await import("../../src/plan/service")
 
@@ -123,10 +124,11 @@ async function seed() {
 }
 
 describe("plan service save", () => {
-  test("starts async eval after local save", async () => {
+  test("starts async eval and third-party sync after local save", async () => {
     const start = spyOn(PlanEvalService, "start").mockImplementation((input) => {
       calls.push(input)
     })
+    const sync = spyOn(TaskFeedbackService, "markAiPlanLater").mockResolvedValue({ ok: true })
     const seeded = await seed()
 
     const result = await PlanService.save({
@@ -153,6 +155,42 @@ describe("plan service save", () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]?.plan_id).toBe(result.id)
     expect(calls[0]?.vho_feedback_no).toBe("VHO-SAVE-1")
+    expect(sync).toHaveBeenCalledTimes(1)
+    expect(sync.mock.calls[0]?.[0]).toEqual({
+      vho_feedback_no: "VHO-SAVE-1",
+      plan_id: result.id,
+      session_id: seeded.session_id,
+      message_id: seeded.assistant_message_id,
+    })
+    sync.mockRestore()
+    start.mockRestore()
+  })
+
+  test("does not start third-party sync when feedback is blank", async () => {
+    const start = spyOn(PlanEvalService, "start").mockImplementation((input) => {
+      calls.push(input)
+    })
+    const sync = spyOn(TaskFeedbackService, "markAiPlanLater").mockResolvedValue({ ok: true })
+    const seeded = await seed()
+
+    const result = await PlanService.save({
+      session_id: seeded.session_id,
+      message_id: seeded.assistant_message_id,
+      part_id: seeded.assistant_part_id,
+      vho_feedback_no: "   ",
+      actor: {
+        id: "user_tp_admin",
+        username: "admin",
+        display_name: "admin",
+        account_type: "internal",
+        org_id: "org_tp_internal",
+      },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(sync).toHaveBeenCalledTimes(0)
+    sync.mockRestore()
     start.mockRestore()
   })
 

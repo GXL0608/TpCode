@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, spyOn, test } from "bun:test"
 import path from "path"
 import { Identifier } from "../../src/id/id"
 import { Session } from "../../src/session"
@@ -7,6 +7,7 @@ import { TpSavedPlanTable } from "../../src/plan/saved-plan.sql"
 import { TpAuditLogTable } from "../../src/user/audit-log.sql"
 import { Log } from "../../src/util/log"
 import { Flag } from "../../src/flag/flag"
+import { Instance } from "../../src/project/instance"
 
 const root = path.join(__dirname, "../..")
 Log.init({ print: false })
@@ -70,15 +71,37 @@ async function login(username: string, password: string) {
   const user = body.user
   expect(typeof token).toBe("string")
   expect(!!user).toBe(true)
-  return { token: token!, user: user! }
+  const projects = await req({
+    path: "/account/context/projects",
+    token: token!,
+  })
+  expect(projects.status).toBe(200)
+  const payload = (await projects.json()) as {
+    projects?: Array<{ id: string }>
+  }
+  const project = payload.projects?.[0]
+  if (!project?.id) return { token: token!, user: user! }
+  const selected = await req({
+    path: "/account/context/select",
+    method: "POST",
+    token: token!,
+    body: { project_id: project.id },
+  })
+  expect(selected.status).toBe(200)
+  const session = (await selected.json()) as { access_token?: string }
+  expect(typeof session.access_token).toBe("string")
+  return { token: session.access_token!, user: user! }
 }
 
 async function createSession(token: string) {
-  const response = await req({
-    path: `/session?directory=${encodeURIComponent(root)}`,
-    method: "POST",
-    token,
-    body: { title: uid("plan_session") },
+  const response = await Instance.provide({
+    directory: root,
+    fn: () => req({
+      path: `/session?directory=${encodeURIComponent(root)}`,
+      method: "POST",
+      token,
+      body: { title: uid("plan_session") },
+    }),
   })
   expect(response.status).toBe(200)
   const body = (await response.json()) as { id?: string }
@@ -90,41 +113,46 @@ async function createMessage(input: { sessionID: string; agent: string; text: st
   const messageID = Identifier.ascending("message")
   const partID = Identifier.ascending("part")
   const created = Date.now()
-  await Session.updateMessage({
-    id: messageID,
-    sessionID: input.sessionID,
-    role: "assistant",
-    time: {
-      created,
-      completed: created,
+  await Instance.provide({
+    directory: root,
+    fn: async () => {
+      await Session.updateMessage({
+        id: messageID,
+        sessionID: input.sessionID,
+        role: "assistant",
+        time: {
+          created,
+          completed: created,
+        },
+        parentID: Identifier.ascending("message"),
+        modelID: "gpt-4.1-mini",
+        providerID: "openai",
+        mode: "chat",
+        agent: input.agent,
+        path: {
+          cwd: root,
+          root,
+        },
+        cost: 0,
+        tokens: {
+          total: 0,
+          input: 0,
+          output: 0,
+          reasoning: 0,
+          cache: {
+            read: 0,
+            write: 0,
+          },
+        },
+      })
+      await Session.updatePart({
+        id: partID,
+        sessionID: input.sessionID,
+        messageID,
+        type: "text",
+        text: input.text,
+      })
     },
-    parentID: Identifier.ascending("message"),
-    modelID: "gpt-4.1-mini",
-    providerID: "openai",
-    mode: "chat",
-    agent: input.agent,
-    path: {
-      cwd: root,
-      root,
-    },
-    cost: 0,
-    tokens: {
-      total: 0,
-      input: 0,
-      output: 0,
-      reasoning: 0,
-      cache: {
-        read: 0,
-        write: 0,
-      },
-    },
-  })
-  await Session.updatePart({
-    id: partID,
-    sessionID: input.sessionID,
-    messageID,
-    type: "text",
-    text: input.text,
   })
   return {
     messageID,
@@ -252,6 +280,46 @@ describe("account plan save", () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]?.id).toBe(body.id!)
     expect(rows[0]?.vho_feedback_no).toBe("VHO-ERR-1")
+  })
+
+  test.skipIf(!on)("third-party sync failure does not block route success", async () => {
+    const { TaskFeedbackService } = await import("../../src/plan/task-feedback")
+    const sync = spyOn(TaskFeedbackService, "markAiPlanLater").mockResolvedValue({
+      ok: false,
+      code: "third_party_feedback_update_failed",
+      message: "更新失败",
+    })
+    const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
+    const sessionID = await createSession(admin.token)
+    const plan = await createMessage({
+      sessionID,
+      agent: "plan",
+      text: "# plan",
+    })
+
+    const response = await req({
+      path: "/account/plan/save",
+      method: "POST",
+      token: admin.token,
+      body: {
+        session_id: sessionID,
+        message_id: plan.messageID,
+        part_id: plan.partID,
+        vho_feedback_no: "FK20260310001",
+      },
+    })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { ok?: boolean; id?: string }
+    expect(body.ok).toBe(true)
+    expect(typeof body.id).toBe("string")
+    expect(sync).toHaveBeenCalledTimes(1)
+    expect(sync.mock.calls[0]?.[0]).toEqual({
+      vho_feedback_no: "FK20260310001",
+      plan_id: body.id!,
+      session_id: sessionID,
+      message_id: plan.messageID,
+    })
+    sync.mockRestore()
   })
 
   test.skipIf(!on)("saving same plan twice creates two rows", async () => {
