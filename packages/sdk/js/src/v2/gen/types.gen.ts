@@ -1700,6 +1700,16 @@ export type AccountPlanSaveFailure = {
   permission?: string
 }
 
+export type AccountPlanVhoSyncSuccess = {
+  ok: true
+  scanned: number
+  deduped: number
+  synced: number
+  failed: number
+  skipped: number
+  failed_feedback_ids: Array<string>
+}
+
 export type AccountPlanEvalRetrySuccess = {
   ok: true
   plan_id: string
@@ -2870,6 +2880,41 @@ export type AccountPlanSaveResponses = {
 }
 
 export type AccountPlanSaveResponse = AccountPlanSaveResponses[keyof AccountPlanSaveResponses]
+
+export type AccountPlanVhoSyncData = {
+  body?: never
+  path?: never
+  query: {
+    password: string
+  }
+  url: "/account/admin/plan/vho-sync"
+}
+
+export type AccountPlanVhoSyncErrors = {
+  /**
+   * Validation failed
+   */
+  400: {
+    error: string
+  }
+  /**
+   * Forbidden
+   */
+  403: {
+    error: string
+  }
+}
+
+export type AccountPlanVhoSyncError = AccountPlanVhoSyncErrors[keyof AccountPlanVhoSyncErrors]
+
+export type AccountPlanVhoSyncResponses = {
+  /**
+   * Sync finished
+   */
+  200: AccountPlanVhoSyncSuccess
+}
+
+export type AccountPlanVhoSyncResponse = AccountPlanVhoSyncResponses[keyof AccountPlanVhoSyncResponses]
 
 export type AccountPlanEvalRetryData = {
   body?: never

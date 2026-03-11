@@ -33,6 +33,8 @@ import type {
   AccountPlanEvalRetryResponses,
   AccountPlanSaveErrors,
   AccountPlanSaveResponses,
+  AccountPlanVhoSyncErrors,
+  AccountPlanVhoSyncResponses,
   AccountRegisterErrors,
   AccountRegisterResponses,
   AccountTokenRefreshErrors,
@@ -806,6 +808,25 @@ export class Plan extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Sync pending VHO feedback flags
+   *
+   * Sync all tp_saved_plan rows with pending vho feedback state to the third-party VHO service.
+   */
+  public vhoSync<ThrowOnError extends boolean = false>(
+    parameters: {
+      password: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "password" }] }])
+    return (options?.client ?? this.client).get<AccountPlanVhoSyncResponses, AccountPlanVhoSyncErrors, ThrowOnError>({
+      url: "/account/admin/plan/vho-sync",
+      ...options,
+      ...params,
     })
   }
 
