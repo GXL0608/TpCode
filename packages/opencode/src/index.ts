@@ -63,6 +63,7 @@ let cli = yargs(hideBin(process.argv))
     await Log.init({
       print: process.argv.includes("--print-logs"),
       dev: Installation.isLocal(),
+      defer: true,
       level: (() => {
         if (opts.logLevel) return opts.logLevel as Log.Level
         if (Installation.isLocal()) return "DEBUG"
@@ -82,6 +83,7 @@ let cli = yargs(hideBin(process.argv))
     if (command === "serve" || command === "web") applyServeDefaults()
 
     await Database.Client()
+    await Log.ready()
   })
   .usage("\n" + UI.logo())
   .completion("completion", "generate shell completion script")
@@ -166,6 +168,7 @@ try {
   }
   process.exitCode = 1
 } finally {
+  await Log.shutdown()
   // Some subprocesses don't react properly to SIGTERM and similar signals.
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.

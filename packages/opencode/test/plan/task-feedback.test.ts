@@ -1,9 +1,22 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { beforeEach, describe, expect, mock, test } from "bun:test"
 import z from "zod"
-import { Database, eq } from "../../src/storage/db"
-import { TpSavedPlanTable } from "../../src/plan/saved-plan.sql"
 
 const state = {
+  connect: [] as Record<string, unknown>[],
+  init: [] as Record<string, unknown>[],
+  run: [] as { cmd: string[]; env: Record<string, unknown> | undefined }[],
+  exec: [] as {
+    sql: string
+    binds: Record<string, unknown>
+    options: Record<string, unknown>
+  }[],
+  close: 0,
+  rows: 1,
+  error: undefined as Error | undefined,
+  connect_error: [] as Error[],
+  close_error: undefined as Error | undefined,
+  run_error: undefined as Error | undefined,
+  run_result: undefined as { code: number; stdout: string; stderr: string } | undefined,
   info: [] as { message: unknown; extra: Record<string, unknown> | undefined }[],
   warn: [] as { message: unknown; extra: Record<string, unknown> | undefined }[],
   fail: [] as { message: unknown; extra: Record<string, unknown> | undefined }[],
@@ -67,176 +80,196 @@ mock.module("../../src/util/log", () => ({
   },
 }))
 
+mock.module("../../src/util/process", () => ({
+  Process: {
+    run: async (cmd: string[], opts?: { env?: Record<string, unknown> }) => {
+      state.run.push({ cmd, env: opts?.env })
+      if (state.run_error) throw state.run_error
+      const result = state.run_result ?? { code: 0, stdout: "{\"ok\":true,\"rows\":1}", stderr: "" }
+      return {
+        code: result.code,
+        stdout: Buffer.from(result.stdout),
+        stderr: Buffer.from(result.stderr),
+      }
+    },
+  },
+}))
+
+mock.module("oracledb", () => ({
+  initOracleClient: (input?: Record<string, unknown>) => {
+    state.init.push(input ?? {})
+  },
+  getConnection: async (input: Record<string, unknown>) => {
+    state.connect.push(input)
+    const error = state.connect_error.shift()
+    if (error) throw error
+    return {
+      execute: async (sql: string, binds: Record<string, unknown>, options: Record<string, unknown>) => {
+        state.exec.push({ sql, binds, options })
+        if (state.error) throw state.error
+        return { rowsAffected: state.rows }
+      },
+      close: async () => {
+        state.close += 1
+        if (state.close_error) throw state.close_error
+      },
+    }
+  },
+}))
+
 const { TaskFeedbackService } = await import("../../src/plan/task-feedback")
 
-let server: ReturnType<typeof Bun.serve> | undefined
-let seen: Array<{ path: string; method: string; body: string; content_type: string | null }> = []
-const base = process.env["TPCODE_THIRD_API_BASE_URL"]
-const timeout = process.env["TPCODE_THIRD_API_TIMEOUT_MS"]
-
 beforeEach(() => {
-  seen = []
+  state.connect.length = 0
+  state.init.length = 0
+  state.run.length = 0
+  state.exec.length = 0
+  state.close = 0
+  state.rows = 1
+  state.error = undefined
+  state.connect_error.length = 0
+  state.close_error = undefined
+  state.run_error = new Error("spawn java ENOENT")
+  state.run_result = undefined
   state.info.length = 0
   state.warn.length = 0
   state.fail.length = 0
-  delete process.env["TPCODE_THIRD_API_BASE_URL"]
-  delete process.env["TPCODE_THIRD_API_TIMEOUT_MS"]
 })
-
-afterEach(() => {
-  server?.stop(true)
-  server = undefined
-  if (base === undefined) delete process.env["TPCODE_THIRD_API_BASE_URL"]
-  else process.env["TPCODE_THIRD_API_BASE_URL"] = base
-  if (timeout === undefined) delete process.env["TPCODE_THIRD_API_TIMEOUT_MS"]
-  else process.env["TPCODE_THIRD_API_TIMEOUT_MS"] = timeout
-})
-
-function listen(fetch: (req: Request) => Response | Promise<Response>) {
-  server = Bun.serve({
-    port: 0,
-    fetch(req) {
-      return fetch(req)
-    },
-  })
-  process.env["TPCODE_THIRD_API_BASE_URL"] = `${server.url.origin}/prod-api`
-}
-
-function input(vho_feedback_no: string) {
-  return {
-    vho_feedback_no,
-    plan_id: "plan_1",
-    session_id: "session_1",
-    message_id: "message_1",
-  }
-}
-
-async function save(input: { id?: string; feedback?: string; synced?: number }) {
-  const now = Date.now()
-  const id = input.id ?? `plan_${now}_${Math.random().toString(36).slice(2, 8)}`
-  await Database.use((db) =>
-    db.insert(TpSavedPlanTable)
-      .values({
-        id,
-        session_id: "session_1",
-        message_id: "message_1",
-        part_id: "part_1",
-        project_id: "global",
-        project_name: "global",
-        project_worktree: process.cwd(),
-        session_title: "title",
-        user_id: `task_feedback_${id}`,
-        username: "admin",
-        display_name: "admin",
-        account_type: "internal",
-        org_id: "org_tp_internal",
-        department_id: "",
-        agent: "plan",
-        provider_id: "openai",
-        model_id: "gpt-4.1-mini",
-        message_created_at: now,
-        plan_content: "# plan",
-        vho_feedback_no: input.feedback,
-        vho_synced: input.synced ?? 0,
-        time_created: now,
-        time_updated: now,
-      })
-      .run(),
-  )
-  return id
-}
 
 describe("plan.task-feedback", () => {
-  test("posts umUpdateHaveAiPlan with feedbackId json body", async () => {
-    const plan_id = await save({ feedback: "FK20260310001" })
-    listen(async (req) => {
-      seen.push({
-        path: new URL(req.url).pathname,
-        method: req.method,
-        body: await req.text(),
-        content_type: req.headers.get("content-type"),
-      })
-      return Response.json({ code: 200, message: "更新成功", content: null })
-    })
+  test("prefers bundled jdbc when available", async () => {
+    state.run_error = undefined
 
+    await expect(TaskFeedbackService.markAiPlan({
+      vho_feedback_no: "VHO-JDBC",
+      plan_id: "plan_0",
+      session_id: "session_0",
+      message_id: "message_0",
+    })).resolves.toEqual({ ok: true })
+
+    expect(state.run).toHaveLength(1)
+    expect(state.run[0].cmd.slice(-5)).toEqual(["123.57.5.73", "1521", "tphy", "120", "VHO-JDBC"])
+    expect(state.connect).toHaveLength(0)
+  })
+
+  test("executes update with where clause and closes connection", async () => {
     const result = await TaskFeedbackService.markAiPlan({
-      ...input("FK20260310001"),
-      plan_id,
+      vho_feedback_no: "  VHO-12345  ",
+      plan_id: "plan_1",
+      session_id: "session_1",
+      message_id: "message_1",
     })
 
     expect(result).toEqual({ ok: true })
-    expect(seen).toHaveLength(1)
-    expect(seen[0]?.path).toBe("/prod-api/feedbackTask/umUpdateHaveAiPlan")
-    expect(seen[0]?.method).toBe("POST")
-    expect(seen[0]?.body).toBe(JSON.stringify({ feedbackId: "FK20260310001" }))
-    expect(seen[0]?.content_type).toContain("application/json")
-    const row = await Database.use((db) =>
-      db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, plan_id)).get(),
+    expect(state.connect).toEqual([
+      {
+        user: "zhyy",
+        password: "BJtphy@2024!@#",
+        connectString:
+          "(DESCRIPTION=(CONNECT_TIMEOUT=120)(TRANSPORT_CONNECT_TIMEOUT=120)(ADDRESS=(PROTOCOL=TCP)(HOST=123.57.5.73)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=tphy)))",
+      },
+    ])
+    expect(state.exec).toHaveLength(1)
+    expect(state.exec[0].sql).toContain("UPDATE TASK_FEEDBACK")
+    expect(state.exec[0].sql).toContain("SET IS_AI_PLAN = :flag")
+    expect(state.exec[0].sql).toContain("WHERE TASK_FEEDBACK_ID = :id")
+    expect(state.exec[0].binds).toEqual({ flag: 1, id: "VHO-12345" })
+    expect(state.exec[0].options).toEqual({ autoCommit: true })
+    expect(state.close).toBe(1)
+    expect(state.info).toHaveLength(1)
+    expect(state.warn).toHaveLength(1)
+    expect(state.fail).toHaveLength(0)
+  })
+
+  test("warns when no feedback row matches", async () => {
+    state.rows = 0
+
+    const result = await TaskFeedbackService.markAiPlan({
+      vho_feedback_no: "VHO-404",
+      plan_id: "plan_2",
+      session_id: "session_2",
+      message_id: "message_2",
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      code: "oracle_feedback_missing",
+      message: "Oracle回写失败：未找到 TASK_FEEDBACK_ID=VHO-404 对应的数据",
+      rows_affected: 0,
+    })
+    expect(state.close).toBe(1)
+    expect(state.info).toHaveLength(0)
+    expect(state.warn).toHaveLength(2)
+    expect(state.fail).toHaveLength(0)
+    expect(state.warn[1].extra?.vho_feedback_no).toBe("VHO-404")
+  })
+
+  test("retries with sid when listener does not recognize service name", async () => {
+    state.connect_error.push(
+      new Error('NJS-518: cannot connect to Oracle Database. Service "zhyy" is not registered with the listener'),
     )
-    expect(row?.vho_synced).toBe(1)
+
+    await expect(TaskFeedbackService.markAiPlan({
+      vho_feedback_no: "VHO-SID",
+      plan_id: "plan_4",
+      session_id: "session_4",
+      message_id: "message_4",
+    })).resolves.toEqual({ ok: true })
+
+    expect(state.connect).toHaveLength(2)
+    expect(state.connect[0]).toEqual({
+      user: "zhyy",
+      password: "BJtphy@2024!@#",
+      connectString:
+        "(DESCRIPTION=(CONNECT_TIMEOUT=120)(TRANSPORT_CONNECT_TIMEOUT=120)(ADDRESS=(PROTOCOL=TCP)(HOST=123.57.5.73)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=tphy)))",
+    })
+    expect(state.connect[1]).toEqual({
+      user: "zhyy",
+      password: "BJtphy@2024!@#",
+      connectString:
+        "(DESCRIPTION=(CONNECT_TIMEOUT=120)(TRANSPORT_CONNECT_TIMEOUT=120)(ADDRESS=(PROTOCOL=TCP)(HOST=123.57.5.73)(PORT=1521))(CONNECT_DATA=(SID=tphy)))",
+    })
+    expect(state.exec).toHaveLength(1)
+    expect(state.fail).toHaveLength(0)
   })
 
-  test("blank feedback number skips upstream request", async () => {
-    listen(() => {
-      throw new Error("should_not_call")
-    })
+  test("returns thin mode hint when jdbc helper is unavailable", async () => {
+    state.connect_error.push(new Error("NJS-138: connections to this database server version are not supported by node-oracledb in Thin mode"))
 
-    const result = await TaskFeedbackService.markAiPlan(input("   "))
-
-    expect(result).toEqual({ ok: true })
-    expect(seen).toHaveLength(0)
-  })
-
-  test("already synced plan skips upstream request", async () => {
-    const plan_id = await save({ feedback: "FK_SYNCED", synced: 1 })
-    listen(() => {
-      throw new Error("should_not_call")
-    })
-
-    const result = await TaskFeedbackService.markAiPlan({
-      ...input("FK_SYNCED"),
-      plan_id,
-    })
-
-    expect(result).toEqual({ ok: true })
-    expect(seen).toHaveLength(0)
-  })
-
-  test("returns failure when upstream business code is not 200", async () => {
-    listen(() => Response.json({ code: 500, message: "更新失败", content: null }))
-
-    const result = await TaskFeedbackService.markAiPlan(input("FK20260310002"))
-
-    expect(result).toEqual({
+    await expect(TaskFeedbackService.markAiPlan({
+      vho_feedback_no: "VHO-THICK",
+      plan_id: "plan_5",
+      session_id: "session_5",
+      message_id: "message_5",
+    })).resolves.toEqual({
       ok: false,
-      code: "third_party_feedback_update_failed",
-      message: "更新失败",
+      code: "oracle_feedback_update_failed",
+      message:
+        "Oracle回写失败：spawn java ENOENT；Oracle回写失败：NJS-138: connections to this database server version are not supported by node-oracledb in Thin mode；当前数据库版本不支持 Thin 模式，请在服务端配置 ORACLE_CLIENT_LIB_DIR（Oracle Instant Client）后重试",
     })
+
+    expect(state.run).toHaveLength(1)
+    expect(state.connect).toHaveLength(1)
   })
 
-  test("returns failure when upstream response is not json", async () => {
-    listen(() => new Response("bad gateway", { status: 502 }))
+  test("returns failure when execute errors and still closes connection", async () => {
+    state.error = new Error("oracle_down")
 
-    const result = await TaskFeedbackService.markAiPlan(input("FK20260310003"))
-
-    expect(result).toEqual({
+    await expect(TaskFeedbackService.markAiPlan({
+      vho_feedback_no: "VHO-ERR",
+      plan_id: "plan_3",
+      session_id: "session_3",
+      message_id: "message_3",
+    })).resolves.toEqual({
       ok: false,
-      code: "third_party_feedback_update_failed",
-      message: "第三方接口响应不是合法 JSON",
+      code: "oracle_feedback_update_failed",
+      message: "Oracle回写失败：spawn java ENOENT；Oracle回写失败：oracle_down",
     })
-  })
 
-  test("returns failure when request errors", async () => {
-    process.env["TPCODE_THIRD_API_BASE_URL"] = "http://127.0.0.1:1/prod-api"
-    process.env["TPCODE_THIRD_API_TIMEOUT_MS"] = "50"
-
-    const result = await TaskFeedbackService.markAiPlan(input("FK20260310004"))
-
-    expect(result.ok).toBe(false)
-    if (result.ok) throw new Error("expected failure")
-    expect(result.code).toBe("third_party_feedback_update_failed")
-    expect(result.message).toContain("第三方接口请求失败")
+    expect(state.exec).toHaveLength(1)
+    expect(state.close).toBe(1)
     expect(state.fail).toHaveLength(1)
-    expect(state.fail[0]?.extra?.vho_feedback_no).toBe("FK20260310004")
+    expect(state.fail[0].message).toBe("oracle ai plan update failed")
+    expect(state.fail[0].extra?.vho_feedback_no).toBe("VHO-ERR")
   })
 })

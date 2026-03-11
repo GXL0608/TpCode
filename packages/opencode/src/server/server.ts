@@ -61,6 +61,7 @@ import { Filesystem } from "@/util/filesystem"
 import { Installation } from "@/installation"
 import { resolveWebGateway, webGatewayBootstrap } from "./web-gateway"
 import { AccountProviderState } from "@/provider/account-provider-state"
+import { randomUUID } from "crypto"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -293,6 +294,16 @@ export namespace Server {
           }),
         )
         .use((c, next) => {
+          const request_id = c.req.header("x-request-id") ?? randomUUID()
+          const started = Date.now()
+          c.set("request_id" as never, request_id)
+          c.set("request_started" as never, started)
+          c.header("x-request-id", request_id)
+          return Log.provide({ request_id }, async () => {
+            await next()
+          })
+        })
+        .use((c, next) => {
           if (c.req.method === "OPTIONS") return next()
           if (Flag.TPCODE_ACCOUNT_ENABLED) {
             const path = c.req.path
@@ -303,7 +314,6 @@ export namespace Server {
               "/account/password/forgot/request",
               "/account/password/forgot/reset",
               "/account/token/refresh",
-              "/account/admin/plan/vho-sync",
               "/global/health",
               "/global/ready",
             ]
@@ -672,6 +682,53 @@ export namespace Server {
               return next()
             },
           })
+        })
+        .use((c, next) => {
+          const user_id = Flag.TPCODE_ACCOUNT_ENABLED ? (c.get("account_user_id" as never) as string | undefined) : undefined
+          const project_id =
+            (Flag.TPCODE_ACCOUNT_ENABLED
+              ? (c.get("account_context_project_id" as never) as string | undefined)
+              : undefined) ??
+            (() => {
+              try {
+                return Instance.project.id
+              } catch {
+                return undefined
+              }
+            })()
+          const workspace_id = (() => {
+            try {
+              return Instance.worktree
+            } catch {
+              return undefined
+            }
+          })()
+          return Log.provide(
+            {
+              user_id,
+              project_id,
+              workspace_id,
+            },
+            async () => {
+              const service = Log.create({ service: "http" })
+              try {
+                await next()
+              } finally {
+                service.info("request", {
+                  event: c.req.header("accept")?.includes("text/event-stream") ? "http.stream.request" : "http.request",
+                  request_id: c.get("request_id" as never) as string | undefined,
+                  user_id,
+                  project_id,
+                  workspace_id,
+                  method: c.req.method,
+                  path: c.req.path,
+                  status_code: c.res.status,
+                  duration_ms: Date.now() - ((c.get("request_started" as never) as number | undefined) ?? Date.now()),
+                  status: c.res.status >= 500 ? "error" : "ok",
+                })
+              }
+            },
+          )
         })
         .get(
           "/doc",

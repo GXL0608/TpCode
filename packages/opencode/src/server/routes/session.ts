@@ -40,7 +40,7 @@ function requirePermission(c: Context, code: string) {
 async function requireSessionReadable(c: Context, next: () => Promise<void>) {
   const sessionID = c.req.param("sessionID")
   if (!sessionID) return next()
-  await Session.get(sessionID)
+  await Session.peek(sessionID)
   return next()
 }
 

@@ -44,6 +44,7 @@ export namespace LLM {
   export type StreamOutput = StreamTextResult<ToolSet, unknown>
 
   export async function stream(input: StreamInput) {
+    const started = Date.now()
     const l = log
       .clone()
       .tag("providerID", input.model.providerID)
@@ -169,7 +170,7 @@ export namespace LLM {
       })
     }
 
-    return streamText({
+    const result = streamText({
       onError(error) {
         l.error("stream error", {
           error,
@@ -253,6 +254,12 @@ export namespace LLM {
         },
       },
     })
+    l.info("stream created", {
+      event: "llm.stream.create",
+      duration_ms: Date.now() - started,
+      status: "ok",
+    })
+    return result
   }
 
   async function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "user">) {

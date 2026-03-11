@@ -1,9 +1,11 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Instance } from "@/project/instance"
+import { Log } from "@/util/log"
 import z from "zod"
 
 export namespace SessionStatus {
+  const log = Log.create({ service: "session.status" })
   export const Info = z
     .union([
       z.object({
@@ -59,6 +61,28 @@ export namespace SessionStatus {
   }
 
   export function set(sessionID: string, status: Info) {
+    const previous = state()[sessionID]
+    if (
+      previous?.type === status.type &&
+      (status.type !== "retry" ||
+        (previous.type === "retry" &&
+          previous.attempt === status.attempt &&
+          previous.message === status.message &&
+          previous.next === status.next))
+    ) {
+      if (status.type !== "idle") {
+        state()[sessionID] = status
+      }
+      return
+    }
+    log.info("change", {
+      event: "session.status.change",
+      session_id: sessionID,
+      state: status.type,
+      attempt: status.type === "retry" ? status.attempt : undefined,
+      retry_message: status.type === "retry" ? status.message : undefined,
+      next: status.type === "retry" ? status.next : undefined,
+    })
     Bus.publish(Event.Status, {
       sessionID,
       status,

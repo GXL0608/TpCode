@@ -65,6 +65,33 @@ export namespace SessionPrompt {
   const QUEUE_TIMEOUT_MS = Number(process.env.OPENCODE_SESSION_QUEUE_TIMEOUT_MS ?? "120000")
   const terminal = (finish?: string) => !!finish && finish !== "tool-calls"
 
+  async function event<T>(
+    name: string,
+    extra: Record<string, unknown>,
+    fn: () => Promise<T>,
+    done?: (result: T) => Record<string, unknown>,
+  ) {
+    const started = Date.now()
+    try {
+      const result = await fn()
+      log.info(name, {
+        ...extra,
+        ...done?.(result),
+        duration_ms: Date.now() - started,
+        status: "completed",
+      })
+      return result
+    } catch (error) {
+      log.error(name, {
+        ...extra,
+        duration_ms: Date.now() - started,
+        status: "error",
+        error,
+      })
+      throw error
+    }
+  }
+
   const QueueTimeoutError = NamedError.create(
     "SessionPromptQueueTimeoutError",
     z.object({
@@ -189,11 +216,20 @@ export namespace SessionPrompt {
   export type PromptInput = z.infer<typeof PromptInput>
 
   export const prompt = fn(PromptInput, async (input) => {
-    const session = await Session.get(input.sessionID)
+    const session = await Session.peek(input.sessionID)
     await SessionRevert.cleanup(session)
 
-    const message = await createUserMessage(input)
-    await Session.touch(input.sessionID)
+    const message = await event("prompt accept", {
+      event: "session.prompt.accept",
+      session_id: input.sessionID,
+    }, async () => {
+      const created = await createUserMessage(input)
+      await Session.touch(input.sessionID)
+      return created
+    }, (created) => ({
+      message_id: created.info.id,
+      user_part_count: created.parts.length,
+    }))
 
     // this is backwards compatibility for allowing `tools` to be specified when
     // prompting
@@ -322,14 +358,25 @@ export namespace SessionPrompt {
     return s[sessionID].abort.signal
   }
 
+  function finish(sessionID: string) {
+    const s = state()
+    if (!s[sessionID]) return
+    delete s[sessionID]
+    SessionStatus.set(sessionID, { type: "idle" })
+  }
+
   export function cancel(sessionID: string) {
-    log.info("cancel", { sessionID })
     const s = state()
     const match = s[sessionID]
     if (!match) {
-      SessionStatus.set(sessionID, { type: "idle" })
       return
     }
+    log.info("cancel", {
+      event: "session.prompt.cancel",
+      session_id: sessionID,
+      status: "cancelled",
+      state: "busy",
+    })
     match.abort.abort()
     queueReject(
       sessionID,
@@ -338,8 +385,7 @@ export namespace SessionPrompt {
         reason: "cancelled",
       }),
     )
-    delete s[sessionID]
-    SessionStatus.set(sessionID, { type: "idle" })
+    finish(sessionID)
     return
   }
 
@@ -352,37 +398,68 @@ export namespace SessionPrompt {
 
     const abort = resume_existing ? resume(sessionID) : start(sessionID)
     if (!abort) {
-      return new Promise<MessageV2.WithParts>((resolve, reject) => {
-        const match = state()[sessionID]
-        if (!match) {
-          reject(
-            new QueueCancelledError({
-              sessionID,
-              reason: "state_missing",
-            }),
-          )
-          return
-        }
-        const callback = {
-          done: false,
-          timer: setTimeout(() => {
-            if (!queueDone(callback)) return
-            queueRemove(sessionID, callback)
+      const started = Date.now()
+      try {
+        const result = await new Promise<MessageV2.WithParts>((resolve, reject) => {
+          const match = state()[sessionID]
+          if (!match) {
             reject(
-              new QueueTimeoutError({
+              new QueueCancelledError({
                 sessionID,
-                timeout_ms: QUEUE_TIMEOUT_MS,
+                reason: "state_missing",
               }),
             )
-          }, QUEUE_TIMEOUT_MS),
-          resolve,
-          reject,
+            return
+          }
+          const callback = {
+            done: false,
+            timer: setTimeout(() => {
+              if (!queueDone(callback)) return
+              queueRemove(sessionID, callback)
+              reject(
+                new QueueTimeoutError({
+                  sessionID,
+                  timeout_ms: QUEUE_TIMEOUT_MS,
+                }),
+              )
+            }, QUEUE_TIMEOUT_MS),
+            resolve,
+            reject,
+          }
+          match.callbacks.push(callback)
+        })
+        log.info("queue", {
+          event: "session.prompt.queue",
+          session_id: sessionID,
+          duration_ms: Date.now() - started,
+          status: "completed",
+          message_id: result.info.id,
+          resume_existing: !!resume_existing,
+          finish_reason: result.info.role === "assistant" ? result.info.finish : undefined,
+        })
+        return result
+      } catch (error) {
+        const status =
+          error instanceof QueueTimeoutError
+            ? "timeout"
+            : error instanceof QueueCancelledError
+              ? "cancelled"
+              : "error"
+        const extra = {
+          event: "session.prompt.queue",
+          session_id: sessionID,
+          duration_ms: Date.now() - started,
+          status,
+          resume_existing: !!resume_existing,
+          error,
         }
-        match.callbacks.push(callback)
-      })
+        if (status === "error") log.error("queue", extra)
+        else log.warn("queue", extra)
+        throw error
+      }
     }
 
-    using _ = defer(() => cancel(sessionID))
+    using _ = defer(() => finish(sessionID))
 
     // Structured output state
     // Note: On session resumption, state is reset but outputFormat is preserved
@@ -390,35 +467,43 @@ export namespace SessionPrompt {
     let structuredOutput: unknown | undefined
 
     let step = 0
-    const session = await Session.get(sessionID)
-    while (true) {
-      SessionStatus.set(sessionID, { type: "busy" })
-      log.info("loop", { step, sessionID })
-      if (abort.aborted) break
-      let msgs = await MessageV2.filterCompacted(MessageV2.stream(sessionID))
+    const session = await Session.peek(sessionID)
+    return await event("loop", { event: "session.prompt.loop", session_id: sessionID }, async () => {
+      while (true) {
+        SessionStatus.set(sessionID, { type: "busy" })
+        log.info("loop", { step, sessionID })
+        if (abort.aborted) break
+        let msgs = await event("history load", {
+          event: "session.history.load",
+          session_id: sessionID,
+          step,
+        }, async () => MessageV2.filterCompacted(MessageV2.stream(sessionID)), (items) => ({
+          message_count: items.length,
+          part_count: items.reduce((sum, item) => sum + item.parts.length, 0),
+        }))
 
-      let lastUser: MessageV2.User | undefined
-      let lastAssistant: MessageV2.Assistant | undefined
-      let lastFinished: MessageV2.Assistant | undefined
-      let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const msg = msgs[i]
-        if (!lastUser && msg.info.role === "user") lastUser = msg.info as MessageV2.User
-        if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info as MessageV2.Assistant
-        if (!lastFinished && msg.info.role === "assistant" && msg.info.finish)
-          lastFinished = msg.info as MessageV2.Assistant
-        if (lastUser && lastFinished) break
-        const task = msg.parts.filter((part) => part.type === "compaction" || part.type === "subtask")
-        if (task && !lastFinished) {
-          tasks.push(...task)
+        let lastUser: MessageV2.User | undefined
+        let lastAssistant: MessageV2.Assistant | undefined
+        let lastFinished: MessageV2.Assistant | undefined
+        let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const msg = msgs[i]
+          if (!lastUser && msg.info.role === "user") lastUser = msg.info as MessageV2.User
+          if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info as MessageV2.Assistant
+          if (!lastFinished && msg.info.role === "assistant" && msg.info.finish)
+            lastFinished = msg.info as MessageV2.Assistant
+          if (lastUser && lastFinished) break
+          const task = msg.parts.filter((part) => part.type === "compaction" || part.type === "subtask")
+          if (task && !lastFinished) {
+            tasks.push(...task)
+          }
         }
-      }
 
-      if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
-      if (lastAssistant && terminal(lastAssistant.finish) && lastUser.id < lastAssistant.id) {
-        log.info("exiting loop", { sessionID })
-        break
-      }
+        if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+        if (lastAssistant && terminal(lastAssistant.finish) && lastUser.id < lastAssistant.id) {
+          log.info("exiting loop", { sessionID })
+          break
+        }
 
       const runtimeUser: MessageV2.User = Flag.TPCODE_ACCOUNT_ENABLED
         ? {
@@ -705,15 +790,15 @@ export namespace SessionPrompt {
       const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
       const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
 
-      const tools = await resolveTools({
-        agent,
-        session,
-        model,
-        tools: runtimeUser.tools,
-        processor,
-        bypassAgentCheck,
-        messages: msgs,
-      })
+        const tools = await resolveTools({
+          agent,
+          session,
+          model,
+          tools: runtimeUser.tools,
+          processor,
+          bypassAgentCheck,
+          messages: msgs,
+        })
 
       // Inject StructuredOutput tool if JSON schema mode enabled
       if (runtimeUser.format?.type === "json_schema") {
@@ -765,27 +850,54 @@ export namespace SessionPrompt {
         system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
       }
 
-      const result = await processor.process({
-        user: runtimeUser,
-        agent,
-        abort,
-        sessionID,
-        system,
-        messages: [
-          ...MessageV2.toModelMessages(msgs, model),
-          ...(isLastStep
-            ? [
-                {
-                  role: "assistant" as const,
-                  content: MAX_STEPS,
-                },
-              ]
-            : []),
-        ],
-        tools,
-        model,
-        toolChoice: format.type === "json_schema" ? "required" : undefined,
-      })
+        const modelMessages = await event("model messages build", {
+          event: "session.model_messages.build",
+          session_id: sessionID,
+          step,
+          model_id: model.id,
+          provider_id: model.providerID,
+        }, async () => {
+          return [
+            ...MessageV2.toModelMessages(msgs, model),
+            ...(isLastStep
+              ? [
+                  {
+                    role: "assistant" as const,
+                    content: MAX_STEPS,
+                  },
+                ]
+              : []),
+          ]
+        }, (items) => ({
+          model_message_count: items.length,
+        }))
+
+        const result = await event("step", {
+          event: "session.prompt.step",
+          session_id: sessionID,
+          message_id: processor.message.id,
+          step,
+          model_id: model.id,
+          provider_id: model.providerID,
+          agent: agent.name,
+        }, async () => {
+          return processor.process({
+            user: runtimeUser,
+            agent,
+            abort,
+            sessionID,
+            system,
+            messages: modelMessages,
+            tools,
+            model,
+            toolChoice: format.type === "json_schema" ? "required" : undefined,
+          })
+        }, (value) => ({
+          result: value,
+          finish_reason: processor.message.finish,
+          has_error: !!processor.message.error,
+          error_name: processor.message.error?.name,
+        }))
 
       // If structured output was captured, save it and exit immediately
       // This takes priority because the StructuredOutput tool was called successfully
@@ -820,20 +932,27 @@ export namespace SessionPrompt {
           auto: true,
         })
       }
-      continue
-    }
-    try {
-      SessionCompaction.prune({ sessionID })
-      for await (const item of MessageV2.stream(sessionID)) {
-        if (item.info.role === "user") continue
-        queueResolve(sessionID, item)
-        return item
+        continue
       }
-      throw new Error("Impossible")
-    } catch (error) {
-      queueReject(sessionID, error)
-      throw error
-    }
+      try {
+        SessionCompaction.prune({ sessionID })
+        for await (const item of MessageV2.stream(sessionID)) {
+          if (item.info.role === "user") continue
+          queueResolve(sessionID, item)
+          return item
+        }
+        throw new Error("Impossible")
+      } catch (error) {
+        queueReject(sessionID, error)
+        throw error
+      }
+    }, (item) => ({
+      message_id: item.info.id,
+      assistant_part_count: item.parts.length,
+      finish_reason: item.info.role === "assistant" ? item.info.finish : undefined,
+      has_error: item.info.role === "assistant" ? !!item.info.error : false,
+      error_name: item.info.role === "assistant" ? item.info.error?.name : undefined,
+    }))
   })
 
   async function lastModel(sessionID: string) {
@@ -854,185 +973,193 @@ export namespace SessionPrompt {
     bypassAgentCheck: boolean
     messages: MessageV2.WithParts[]
   }) {
-    using _ = log.time("resolveTools")
-    const tools: Record<string, AITool> = {}
-
-    const context = (args: any, options: ToolCallOptions): Tool.Context => ({
-      sessionID: input.session.id,
-      abort: options.abortSignal!,
-      messageID: input.processor.message.id,
-      callID: options.toolCallId,
-      extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck },
+    return event("resolveTools", {
+      event: "tool.resolve",
+      session_id: input.session.id,
+      model_id: input.model.id,
+      provider_id: input.model.providerID,
       agent: input.agent.name,
-      messages: input.messages,
-      metadata: async (val: { title?: string; metadata?: any }) => {
-        const match = input.processor.partFromToolCall(options.toolCallId)
-        if (match && match.state.status === "running") {
-          await Session.updatePart({
-            ...match,
-            state: {
-              title: val.title,
-              metadata: val.metadata,
-              status: "running",
-              input: args,
-              time: {
-                start: Date.now(),
-              },
-            },
-          })
-        }
-      },
-      async ask(req) {
-        await PermissionNext.ask({
-          ...req,
-          sessionID: input.session.id,
-          tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: PermissionNext.merge(input.agent.permission, input.session.permission ?? []),
-        })
-      },
-    })
+    }, async () => {
+      const tools: Record<string, AITool> = {}
 
-    for (const item of await ToolRegistry.tools(
-      { modelID: input.model.api.id, providerID: input.model.providerID },
-      input.agent,
-    )) {
-      const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
-      tools[item.id] = tool({
-        id: item.id as any,
-        description: item.description,
-        inputSchema: jsonSchema(schema as any),
-        async execute(args, options) {
-          const ctx = context(args, options)
+      const context = (args: any, options: ToolCallOptions): Tool.Context => ({
+        sessionID: input.session.id,
+        abort: options.abortSignal!,
+        messageID: input.processor.message.id,
+        callID: options.toolCallId,
+        extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck },
+        agent: input.agent.name,
+        messages: input.messages,
+        metadata: async (val: { title?: string; metadata?: any }) => {
+          const match = input.processor.partFromToolCall(options.toolCallId)
+          if (match && match.state.status === "running") {
+            await Session.updatePart({
+              ...match,
+              state: {
+                title: val.title,
+                metadata: val.metadata,
+                status: "running",
+                input: args,
+                time: {
+                  start: Date.now(),
+                },
+              },
+            })
+          }
+        },
+        async ask(req) {
+          await PermissionNext.ask({
+            ...req,
+            sessionID: input.session.id,
+            tool: { messageID: input.processor.message.id, callID: options.toolCallId },
+            ruleset: PermissionNext.merge(input.agent.permission, input.session.permission ?? []),
+          })
+        },
+      })
+
+      for (const item of await ToolRegistry.tools(
+        { modelID: input.model.api.id, providerID: input.model.providerID },
+        input.agent,
+      )) {
+        const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
+        tools[item.id] = tool({
+          id: item.id as any,
+          description: item.description,
+          inputSchema: jsonSchema(schema as any),
+          async execute(args, options) {
+            const ctx = context(args, options)
+            await Plugin.trigger(
+              "tool.execute.before",
+              {
+                tool: item.id,
+                sessionID: ctx.sessionID,
+                callID: ctx.callID,
+              },
+              {
+                args,
+              },
+            )
+            const result = await item.execute(args, ctx)
+            const output = {
+              ...result,
+              attachments: result.attachments?.map((attachment) => ({
+                ...attachment,
+                id: Identifier.ascending("part"),
+                sessionID: ctx.sessionID,
+                messageID: input.processor.message.id,
+              })),
+            }
+            await Plugin.trigger(
+              "tool.execute.after",
+              {
+                tool: item.id,
+                sessionID: ctx.sessionID,
+                callID: ctx.callID,
+                args,
+              },
+              output,
+            )
+            return output
+          },
+        })
+      }
+
+      for (const [key, item] of Object.entries(await MCP.tools())) {
+        const execute = item.execute
+        if (!execute) continue
+
+        const transformed = ProviderTransform.schema(input.model, asSchema(item.inputSchema).jsonSchema)
+        item.inputSchema = jsonSchema(transformed)
+        // Wrap execute to add plugin hooks and format output
+        item.execute = async (args, opts) => {
+          const ctx = context(args, opts)
+
           await Plugin.trigger(
             "tool.execute.before",
             {
-              tool: item.id,
+              tool: key,
               sessionID: ctx.sessionID,
-              callID: ctx.callID,
+              callID: opts.toolCallId,
             },
             {
               args,
             },
           )
-          const result = await item.execute(args, ctx)
-          const output = {
-            ...result,
-            attachments: result.attachments?.map((attachment) => ({
+
+          await ctx.ask({
+            permission: key,
+            metadata: {},
+            patterns: ["*"],
+            always: ["*"],
+          })
+
+          const result = await execute(args, opts)
+
+          await Plugin.trigger(
+            "tool.execute.after",
+            {
+              tool: key,
+              sessionID: ctx.sessionID,
+              callID: opts.toolCallId,
+              args,
+            },
+            result,
+          )
+
+          const textParts: string[] = []
+          const attachments: Omit<MessageV2.FilePart, "id" | "sessionID" | "messageID">[] = []
+
+          for (const contentItem of result.content) {
+            if (contentItem.type === "text") {
+              textParts.push(contentItem.text)
+            } else if (contentItem.type === "image") {
+              attachments.push({
+                type: "file",
+                mime: contentItem.mimeType,
+                url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
+              })
+            } else if (contentItem.type === "resource") {
+              const { resource } = contentItem
+              if (resource.text) {
+                textParts.push(resource.text)
+              }
+              if (resource.blob) {
+                attachments.push({
+                  type: "file",
+                  mime: resource.mimeType ?? "application/octet-stream",
+                  url: `data:${resource.mimeType ?? "application/octet-stream"};base64,${resource.blob}`,
+                  filename: resource.uri,
+                })
+              }
+            }
+          }
+
+          const truncated = await Truncate.output(textParts.join("\n\n"), {}, input.agent)
+          const metadata = {
+            ...(result.metadata ?? {}),
+            truncated: truncated.truncated,
+            ...(truncated.truncated && { outputPath: truncated.outputPath }),
+          }
+
+          return {
+            title: "",
+            metadata,
+            output: truncated.content,
+            attachments: attachments.map((attachment) => ({
               ...attachment,
               id: Identifier.ascending("part"),
               sessionID: ctx.sessionID,
               messageID: input.processor.message.id,
             })),
-          }
-          await Plugin.trigger(
-            "tool.execute.after",
-            {
-              tool: item.id,
-              sessionID: ctx.sessionID,
-              callID: ctx.callID,
-              args,
-            },
-            output,
-          )
-          return output
-        },
-      })
-    }
-
-    for (const [key, item] of Object.entries(await MCP.tools())) {
-      const execute = item.execute
-      if (!execute) continue
-
-      const transformed = ProviderTransform.schema(input.model, asSchema(item.inputSchema).jsonSchema)
-      item.inputSchema = jsonSchema(transformed)
-      // Wrap execute to add plugin hooks and format output
-      item.execute = async (args, opts) => {
-        const ctx = context(args, opts)
-
-        await Plugin.trigger(
-          "tool.execute.before",
-          {
-            tool: key,
-            sessionID: ctx.sessionID,
-            callID: opts.toolCallId,
-          },
-          {
-            args,
-          },
-        )
-
-        await ctx.ask({
-          permission: key,
-          metadata: {},
-          patterns: ["*"],
-          always: ["*"],
-        })
-
-        const result = await execute(args, opts)
-
-        await Plugin.trigger(
-          "tool.execute.after",
-          {
-            tool: key,
-            sessionID: ctx.sessionID,
-            callID: opts.toolCallId,
-            args,
-          },
-          result,
-        )
-
-        const textParts: string[] = []
-        const attachments: Omit<MessageV2.FilePart, "id" | "sessionID" | "messageID">[] = []
-
-        for (const contentItem of result.content) {
-          if (contentItem.type === "text") {
-            textParts.push(contentItem.text)
-          } else if (contentItem.type === "image") {
-            attachments.push({
-              type: "file",
-              mime: contentItem.mimeType,
-              url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
-            })
-          } else if (contentItem.type === "resource") {
-            const { resource } = contentItem
-            if (resource.text) {
-              textParts.push(resource.text)
-            }
-            if (resource.blob) {
-              attachments.push({
-                type: "file",
-                mime: resource.mimeType ?? "application/octet-stream",
-                url: `data:${resource.mimeType ?? "application/octet-stream"};base64,${resource.blob}`,
-                filename: resource.uri,
-              })
-            }
+            content: result.content, // directly return content to preserve ordering when outputting to model
           }
         }
-
-        const truncated = await Truncate.output(textParts.join("\n\n"), {}, input.agent)
-        const metadata = {
-          ...(result.metadata ?? {}),
-          truncated: truncated.truncated,
-          ...(truncated.truncated && { outputPath: truncated.outputPath }),
-        }
-
-        return {
-          title: "",
-          metadata,
-          output: truncated.content,
-          attachments: attachments.map((attachment) => ({
-            ...attachment,
-            id: Identifier.ascending("part"),
-            sessionID: ctx.sessionID,
-            messageID: input.processor.message.id,
-          })),
-          content: result.content, // directly return content to preserve ordering when outputting to model
-        }
+        tools[key] = item
       }
-      tools[key] = item
-    }
-
-    return tools
+      return tools
+    }, (tools) => ({
+      tool_count: Object.keys(tools).length,
+    }))
   }
 
   /** @internal Exported for testing */

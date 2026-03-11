@@ -517,11 +517,25 @@ export namespace Session {
     return path.join(base, [input.time.created, input.slug].join("-") + ".md")
   }
 
-  export const get = fn(Identifier.schema("session"), async (id) => {
+  async function read(id: string) {
     const row = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
     if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
     if (!canRead(row)) throw new NotFoundError({ message: `Session not found: ${id}` })
     return fromRow(row)
+  }
+
+  export const peek = fn(Identifier.schema("session"), async (id) => read(id))
+
+  export const get = fn(Identifier.schema("session"), async (id) => {
+    const started = Date.now()
+    const info = await read(id)
+    log.info("get", {
+      event: "session.get",
+      session_id: id,
+      project_id: info.projectID,
+      duration_ms: Date.now() - started,
+    })
+    return info
   })
 
   export const share = fn(Identifier.schema("session"), async (id) => {
@@ -722,13 +736,24 @@ export namespace Session {
       limit: z.number().optional(),
     }),
     async (input) => {
-      await get(input.sessionID)
+      const started = Date.now()
+      await read(input.sessionID)
       const result = [] as MessageV2.WithParts[]
+      let parts = 0
       for await (const msg of MessageV2.stream(input.sessionID)) {
         if (input.limit && result.length >= input.limit) break
+        parts += msg.parts.length
         result.push(msg)
       }
       result.reverse()
+      log.info("messages", {
+        event: "session.messages",
+        session_id: input.sessionID,
+        duration_ms: Date.now() - started,
+        message_count: result.length,
+        part_count: parts,
+        limit: input.limit,
+      })
       return result
     },
   )

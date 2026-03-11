@@ -3,8 +3,11 @@ import { Bus } from "@/bus"
 import z from "zod"
 import { Database, eq, asc } from "../storage/db"
 import { TodoTable } from "./session.sql"
+import { Log } from "../util/log"
 
 export namespace Todo {
+  const log = Log.create({ service: "session.todo" })
+
   export const Info = z
     .object({
       content: z.string().describe("Brief description of the task"),
@@ -44,13 +47,21 @@ export namespace Todo {
   }
 
   export async function get(sessionID: string) {
+    const started = Date.now()
     const rows = await Database.use((db) =>
       db.select().from(TodoTable).where(eq(TodoTable.session_id, sessionID)).orderBy(asc(TodoTable.position)).all(),
     )
-    return rows.map((row) => ({
+    const result = rows.map((row) => ({
       content: row.content,
       status: row.status,
       priority: row.priority,
     }))
+    log.info("get", {
+      event: "session.todo.get",
+      session_id: sessionID,
+      duration_ms: Date.now() - started,
+      todo_count: result.length,
+    })
+    return result
   }
 }

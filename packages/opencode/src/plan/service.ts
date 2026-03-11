@@ -7,7 +7,6 @@ import { TpSavedPlanTable } from "./saved-plan.sql"
 import { PlanEvalService } from "./eval-service"
 import { SessionTable } from "@/session/session.sql"
 import { AccountContextService } from "@/user/context"
-import { TaskFeedbackService } from "./task-feedback"
 
 type Actor = {
   id: string
@@ -114,20 +113,12 @@ export namespace PlanService {
           message_created_at: info.time.created,
           plan_content: selected.part.text,
           vho_feedback_no: vho_feedback_no ? vho_feedback_no : undefined,
-          vho_synced: 0,
           time_created: now,
           time_updated: now,
         })
         .run()
     })
-    if (vho_feedback_no) {
-      void TaskFeedbackService.markAiPlanLater({
-        vho_feedback_no,
-        plan_id: id,
-        session_id: input.session_id,
-        message_id: input.message_id,
-      })
-    }
+    // VHO 回写暂时停用，保存计划仅落本地 tp_saved_plan。
     PlanEvalService.start({
       plan_id: id,
       session_id: input.session_id,

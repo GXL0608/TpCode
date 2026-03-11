@@ -10,15 +10,20 @@ import { GlobalBus } from "@/bus/global"
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2"
 import type { BunWebSocketData } from "hono/bun"
 import { Flag } from "@/flag/flag"
+import { Database } from "@/storage/db"
 
 await Log.init({
   print: process.argv.includes("--print-logs"),
   dev: Installation.isLocal(),
+  defer: true,
   level: (() => {
     if (Installation.isLocal()) return "DEBUG"
     return "INFO"
   })(),
 })
+
+await Database.Client()
+await Log.ready()
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -158,6 +163,7 @@ export const rpc = {
       }),
     ])
     if (server) server.stop(true)
+    await Log.shutdown()
   },
 }
 

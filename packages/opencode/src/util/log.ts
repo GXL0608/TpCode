@@ -1,166 +1,123 @@
-import path from "path"
-import fs from "fs/promises"
-import { createWriteStream } from "fs"
-import { Global } from "../global"
 import z from "zod"
-import { Glob } from "./glob"
+import { Observe } from "../observability"
+import { ObserveContext } from "../observability/context"
+import { build, levels } from "../observability/schema"
+
+type Fields = Record<string, unknown>
+
+function format(error: Error, depth = 0): string {
+  const result = error.message
+  return error.cause instanceof Error && depth < 10 ? result + " Caused by: " + format(error.cause, depth + 1) : result
+}
+
+function text(message: unknown) {
+  if (message instanceof Error) return format(message)
+  return message
+}
 
 export namespace Log {
-  export const Level = z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).meta({ ref: "LogLevel", description: "Log level" })
+  export const Level = z.enum(levels).meta({ ref: "LogLevel", description: "Log level" })
   export type Level = z.infer<typeof Level>
 
-  const levelPriority: Record<Level, number> = {
-    DEBUG: 0,
-    INFO: 1,
-    WARN: 2,
-    ERROR: 3,
-  }
-
-  let level: Level = "INFO"
-
-  function shouldLog(input: Level): boolean {
-    return levelPriority[input] >= levelPriority[level]
-  }
-
   export type Logger = {
-    debug(message?: any, extra?: Record<string, any>): void
-    info(message?: any, extra?: Record<string, any>): void
-    error(message?: any, extra?: Record<string, any>): void
-    warn(message?: any, extra?: Record<string, any>): void
+    debug(message?: unknown, extra?: Fields): void
+    info(message?: unknown, extra?: Fields): void
+    error(message?: unknown, extra?: Fields): void
+    warn(message?: unknown, extra?: Fields): void
     tag(key: string, value: string): Logger
     clone(): Logger
     time(
       message: string,
-      extra?: Record<string, any>,
+      extra?: Fields,
     ): {
       stop(): void
       [Symbol.dispose](): void
     }
   }
 
-  const loggers = new Map<string, Logger>()
-
-  export const Default = create({ service: "default" })
-
   export interface Options {
     print: boolean
     dev?: boolean
     level?: Level
+    defer?: boolean
   }
 
-  let logpath = ""
+  const loggers = new Map<string, Logger>()
+
+  export const Default = create({ service: "default" })
+
   export function file() {
-    return logpath
-  }
-  let write = (msg: any) => {
-    process.stderr.write(msg)
-    return msg.length
+    return Observe.file()
   }
 
   export async function init(options: Options) {
-    if (options.level) level = options.level
-    cleanup(Global.Path.log)
-    if (options.print) return
-    logpath = path.join(
-      Global.Path.log,
-      options.dev ? "dev.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".log",
-    )
-    await fs.truncate(logpath).catch(() => {})
-    const stream = createWriteStream(logpath, { flags: "a" })
-    write = async (msg: any) => {
-      return new Promise((resolve, reject) => {
-        stream.write(msg, (err) => {
-          if (err) reject(err)
-          else resolve(msg.length)
-        })
-      })
-    }
-  }
-
-  async function cleanup(dir: string) {
-    const files = await Glob.scan("????-??-??T??????.log", {
-      cwd: dir,
-      absolute: true,
-      include: "file",
+    await Observe.init({
+      print: options.print,
+      dev: options.dev,
+      level: options.level ?? "INFO",
+      defer: options.defer,
     })
-    if (files.length <= 5) return
-
-    const filesToDelete = files.slice(0, -10)
-    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
   }
 
-  function formatError(error: Error, depth = 0): string {
-    const result = error.message
-    return error.cause instanceof Error && depth < 10
-      ? result + " Caused by: " + formatError(error.cause, depth + 1)
-      : result
+  export async function ready() {
+    await Observe.ready()
   }
 
-  let last = Date.now()
-  export function create(tags?: Record<string, any>) {
-    tags = tags || {}
+  export async function shutdown() {
+    await Observe.stop()
+  }
 
-    const service = tags["service"]
-    if (service && typeof service === "string") {
+  export function provide<T>(value: Fields, fn: () => T) {
+    return ObserveContext.provide(value, fn)
+  }
+
+  export function create(input?: Fields) {
+    const tags = input ? { ...input } : {}
+    const service = typeof tags["service"] === "string" ? tags["service"] : undefined
+    if (service && Object.keys(tags).length === 1) {
       const cached = loggers.get(service)
-      if (cached) {
-        return cached
-      }
+      if (cached) return cached
     }
 
-    function build(message: any, extra?: Record<string, any>) {
-      const prefix = Object.entries({
-        ...tags,
-        ...extra,
-      })
-        .filter(([_, value]) => value !== undefined && value !== null)
-        .map(([key, value]) => {
-          const prefix = `${key}=`
-          if (value instanceof Error) return prefix + formatError(value)
-          if (typeof value === "object") return prefix + JSON.stringify(value)
-          return prefix + value
-        })
-        .join(" ")
-      const next = new Date()
-      const diff = next.getTime() - last
-      last = next.getTime()
-      return [next.toISOString().split(".")[0], "+" + diff + "ms", prefix, message].filter(Boolean).join(" ") + "\n"
+    function write(level: Level, message?: unknown, extra?: Fields) {
+      Observe.emit(
+        build({
+          level,
+          message: text(message),
+          tags,
+          extra,
+          context: Observe.context(),
+        }),
+      )
     }
+
     const result: Logger = {
-      debug(message?: any, extra?: Record<string, any>) {
-        if (shouldLog("DEBUG")) {
-          write("DEBUG " + build(message, extra))
-        }
+      debug(message, extra) {
+        write("DEBUG", message, extra)
       },
-      info(message?: any, extra?: Record<string, any>) {
-        if (shouldLog("INFO")) {
-          write("INFO  " + build(message, extra))
-        }
+      info(message, extra) {
+        write("INFO", message, extra)
       },
-      error(message?: any, extra?: Record<string, any>) {
-        if (shouldLog("ERROR")) {
-          write("ERROR " + build(message, extra))
-        }
+      error(message, extra) {
+        write("ERROR", message, extra)
       },
-      warn(message?: any, extra?: Record<string, any>) {
-        if (shouldLog("WARN")) {
-          write("WARN  " + build(message, extra))
-        }
+      warn(message, extra) {
+        write("WARN", message, extra)
       },
-      tag(key: string, value: string) {
-        if (tags) tags[key] = value
+      tag(key, value) {
+        tags[key] = value
         return result
       },
       clone() {
         return Log.create({ ...tags })
       },
-      time(message: string, extra?: Record<string, any>) {
+      time(message: string, extra?: Fields) {
         const now = Date.now()
         result.info(message, { status: "started", ...extra })
         function stop() {
           result.info(message, {
             status: "completed",
-            duration: Date.now() - now,
+            duration_ms: Date.now() - now,
             ...extra,
           })
         }
@@ -173,7 +130,7 @@ export namespace Log {
       },
     }
 
-    if (service && typeof service === "string") {
+    if (service && Object.keys(tags).length === 1) {
       loggers.set(service, result)
     }
 

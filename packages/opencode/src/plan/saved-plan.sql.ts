@@ -24,9 +24,6 @@ export const TpSavedPlanTable = table(
     message_created_at: integer().notNull(),
     plan_content: text().notNull(),
     vho_feedback_no: text(),
-    vho_synced: integer()
-      .notNull()
-      .$default(() => 0),
     ...Timestamps,
   },
   (table) => [

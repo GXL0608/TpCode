@@ -50,16 +50,39 @@ export namespace SessionProcessor {
           try {
             let currentText: MessageV2.TextPart | undefined
             let reasoningMap: Record<string, MessageV2.ReasoningPart> = {}
+            const timing = Log.create({ service: "llm" })
+              .tag("providerID", streamInput.model.providerID)
+              .tag("modelID", streamInput.model.id)
+              .tag("sessionID", input.sessionID)
+              .tag("agent", streamInput.agent.name)
+            const started = Date.now()
+            let first_event = false
+            let first_reasoning = false
+            let first_text = false
             const stream = await LLM.stream(streamInput)
 
             for await (const value of stream.fullStream) {
               input.abort.throwIfAborted()
+              if (!first_event) {
+                first_event = true
+                timing.info("first event", {
+                  event: "llm.first_event",
+                  duration_ms: Date.now() - started,
+                })
+              }
               switch (value.type) {
                 case "start":
                   SessionStatus.set(input.sessionID, { type: "busy" })
                   break
 
                 case "reasoning-start":
+                  if (!first_reasoning) {
+                    first_reasoning = true
+                    timing.info("first reasoning", {
+                      event: "llm.first_reasoning",
+                      duration_ms: Date.now() - started,
+                    })
+                  }
                   if (value.id in reasoningMap) {
                     continue
                   }
@@ -285,6 +308,13 @@ export namespace SessionProcessor {
                   break
 
                 case "text-start":
+                  if (!first_text) {
+                    first_text = true
+                    timing.info("first text", {
+                      event: "llm.first_text",
+                      duration_ms: Date.now() - started,
+                    })
+                  }
                   currentText = {
                     id: Identifier.ascending("part"),
                     messageID: input.assistantMessage.id,
@@ -300,6 +330,13 @@ export namespace SessionProcessor {
                   break
 
                 case "text-delta":
+                  if (!first_text) {
+                    first_text = true
+                    timing.info("first text", {
+                      event: "llm.first_text",
+                      duration_ms: Date.now() - started,
+                    })
+                  }
                   if (currentText) {
                     currentText.text += value.text
                     if (value.providerMetadata) currentText.metadata = value.providerMetadata
@@ -337,6 +374,10 @@ export namespace SessionProcessor {
                   break
 
                 case "finish":
+                  timing.info("complete", {
+                    event: "llm.complete",
+                    duration_ms: Date.now() - started,
+                  })
                   break
 
                 default:
