@@ -132,6 +132,18 @@ export interface CommonResponse {
   }
 }
 
+export interface CommonErrorResponse {
+  type: "error"
+  error: {
+    type: string
+    message: string
+  }
+}
+
+function isErrorResponse(resp: CommonResponse | CommonErrorResponse): resp is CommonErrorResponse {
+  return (resp as CommonErrorResponse).type === "error"
+}
+
 export interface CommonChunk {
   id: string
   object: "chat.completion.chunk"
@@ -199,13 +211,15 @@ export function createResponseConverter(from: ZenData.Format, to: ZenData.Format
   return (response: any): any => {
     if (from === to) return response
 
-    let raw: CommonResponse
+    let raw: CommonResponse | CommonErrorResponse
     if (from === "anthropic") raw = fromAnthropicResponse(response)
     else if (from === "openai") raw = fromOpenaiResponse(response)
     else raw = fromOaCompatibleResponse(response)
 
+    if (isErrorResponse(raw)) return raw
     if (to === "anthropic") return toAnthropicResponse(raw)
     if (to === "openai") return toOpenaiResponse(raw)
     if (to === "oa-compat") return toOaCompatibleResponse(raw)
+    return raw
   }
 }

@@ -28,7 +28,7 @@ import { createBodyConverter, createStreamPartConverter, createResponseConverter
 import { anthropicHelper } from "./provider/anthropic"
 import { googleHelper } from "./provider/google"
 import { openaiHelper } from "./provider/openai"
-import { oaCompatHelper } from "./provider/openai-compatible"
+import { normalizeOaCompatibleError, oaCompatHelper } from "./provider/openai-compatible"
 import { createRateLimiter } from "./rateLimiter"
 import { createDataDumper } from "./dataDumper"
 import { createTrialLimiter } from "./trialLimiter"
@@ -52,6 +52,25 @@ function resolve(text: string, params?: Record<string, string | number>) {
     if (value === undefined || value === null) return raw
     return String(value)
   })
+}
+
+export function isUpstreamErrorResponse(body: unknown): body is {
+  type: "error"
+  error: {
+    type: string
+    message: string
+  }
+} {
+  if (!body || typeof body !== "object") return false
+  if ((body as { type?: string }).type !== "error") return false
+  if (!(body as { error?: unknown }).error || typeof (body as { error: unknown }).error !== "object") return false
+  const error = (body as { error: { message?: unknown; type?: unknown } }).error
+  return typeof error.message === "string" && typeof error.type === "string"
+}
+
+export function getUpstreamErrorStatus(status: number, body: unknown) {
+  if (!isUpstreamErrorResponse(body)) return status
+  return status === 200 ? 502 : status
 }
 
 export async function handler(
@@ -209,6 +228,26 @@ export async function handler(
     // Handle non-streaming response
     if (!isStream) {
       const json = await res.json()
+      const upstream = providerInfo.format === "oa-compat" ? normalizeOaCompatibleError(json) : undefined
+      const normalized = upstream ?? json
+      const responseConverter = createResponseConverter(providerInfo.format, opts.format)
+      const converted = responseConverter(normalized)
+
+      if (isUpstreamErrorResponse(converted)) {
+        logger.metric({
+          "llm.error.type": converted.error.type,
+          "llm.error.message": converted.error.message,
+        })
+        const body = JSON.stringify(converted)
+        dataDumper?.provideResponse(body)
+        dataDumper?.flush()
+        return new Response(body, {
+          status: getUpstreamErrorStatus(res.status, converted),
+          statusText: res.statusText,
+          headers: resHeaders,
+        })
+      }
+
       const usageInfo = providerInfo.normalizeUsage(json.usage)
       const costInfo = calculateCost(modelInfo, usageInfo)
       await trialLimiter?.track(usageInfo)
@@ -216,13 +255,7 @@ export async function handler(
       await trackUsage(sessionId, billingSource, authInfo, modelInfo, providerInfo, usageInfo, costInfo)
       await reload(billingSource, authInfo, costInfo)
 
-      const responseConverter = createResponseConverter(providerInfo.format, opts.format)
-      const body = JSON.stringify(
-        responseConverter({
-          ...json,
-          cost: calculateOccuredCost(billingSource, costInfo),
-        }),
-      )
+      const body = JSON.stringify(responseConverter({ ...json, cost: calculateOccuredCost(billingSource, costInfo) }))
       logger.metric({ response_length: body.length })
       logger.debug("RESPONSE: " + body)
       dataDumper?.provideResponse(body)
@@ -293,6 +326,31 @@ export async function handler(
                 logger.debug("PART: " + part)
 
                 part = part.trim()
+                if (providerInfo.format === "oa-compat") {
+                  const error = normalizeOaCompatibleError(
+                    part.startsWith("data: ")
+                      ? (() => {
+                          try {
+                            return JSON.parse(part.slice(6))
+                          } catch {
+                            return
+                          }
+                        })()
+                      : undefined,
+                  )
+                  if (error) {
+                    const body = `data: ${JSON.stringify(error)}`
+                    logger.metric({
+                      "llm.error.type": error.error.type,
+                      "llm.error.message": error.error.message,
+                    })
+                    dataDumper?.provideResponse(body)
+                    dataDumper?.flush()
+                    c.enqueue(encoder.encode(body + "\n\n"))
+                    c.close()
+                    return
+                  }
+                }
                 usageParser.parse(part)
 
                 if (providerInfo.responseModifier) {

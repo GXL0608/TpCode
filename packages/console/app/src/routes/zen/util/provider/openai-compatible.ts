@@ -1,4 +1,4 @@
-import { ProviderHelper, CommonRequest, CommonResponse, CommonChunk } from "./provider"
+import { ProviderHelper, CommonRequest, CommonResponse, CommonChunk, CommonErrorResponse } from "./provider"
 
 type Usage = {
   prompt_tokens?: number
@@ -213,8 +213,11 @@ export function toOaCompatibleRequest(body: CommonRequest) {
   }
 }
 
-export function fromOaCompatibleResponse(resp: any): CommonResponse {
+export function fromOaCompatibleResponse(resp: any): CommonResponse | CommonErrorResponse {
   if (!resp || typeof resp !== "object") return resp
+
+  const error = normalizeOaCompatibleError(resp)
+  if (error) return error
 
   if (!Array.isArray((resp as any).choices)) return resp
 
@@ -311,6 +314,70 @@ export function fromOaCompatibleResponse(resp: any): CommonResponse {
   }
 }
 
+function getErrorMessage(resp: Record<string, unknown>) {
+  if (typeof resp.message === "string" && resp.message) return resp.message
+
+  if (resp.error && typeof resp.error === "object") {
+    const message = (resp.error as Record<string, unknown>).message
+    if (typeof message === "string" && message) return message
+  }
+
+  if (resp.base_resp && typeof resp.base_resp === "object") {
+    const message = (resp.base_resp as Record<string, unknown>).status_msg
+    if (typeof message === "string" && message) return message
+  }
+
+  return "Upstream provider returned an invalid response"
+}
+
+export function normalizeOaCompatibleError(resp: unknown): CommonErrorResponse | undefined {
+  if (!resp || typeof resp !== "object") return
+
+  const body = resp as Record<string, unknown>
+  if (body.type === "error" && body.error && typeof body.error === "object") {
+    return {
+      type: "error",
+      error: {
+        type:
+          typeof (body.error as Record<string, unknown>).type === "string"
+            ? ((body.error as Record<string, unknown>).type as string)
+            : "upstream_error",
+        message: getErrorMessage(body),
+      },
+    }
+  }
+
+  if (body.error && typeof body.error === "object") {
+    return {
+      type: "error",
+      error: {
+        type:
+          typeof (body.error as Record<string, unknown>).type === "string"
+            ? ((body.error as Record<string, unknown>).type as string)
+            : "upstream_error",
+        message: getErrorMessage(body),
+      },
+    }
+  }
+
+  if (Array.isArray(body.choices)) return
+
+  if (
+    body.choices === null ||
+    typeof body.message === "string" ||
+    (body.base_resp && typeof body.base_resp === "object") ||
+    body.object === "chat.completion"
+  ) {
+    return {
+      type: "error",
+      error: {
+        type: "upstream_error",
+        message: getErrorMessage(body),
+      },
+    }
+  }
+}
+
 export function toOaCompatibleResponse(resp: CommonResponse) {
   if (!resp || typeof resp !== "object") return resp
 
@@ -402,6 +469,9 @@ export function fromOaCompatibleChunk(chunk: string): CommonChunk | string {
   } catch {
     return chunk
   }
+
+  const error = normalizeOaCompatibleError(json)
+  if (error) return `data: ${JSON.stringify(error)}`
 
   if (!json.choices || !Array.isArray(json.choices) || json.choices.length === 0) {
     return chunk
