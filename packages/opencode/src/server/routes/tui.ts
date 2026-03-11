@@ -7,6 +7,7 @@ import { TuiEvent } from "@/cli/cmd/tui/event"
 import { AsyncQueue } from "../../util/queue"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
+import { Flag } from "@/flag/flag"
 
 const TuiRequest = z.object({
   path: z.string(),
@@ -191,6 +192,9 @@ export const TuiRoutes = lazy(() =>
         },
       }),
       async (c) => {
+        if (Flag.TPCODE_ACCOUNT_ENABLED) {
+          return c.json(false)
+        }
         await Bus.publish(TuiEvent.CommandExecute, {
           command: "model.list",
         })

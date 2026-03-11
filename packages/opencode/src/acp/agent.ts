@@ -43,6 +43,7 @@ import { z } from "zod"
 import { LoadAPIKeyError } from "ai"
 import type { AssistantMessage, Event, OpencodeClient, SessionMessageResponse, ToolPart } from "@opencode-ai/sdk/v2"
 import { applyPatch } from "diff"
+import { Flag } from "@/flag/flag"
 
 type ModeOption = { id: string; name: string; description?: string }
 type ModelOption = { modelId: string; name: string }
@@ -632,7 +633,7 @@ export namespace ACP {
           })
 
         const lastUser = messages?.findLast((m) => m.info.role === "user")?.info
-        if (lastUser?.role === "user") {
+        if (!Flag.TPCODE_ACCOUNT_ENABLED && lastUser?.role === "user") {
           result.models.currentModelId = `${lastUser.model.providerID}/${lastUser.model.modelID}`
           this.sessionManager.setModel(sessionId, {
             providerID: lastUser.model.providerID,
@@ -1152,11 +1153,11 @@ export namespace ACP {
       const providers = await this.sdk.config.providers({ directory }).then((x) => x.data!.providers)
       const entries = sortProvidersByName(providers)
       const availableVariants = modelVariantsFromProviders(entries, model)
-      const currentVariant = this.sessionManager.getVariant(sessionId)
+      const currentVariant = Flag.TPCODE_ACCOUNT_ENABLED ? undefined : this.sessionManager.getVariant(sessionId)
       if (currentVariant && !availableVariants.includes(currentVariant)) {
         this.sessionManager.setVariant(sessionId, undefined)
       }
-      const availableModels = buildAvailableModels(entries, { includeVariants: true })
+      const availableModels = Flag.TPCODE_ACCOUNT_ENABLED ? [] : buildAvailableModels(entries, { includeVariants: true })
       const modeState = await this.resolveModeState(directory, sessionId)
       const currentModeId = modeState.currentModeId
       const modes = currentModeId
@@ -1239,7 +1240,9 @@ export namespace ACP {
       return {
         sessionId,
         models: {
-          currentModelId: formatModelIdWithVariant(model, currentVariant, availableVariants, true),
+          currentModelId: Flag.TPCODE_ACCOUNT_ENABLED
+            ? ""
+            : formatModelIdWithVariant(model, currentVariant, availableVariants, true),
           availableModels,
         },
         modes,
@@ -1252,6 +1255,17 @@ export namespace ACP {
     }
 
     async unstable_setSessionModel(params: SetSessionModelRequest) {
+      if (Flag.TPCODE_ACCOUNT_ENABLED) {
+        return {
+          _meta: {
+            opencode: {
+              modelId: "",
+              variant: null,
+              availableVariants: [],
+            },
+          },
+        }
+      }
       const session = this.sessionManager.get(params.sessionId)
       const providers = await this.sdk.config
         .providers({ directory: session.cwd }, { throwOnError: true })
@@ -1287,9 +1301,9 @@ export namespace ACP {
       const session = this.sessionManager.get(sessionID)
       const directory = session.cwd
 
-      const current = session.model
+      const current = Flag.TPCODE_ACCOUNT_ENABLED ? undefined : session.model
       const model = current ?? (await defaultModel(this.config, directory))
-      if (!current) {
+      if (!Flag.TPCODE_ACCOUNT_ENABLED && !current) {
         this.sessionManager.setModel(session.id, model)
       }
       const agent = session.modeId ?? (await AgentModule.defaultAgent())
@@ -1400,14 +1414,18 @@ export namespace ACP {
       if (!cmd) {
         const response = await this.sdk.session.prompt({
           sessionID,
-          model: {
-            providerID: model.providerID,
-            modelID: model.modelID,
-          },
-          variant: this.sessionManager.getVariant(sessionID),
           parts,
           agent,
           directory,
+          ...(!Flag.TPCODE_ACCOUNT_ENABLED
+            ? {
+                model: {
+                  providerID: model.providerID,
+                  modelID: model.modelID,
+                },
+                variant: this.sessionManager.getVariant(sessionID),
+              }
+            : {}),
         })
         const msg = response.data?.info
 
@@ -1428,9 +1446,13 @@ export namespace ACP {
           sessionID,
           command: command.name,
           arguments: cmd.args,
-          model: model.providerID + "/" + model.modelID,
           agent,
           directory,
+          ...(!Flag.TPCODE_ACCOUNT_ENABLED
+            ? {
+                model: model.providerID + "/" + model.modelID,
+              }
+            : {}),
         })
         const msg = response.data?.info
 
@@ -1446,12 +1468,17 @@ export namespace ACP {
       switch (cmd.name) {
         case "compact":
           await this.config.sdk.session.summarize(
-            {
-              sessionID,
-              directory,
-              providerID: model.providerID,
-              modelID: model.modelID,
-            },
+            Flag.TPCODE_ACCOUNT_ENABLED
+              ? {
+                  sessionID,
+                  directory,
+                }
+              : {
+                  sessionID,
+                  directory,
+                  providerID: model.providerID,
+                  modelID: model.modelID,
+                },
             { throwOnError: true },
           )
           break
@@ -1525,6 +1552,13 @@ export namespace ACP {
   }
 
   async function defaultModel(config: ACPConfig, cwd?: string) {
+    if (Flag.TPCODE_ACCOUNT_ENABLED) {
+      const model = await Provider.runtimeModel()
+      return {
+        providerID: model.providerID,
+        modelID: model.modelID,
+      }
+    }
     const sdk = config.sdk
     const configured = config.defaultModel
     if (configured) return configured

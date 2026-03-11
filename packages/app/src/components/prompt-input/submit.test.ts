@@ -8,8 +8,14 @@ const createdSessions: string[] = []
 const syncedDirectories: string[] = []
 const toasts: { title?: string; description?: string }[] = []
 const shellCalls: { directory: string; sessionID: string }[] = []
-const commandCalls: { directory: string; sessionID: string; command: string }[] = []
-const promptAsyncCalls: { directory: string; sessionID: string }[] = []
+const commandCalls: Array<{ directory: string; sessionID: string; command: string; model?: string; variant?: string }> =
+  []
+const promptAsyncCalls: Array<{
+  directory: string
+  sessionID: string
+  model?: { providerID: string; modelID: string }
+  variant?: string
+}> = []
 
 let selected = "/repo/worktree-a"
 let route: { id?: string } = {}
@@ -17,6 +23,7 @@ let promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
 let commands: { name: string }[] = []
 let promptAsyncError: Error | undefined
 let clearDraftCalls = 0
+let localModel: { id: string; provider: { id: string } } | undefined = { id: "model", provider: { id: "provider" } }
 
 const event = { preventDefault: () => undefined } as unknown as Event
 
@@ -37,14 +44,24 @@ const clientFor = (directory: string) => {
         return { data: undefined }
       },
       prompt: async () => ({ data: undefined }),
-      promptAsync: async (input: { sessionID: string }) => {
-        promptAsyncCalls.push({ directory, sessionID: input.sessionID })
+      promptAsync: async (input: {
+        sessionID: string
+        model?: { providerID: string; modelID: string }
+        variant?: string
+      }) => {
+        promptAsyncCalls.push({ directory, sessionID: input.sessionID, model: input.model, variant: input.variant })
         if (promptAsyncError) throw promptAsyncError
         return { data: undefined }
       },
       status: async () => ({ data: {} }),
-      command: async (input: { sessionID: string; command: string }) => {
-        commandCalls.push({ directory, sessionID: input.sessionID, command: input.command })
+      command: async (input: { sessionID: string; command: string; model?: string; variant?: string }) => {
+        commandCalls.push({
+          directory,
+          sessionID: input.sessionID,
+          command: input.command,
+          model: input.model,
+          variant: input.variant,
+        })
         return { data: undefined }
       },
       abort: async () => ({ data: undefined }),
@@ -77,7 +94,7 @@ beforeAll(async () => {
   mock.module("@/context/local", () => ({
     useLocal: () => ({
       model: {
-        current: () => ({ id: "model", provider: { id: "provider" } }),
+        current: () => localModel,
         variant: { current: () => undefined },
       },
       agent: {
@@ -168,6 +185,7 @@ beforeEach(() => {
   commands = []
   promptAsyncError = undefined
   clearDraftCalls = 0
+  localModel = { id: "model", provider: { id: "provider" } }
 })
 
 function createSubmit(input?: {
@@ -246,7 +264,9 @@ describe("prompt submit session resolution", () => {
 
     expect(createdSessions).toEqual([])
     expect(clearDraftCalls).toBe(1)
-    expect(promptAsyncCalls).toEqual([{ directory: "/repo/main", sessionID: "session-route-normal" }])
+    expect(promptAsyncCalls).toEqual([
+      { directory: "/repo/main", sessionID: "session-route-normal", model: undefined, variant: undefined },
+    ])
   })
 
   test("uses route session id for shell mode without creating a session", async () => {
@@ -269,7 +289,27 @@ describe("prompt submit session resolution", () => {
 
     expect(createdSessions).toEqual([])
     expect(commandCalls).toEqual([
-      { directory: "/repo/main", sessionID: "session-route-command", command: "deploy" },
+      {
+        directory: "/repo/main",
+        sessionID: "session-route-command",
+        command: "deploy",
+        model: undefined,
+        variant: undefined,
+      },
+    ])
+  })
+
+  test("does not require a local model to send a prompt", async () => {
+    route = { id: "session-route-no-local-model" }
+    localModel = undefined
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(toasts).toEqual([])
+    expect(promptAsyncCalls).toEqual([
+      { directory: "/repo/main", sessionID: "session-route-no-local-model", model: undefined, variant: undefined },
     ])
   })
 

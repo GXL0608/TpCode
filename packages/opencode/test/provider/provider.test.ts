@@ -5,6 +5,8 @@ import { tmpdir } from "../fixture/fixture"
 import { Instance } from "../../src/project/instance"
 import { Provider } from "../../src/provider/provider"
 import { Env } from "../../src/env"
+import { AccountSystemSettingService } from "../../src/user/system-setting"
+import { Flag } from "../../src/flag/flag"
 
 test("provider loaded from env variable", async () => {
   await using tmp = await tmpdir({
@@ -385,7 +387,7 @@ test("defaultModel returns first available model when no config set", async () =
   })
 })
 
-test("defaultModel respects config model setting", async () => {
+test.skipIf(Flag.TPCODE_ACCOUNT_ENABLED)("defaultModel respects config model setting", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
@@ -408,6 +410,257 @@ test("defaultModel respects config model setting", async () => {
       expect(model.modelID).toBe("claude-sonnet-4-20250514")
     },
   })
+})
+
+test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("defaultModel ignores local config and uses global provider control", async () => {
+  const control = await AccountSystemSettingService.providerControl()
+  const auths = await AccountSystemSettingService.providerAuths()
+  const configs = await AccountSystemSettingService.providerConfigs()
+
+  try {
+    await AccountSystemSettingService.setProviderAuth("openai", {
+      type: "api",
+      key: "sk-global-openai",
+    })
+    await AccountSystemSettingService.setProviderControl({
+      model: "openai/gpt-5.2-chat-latest",
+      small_model: "openai/gpt-5.2-chat-latest",
+      enabled_providers: ["openai"],
+    })
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+            model: "anthropic/claude-sonnet-4-20250514",
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      init: async () => {
+        Env.set("ANTHROPIC_API_KEY", "test-anthropic-key")
+      },
+      fn: async () => {
+        const model = await Provider.defaultModel()
+        expect(model).toEqual({
+          providerID: "openai",
+          modelID: "gpt-5.2-chat-latest",
+        })
+      },
+    })
+  } finally {
+    await AccountSystemSettingService.setProviderControl(control)
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+      if (auths[providerID]) continue
+      await AccountSystemSettingService.removeProviderAuth(providerID)
+    }
+    for (const [providerID, auth] of Object.entries(auths)) {
+      await AccountSystemSettingService.setProviderAuth(providerID, auth)
+    }
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+      if (configs[providerID]) continue
+      await AccountSystemSettingService.removeProviderConfig(providerID)
+    }
+    for (const [providerID, config] of Object.entries(configs)) {
+      await AccountSystemSettingService.setProviderConfig(providerID, config)
+    }
+  }
+})
+
+test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("defaultModel rejects an invalid global model in strict account mode", async () => {
+  const control = await AccountSystemSettingService.providerControl()
+  const auths = await AccountSystemSettingService.providerAuths()
+  const configs = await AccountSystemSettingService.providerConfigs()
+
+  try {
+    await AccountSystemSettingService.setProviderAuth("openai", {
+      type: "api",
+      key: "sk-global-openai",
+    })
+    await AccountSystemSettingService.setProviderConfig("openai", {
+      models: {
+        "gpt-5.2-chat-latest": {},
+      },
+    })
+    await AccountSystemSettingService.setProviderControl({
+      model: "anthropic/claude-sonnet-4-20250514",
+      enabled_providers: ["openai"],
+    })
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+            model: "anthropic/claude-sonnet-4-20250514",
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      init: async () => {
+        Env.set("ANTHROPIC_API_KEY", "test-anthropic-key")
+      },
+      fn: async () => {
+        await expect(Provider.defaultModel()).rejects.toThrow(
+          "configured global model not found: anthropic/claude-sonnet-4-20250514",
+        )
+      },
+    })
+  } finally {
+    await AccountSystemSettingService.setProviderControl(control)
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+      if (auths[providerID]) continue
+      await AccountSystemSettingService.removeProviderAuth(providerID)
+    }
+    for (const [providerID, auth] of Object.entries(auths)) {
+      await AccountSystemSettingService.setProviderAuth(providerID, auth)
+    }
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+      if (configs[providerID]) continue
+      await AccountSystemSettingService.removeProviderConfig(providerID)
+    }
+    for (const [providerID, config] of Object.entries(configs)) {
+      await AccountSystemSettingService.setProviderConfig(providerID, config)
+    }
+  }
+})
+
+test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("runtimeModel ignores explicit candidate in strict account mode", async () => {
+  const control = await AccountSystemSettingService.providerControl()
+  const auths = await AccountSystemSettingService.providerAuths()
+  const configs = await AccountSystemSettingService.providerConfigs()
+
+  try {
+    await AccountSystemSettingService.setProviderAuth("openai", {
+      type: "api",
+      key: "sk-global-openai",
+    })
+    await AccountSystemSettingService.setProviderConfig("openai", {
+      models: {
+        "gpt-5.2-chat-latest": {},
+      },
+    })
+    await AccountSystemSettingService.setProviderControl({
+      model: "openai/gpt-5.2-chat-latest",
+      enabled_providers: ["openai"],
+    })
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+            model: "anthropic/claude-sonnet-4-20250514",
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = await Provider.runtimeModel(() => ({
+          providerID: "anthropic",
+          modelID: "claude-sonnet-4-20250514",
+        }))
+        expect(model).toEqual({
+          providerID: "openai",
+          modelID: "gpt-5.2-chat-latest",
+        })
+      },
+    })
+  } finally {
+    await AccountSystemSettingService.setProviderControl(control)
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+      if (auths[providerID]) continue
+      await AccountSystemSettingService.removeProviderAuth(providerID)
+    }
+    for (const [providerID, auth] of Object.entries(auths)) {
+      await AccountSystemSettingService.setProviderAuth(providerID, auth)
+    }
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+      if (configs[providerID]) continue
+      await AccountSystemSettingService.removeProviderConfig(providerID)
+    }
+    for (const [providerID, config] of Object.entries(configs)) {
+      await AccountSystemSettingService.setProviderConfig(providerID, config)
+    }
+  }
+})
+
+test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("runtimeModel uses configured global small model in strict account mode", async () => {
+  const control = await AccountSystemSettingService.providerControl()
+  const auths = await AccountSystemSettingService.providerAuths()
+  const configs = await AccountSystemSettingService.providerConfigs()
+
+  try {
+    await AccountSystemSettingService.setProviderAuth("openai", {
+      type: "api",
+      key: "sk-global-openai",
+    })
+    await AccountSystemSettingService.setProviderConfig("openai", {
+      models: {
+        "gpt-5.2-chat-latest": {},
+        "gpt-4.1-mini": {},
+      },
+    })
+    await AccountSystemSettingService.setProviderControl({
+      model: "openai/gpt-5.2-chat-latest",
+      small_model: "openai/gpt-4.1-mini",
+      enabled_providers: ["openai"],
+    })
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+            small_model: "anthropic/claude-haiku-4-5",
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = await Provider.runtimeModel(undefined, {
+          small: true,
+        })
+        expect(model).toEqual({
+          providerID: "openai",
+          modelID: "gpt-4.1-mini",
+        })
+      },
+    })
+  } finally {
+    await AccountSystemSettingService.setProviderControl(control)
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+      if (auths[providerID]) continue
+      await AccountSystemSettingService.removeProviderAuth(providerID)
+    }
+    for (const [providerID, auth] of Object.entries(auths)) {
+      await AccountSystemSettingService.setProviderAuth(providerID, auth)
+    }
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+      if (configs[providerID]) continue
+      await AccountSystemSettingService.removeProviderConfig(providerID)
+    }
+    for (const [providerID, config] of Object.entries(configs)) {
+      await AccountSystemSettingService.setProviderConfig(providerID, config)
+    }
+  }
 })
 
 test("provider with baseURL from config", async () => {

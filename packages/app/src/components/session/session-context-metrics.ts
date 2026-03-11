@@ -17,8 +17,6 @@ type Context = {
   message: AssistantMessage
   provider?: Provider
   model?: Model
-  providerLabel: string
-  modelLabel: string
   limit: number | undefined
   input: number
   output: number
@@ -63,8 +61,6 @@ const build = (messages: Message[] = [], providers: Provider[] = []): Metrics =>
       message,
       provider,
       model,
-      providerLabel: provider?.name ?? message.providerID,
-      modelLabel: model?.name ?? message.modelID,
       limit,
       input: message.tokens.input,
       output: message.tokens.output,

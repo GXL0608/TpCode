@@ -13,7 +13,7 @@ async function getLastModel(sessionID: string) {
   for await (const item of MessageV2.stream(sessionID)) {
     if (item.info.role === "user" && item.info.model) return item.info.model
   }
-  return Provider.defaultModel()
+  return Provider.runtimeModel()
 }
 
 export const PlanExitTool = Tool.define("plan_exit", {

@@ -7,6 +7,7 @@ import { useDialog } from "@tui/ui/dialog"
 import { createDialogProviderOptions, DialogProvider } from "./dialog-provider"
 import { useKeybind } from "../context/keybind"
 import * as fuzzysort from "fuzzysort"
+import { Flag } from "@/flag/flag"
 
 export function useConnected() {
   const sync = useSync()
@@ -21,6 +22,7 @@ export function DialogModel(props: { providerID?: string }) {
   const dialog = useDialog()
   const keybind = useKeybind()
   const [query, setQuery] = createSignal("")
+  if (Flag.TPCODE_ACCOUNT_ENABLED) return null
 
   const connected = useConnected()
   const providers = createDialogProviderOptions()

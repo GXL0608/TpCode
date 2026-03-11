@@ -113,11 +113,9 @@ export namespace SessionCompaction {
           variant: undefined,
         }
       : userMessage
-    const modelRef = Flag.TPCODE_ACCOUNT_ENABLED ? await Provider.defaultModel() : runtimeUser.model
     const agent = await Agent.get("compaction")
-    const model = !Flag.TPCODE_ACCOUNT_ENABLED && agent.model
-      ? await Provider.getModel(agent.model.providerID, agent.model.modelID)
-      : await Provider.getModel(modelRef.providerID, modelRef.modelID)
+    const modelRef = await Provider.runtimeModel(() => (!Flag.TPCODE_ACCOUNT_ENABLED && agent.model ? agent.model : runtimeUser.model))
+    const model = await Provider.getModel(modelRef.providerID, modelRef.modelID)
     const msg = (await Session.updateMessage({
       id: Identifier.ascending("message"),
       role: "assistant",

@@ -162,12 +162,6 @@ export function SessionContextTab() {
     return trimmed
   })
 
-  const providerLabel = createMemo(() => {
-    const c = ctx()
-    if (!c) return "—"
-    return c.providerLabel
-  })
-
   const breakdown = createMemo(
     on(
       () => [ctx()?.message.id, ctx()?.input, messages().length, systemPrompt()],
@@ -195,7 +189,6 @@ export function SessionContextTab() {
   const stats = [
     { label: "context.stats.session", value: () => info()?.title ?? params.id ?? "—" },
     { label: "context.stats.messages", value: () => counts().all.toLocaleString(language.locale()) },
-    { label: "context.stats.provider", value: providerLabel },
     { label: "context.stats.limit", value: () => formatter().number(ctx()?.limit) },
     { label: "context.stats.totalTokens", value: () => formatter().number(ctx()?.total) },
     { label: "context.stats.usage", value: () => formatter().percent(ctx()?.usage) },

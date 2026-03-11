@@ -5,6 +5,7 @@ import { useDirectory } from "../../context/directory"
 import { useConnected } from "../../component/dialog-model"
 import { createStore } from "solid-js/store"
 import { useRoute } from "../../context/route"
+import { Flag } from "@/flag/flag"
 
 export function Footer() {
   const { theme } = useTheme()
@@ -25,6 +26,7 @@ export function Footer() {
   })
 
   onMount(() => {
+    if (Flag.TPCODE_ACCOUNT_ENABLED) return
     // Track all timeouts to ensure proper cleanup
     const timeouts: ReturnType<typeof setTimeout>[] = []
 

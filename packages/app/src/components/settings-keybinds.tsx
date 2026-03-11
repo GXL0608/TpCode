@@ -21,7 +21,7 @@ const HIDDEN = new Set([
   "prompt.mode.normal",
 ])
 
-type KeybindGroup = "General" | "Session" | "Navigation" | "Model and agent" | "Terminal" | "Prompt"
+type KeybindGroup = "General" | "Session" | "Navigation" | "Terminal" | "Prompt"
 
 type KeybindMeta = {
   title: string
@@ -31,13 +31,12 @@ type KeybindMeta = {
 type KeybindMap = Record<string, string | undefined>
 type CommandContext = ReturnType<typeof useCommand>
 
-const GROUPS: KeybindGroup[] = ["General", "Session", "Navigation", "Model and agent", "Terminal", "Prompt"]
+const GROUPS: KeybindGroup[] = ["General", "Session", "Navigation", "Terminal", "Prompt"]
 
 type GroupKey =
   | "settings.shortcuts.group.general"
   | "settings.shortcuts.group.session"
   | "settings.shortcuts.group.navigation"
-  | "settings.shortcuts.group.modelAndAgent"
   | "settings.shortcuts.group.terminal"
   | "settings.shortcuts.group.prompt"
 
@@ -45,7 +44,6 @@ const groupKey: Record<KeybindGroup, GroupKey> = {
   General: "settings.shortcuts.group.general",
   Session: "settings.shortcuts.group.session",
   Navigation: "settings.shortcuts.group.navigation",
-  "Model and agent": "settings.shortcuts.group.modelAndAgent",
   Terminal: "settings.shortcuts.group.terminal",
   Prompt: "settings.shortcuts.group.prompt",
 }
@@ -53,7 +51,8 @@ const groupKey: Record<KeybindGroup, GroupKey> = {
 function groupFor(id: string): KeybindGroup {
   if (id === PALETTE_ID) return "General"
   if (id.startsWith("terminal.")) return "Terminal"
-  if (id.startsWith("model.") || id.startsWith("agent.") || id.startsWith("mcp.")) return "Model and agent"
+  if (id.startsWith("model.")) return "Prompt"
+  if (id.startsWith("agent.") || id.startsWith("mcp.")) return "Session"
   if (id.startsWith("file.") || id.startsWith("fileTree.")) return "Navigation"
   if (id.startsWith("prompt.")) return "Prompt"
   if (
@@ -129,18 +128,21 @@ function listFor(command: CommandContext, map: KeybindMap, palette: string) {
   for (const opt of command.catalog) {
     if (opt.id.startsWith("suggested.")) continue
     if (HIDDEN.has(opt.id)) continue
+    if (opt.id.startsWith("model.")) continue
     out.set(opt.id, { title: opt.title, group: groupFor(opt.id) })
   }
 
   for (const opt of command.options) {
     if (opt.id.startsWith("suggested.")) continue
     if (HIDDEN.has(opt.id)) continue
+    if (opt.id.startsWith("model.")) continue
     out.set(opt.id, { title: opt.title, group: groupFor(opt.id) })
   }
 
   for (const [id, value] of Object.entries(map)) {
     if (typeof value !== "string") continue
     if (HIDDEN.has(id)) continue
+    if (id.startsWith("model.")) continue
     if (out.has(id)) continue
     out.set(id, { title: id, group: groupFor(id) })
   }

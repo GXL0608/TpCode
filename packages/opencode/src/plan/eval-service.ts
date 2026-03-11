@@ -16,6 +16,7 @@ import { Instance } from "@/project/instance"
 import { SessionTable } from "@/session/session.sql"
 import { Project } from "@/project/project"
 import { AccountProviderState } from "@/provider/account-provider-state"
+import { Flag } from "@/flag/flag"
 
 const log = Log.create({ service: "plan.eval" })
 const rubric = "plan_eval_v3"
@@ -596,6 +597,26 @@ async function choose(input: Start & { org_id: string; department_id?: string; p
     }
     return result.value
   }
+  if (Flag.TPCODE_ACCOUNT_ENABLED) {
+    const selected = await AccountCurrent.provide(
+      {
+        user_id: input.user_id,
+        org_id: input.org_id,
+        department_id: input.department_id,
+        context_project_id: input.project_id,
+        roles: [],
+        permissions: [],
+      },
+      () => Provider.runtimeModel(() => picked[0]),
+    )
+    const judged = await attempt({
+      providerID: selected.providerID,
+      modelID: selected.modelID,
+      scoped: true,
+    })
+    if (judged) return judged
+    throw new Error(`judge_model_unavailable: ${errors.join(" | ")}`)
+  }
   for (const item of picked) {
     const judged = await attempt(item)
     if (!judged) continue
@@ -640,7 +661,7 @@ async function choose(input: Start & { org_id: string; department_id?: string; p
       roles: [],
       permissions: [],
     },
-    () => Provider.defaultModel().catch(() => undefined),
+    () => Provider.runtimeModel(() => picked[0]).catch(() => undefined),
   )
   if (!fallback) throw new Error("judge_model_unavailable")
   const judged = await attempt({

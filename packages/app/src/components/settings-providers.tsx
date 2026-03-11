@@ -14,6 +14,7 @@ import { DialogConnectProvider } from "./dialog-connect-provider"
 import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogCustomProvider } from "./dialog-custom-provider"
 import type { ProviderSettingsScope } from "./provider-settings-scope"
+import { getManagedCatalogState } from "./settings-providers-catalog"
 
 type ManagedRow = {
   provider_id: string
@@ -32,6 +33,12 @@ type ManagedModelOption = {
 type ManagedProviderOption = {
   provider_id: string
   provider_name: string
+}
+type ManagedCatalogProvider = ManagedProviderOption & {
+  models: Array<{
+    model_id: string
+    model_name: string
+  }>
 }
 
 const PROVIDER_NOTES = [
@@ -101,6 +108,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     providerID: "",
     providerConfigText: "{}",
     rows: [] as ManagedRow[],
+    managedProviders: [] as ManagedCatalogProvider[],
     model: "",
     smallModel: "",
     enabledProviders: "",
@@ -112,29 +120,17 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   const configuredIDs = createMemo(() => new Set(state.rows.map((item) => item.provider_id)))
   const disabledSet = createMemo(() => new Set(parseList(state.disabledProviders)))
   const modelOptions = createMemo(() => {
-    const selectedProviderID = state.model.trim().split("/")[0] ?? ""
-    const ids = new Set([
-      ...state.rows.map((item) => item.provider_id),
-      ...parseList(state.enabledProviders),
-      ...(selectedProviderID ? [selectedProviderID] : []),
-    ])
-    const source = providers.connected().length > 0 ? providers.connected() : providers.all()
-    const rows = source.filter((item) => !disabledSet().has(item.id) && ids.has(item.id))
-    const list = [] as ManagedModelOption[]
-    for (const provider of rows) {
-      const provider_name = provider.name?.trim() || provider.id
-      for (const model of Object.values(provider.models)) {
-        const model_id = model.id
-        const model_name = model.name?.trim() || model.id
-        list.push({
-          value: `${provider.id}/${model.id}`,
-          provider_id: provider.id,
-          provider_name,
-          model_id,
-          model_name,
-        })
-      }
-    }
+    const list = state.managedProviders
+      .filter((provider) => !disabledSet().has(provider.provider_id))
+      .flatMap((provider) =>
+        provider.models.map((model) => ({
+          value: `${provider.provider_id}/${model.model_id}`,
+          provider_id: provider.provider_id,
+          provider_name: provider.provider_name,
+          model_id: model.model_id,
+          model_name: model.model_name,
+        })),
+      )
     return list.sort((a, b) => {
       const providerDiff = a.provider_name.localeCompare(b.provider_name)
       if (providerDiff !== 0) return providerDiff
@@ -152,29 +148,18 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     }
     return [...map.values()].sort((a, b) => a.provider_name.localeCompare(b.provider_name))
   })
-  const selectedProviderID = createMemo(() => state.model.trim().split("/")[0] ?? "")
-  const selectedModelID = createMemo(() => {
-    const raw = state.model.trim()
-    const [providerID, ...rest] = raw.split("/")
-    if (!providerID || rest.length === 0) return ""
-    return rest.join("/")
-  })
-  const selectedProviderModels = createMemo(() =>
-    modelOptions().filter((item) => item.provider_id === selectedProviderID()),
+  const managedCatalog = createMemo(() =>
+    getManagedCatalogState({
+      providers: state.managedProviders,
+      model: state.model,
+    }),
   )
-  const selectedProviderKnown = createMemo(() =>
-    providerOptions().some((item) => item.provider_id === selectedProviderID()),
-  )
-  const selectedModelKnown = createMemo(() =>
-    selectedProviderModels().some((item) => item.model_id === selectedModelID()),
-  )
-  const currentModelText = createMemo(() => {
-    const value = state.model.trim()
-    if (!value) return "未指定（自动回退）"
-    const found = modelOptions().find((item) => item.value === value)
-    if (found) return `${found.provider_name} / ${found.model_name}`
-    return value
-  })
+  const selectedProviderID = createMemo(() => managedCatalog().selectedProviderID)
+  const selectedModelID = createMemo(() => managedCatalog().selectedModelID)
+  const selectedProviderModels = createMemo(() => managedCatalog().selectedProviderModels)
+  const selectedProviderKnown = createMemo(() => managedCatalog().selectedProviderKnown)
+  const selectedModelKnown = createMemo(() => managedCatalog().selectedModelKnown)
+  const currentModelText = createMemo(() => managedCatalog().currentModelText)
   const popular = createMemo(() =>
     popularProviders
       .map((id) => catalogMap().get(id))
@@ -187,8 +172,10 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     return {
       rows: "/account/admin/provider/global",
       control: "/account/admin/provider-control/global",
+      catalog: "/account/admin/providers/catalog/global",
       config: (providerID: string) => `/account/admin/providers/${encodeURIComponent(providerID)}/config/global`,
       key: (providerID: string) => `/account/admin/provider/${encodeURIComponent(providerID)}/global`,
+      provider: (providerID: string) => `/account/admin/providers/${encodeURIComponent(providerID)}/global`,
     }
   }
 
@@ -233,22 +220,26 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     setState("error", "")
 
     const rowsResponse = await accountRequest({ path: paths().rows }).catch(() => undefined)
-    const controlResponse = await accountRequest({ path: paths().control }).catch(() => undefined)
+    const catalogResponse = await accountRequest({ path: paths().catalog }).catch(() => undefined)
 
     if (!rowsResponse?.ok) {
       setState("loading", false)
       setState("error", await parseAccountError(rowsResponse))
       return
     }
-    if (!controlResponse?.ok) {
+    if (!catalogResponse?.ok) {
       setState("loading", false)
-      setState("error", await parseAccountError(controlResponse))
+      setState("error", await parseAccountError(catalogResponse))
       return
     }
 
-    const control = (await controlResponse.json().catch(() => undefined)) as
-      | { model?: unknown; small_model?: unknown; enabled_providers?: unknown; disabled_providers?: unknown }
+    const catalogBody = (await catalogResponse.json().catch(() => undefined)) as
+      | {
+          control?: { model?: unknown; small_model?: unknown; enabled_providers?: unknown; disabled_providers?: unknown }
+          providers?: unknown
+        }
       | undefined
+    const control = catalogBody?.control
     const disabled = new Set(list<string>(control?.disabled_providers))
     const rows = Object.entries(
       ((await rowsResponse.json().catch(() => undefined)) as
@@ -276,6 +267,21 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       "openai"
 
     setState("rows", rows)
+    setState(
+      "managedProviders",
+      list<ManagedCatalogProvider>(catalogBody?.providers)
+        .map((item) => ({
+          provider_id: item.provider_id,
+          provider_name: item.provider_name,
+          models: list<{ model_id: string; model_name: string }>(item.models)
+            .map((model) => ({
+              model_id: model.model_id,
+              model_name: model.model_name,
+            }))
+            .filter((model) => !!model.model_id),
+        }))
+        .filter((item) => !!item.provider_id),
+    )
     setState("providerID", providerID)
     setState("model", typeof control?.model === "string" ? control.model : "")
     setState("smallModel", typeof control?.small_model === "string" ? control.small_model : "")
@@ -349,20 +355,21 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     await complete(`${name(providerID)} 配置已删除`)
   }
 
-  const removeProviderKey = async (providerID: string) => {
+  const removeProvider = async (providerID: string) => {
     setState("pending", true)
     setState("error", "")
     setState("message", "")
     const response = await accountRequest({
       method: "DELETE",
-      path: paths().key(providerID),
+      path: paths().provider(providerID),
     }).catch(() => undefined)
     setState("pending", false)
     if (!response?.ok) {
       setState("error", await parseAccountError(response))
       return
     }
-    await complete(`${name(providerID)} 密钥已删除`)
+    if (state.providerID.trim() === providerID) setState("providerID", "")
+    await complete(`${name(providerID)} 已删除`)
   }
 
   const toggleDisabled = async (providerID: string, disabled: boolean) => {
@@ -512,10 +519,10 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
                         <Button
                           size="small"
                           variant="ghost"
-                          onClick={() => void removeProviderKey(item.provider_id)}
+                          onClick={() => void removeProvider(item.provider_id)}
                           disabled={state.pending}
                         >
-                          删除密钥
+                          删除供应商
                         </Button>
                       </div>
                     </div>

@@ -120,37 +120,33 @@ export const ConfigRoutes = lazy(() =>
         using _ = log.time("providers")
         const scoped = await Provider.list().then((x) => mapValues(x, (item) => item))
         if (Flag.TPCODE_ACCOUNT_ENABLED) {
-          const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
-          const superAdmin = roles.includes("super_admin")
-          if (!superAdmin) {
-            const current = await Provider.defaultModel().catch(() => undefined)
-            if (!current) {
-              return c.json({
-                providers: [],
-                default: {},
-              })
-            }
-            const provider = scoped[current.providerID]
-            const model = provider?.models[current.modelID]
-            if (!provider || !model) {
-              return c.json({
-                providers: [],
-                default: {},
-              })
-            }
-            const currentProvider = {
-              ...provider,
-              models: {
-                [model.id]: model,
-              },
-            }
+          const current = await Provider.defaultModel().catch(() => undefined)
+          if (!current) {
             return c.json({
-              providers: [currentProvider],
-              default: {
-                [currentProvider.id]: model.id,
-              },
+              providers: [],
+              default: {},
             })
           }
+          const provider = scoped[current.providerID]
+          const model = provider?.models[current.modelID]
+          if (!provider || !model) {
+            return c.json({
+              providers: [],
+              default: {},
+            })
+          }
+          const currentProvider = {
+            ...provider,
+            models: {
+              [model.id]: model,
+            },
+          }
+          return c.json({
+            providers: [currentProvider],
+            default: {
+              [currentProvider.id]: model.id,
+            },
+          })
         }
         return c.json({
           providers: Object.values(scoped),

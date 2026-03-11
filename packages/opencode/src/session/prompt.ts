@@ -42,7 +42,6 @@ import { Tool } from "@/tool/tool"
 import { PermissionNext } from "@/permission/next"
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
-import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
 import { TokenUsageService } from "@/usage/service"
@@ -432,7 +431,7 @@ export namespace SessionPrompt {
         : lastUser
 
       step++
-      const modelRef = Flag.TPCODE_ACCOUNT_ENABLED ? await Provider.defaultModel() : runtimeUser.model
+      const modelRef = await Provider.runtimeModel(runtimeUser.model)
       const model = await Provider.getModel(modelRef.providerID, modelRef.modelID).catch((e) => {
         if (Provider.ModelNotFoundError.isInstance(e)) {
           const hint = e.data.suggestions?.length ? ` Did you mean: ${e.data.suggestions.join(", ")}?` : ""
@@ -841,11 +840,11 @@ export namespace SessionPrompt {
   })
 
   async function lastModel(sessionID: string) {
-    if (Flag.TPCODE_ACCOUNT_ENABLED) return Provider.defaultModel()
+    if (Flag.TPCODE_ACCOUNT_ENABLED) return Provider.runtimeModel()
     for await (const item of MessageV2.stream(sessionID)) {
       if (item.info.role === "user" && item.info.model) return item.info.model
     }
-    return Provider.defaultModel()
+    return Provider.runtimeModel()
   }
 
   /** @internal Exported for testing */
@@ -1072,9 +1071,7 @@ export namespace SessionPrompt {
   async function createUserMessage(input: PromptInput) {
     const agent = await Agent.get(input.agent ?? (await Agent.defaultAgent()))
 
-    const model = Flag.TPCODE_ACCOUNT_ENABLED
-      ? await Provider.defaultModel()
-      : input.model ?? agent.model ?? (await lastModel(input.sessionID))
+    const model = await Provider.runtimeModel(async () => input.model ?? agent.model ?? (await lastModel(input.sessionID)))
     const full =
       !input.variant && agent.variant
         ? await Provider.getModel(model.providerID, model.modelID).catch(() => undefined)
@@ -1724,9 +1721,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       await SessionRevert.cleanup(session)
     }
     const agent = await Agent.get(input.agent)
-    const model = Flag.TPCODE_ACCOUNT_ENABLED
-      ? await Provider.defaultModel()
-      : input.model ?? agent.model ?? (await lastModel(input.sessionID))
+    const model = await Provider.runtimeModel(async () => input.model ?? agent.model ?? (await lastModel(input.sessionID)))
     const userMsg: MessageV2.User = {
       id: Identifier.ascending("message"),
       sessionID: input.sessionID,
@@ -2023,8 +2018,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     }
     template = template.trim()
 
-    const taskModel = await (async () => {
-      if (Flag.TPCODE_ACCOUNT_ENABLED) return Provider.defaultModel()
+    const taskModel = await Provider.runtimeModel(async () => {
       if (command.model) {
         return Provider.parseModel(command.model)
       }
@@ -2036,7 +2030,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       }
       if (input.model) return Provider.parseModel(input.model)
       return await lastModel(input.sessionID)
-    })()
+    })
 
     try {
       await Provider.getModel(taskModel.providerID, taskModel.modelID)
@@ -2152,13 +2146,26 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
     const agent = await Agent.get("title")
     if (!agent) return
-    const model = await iife(async () => {
-      if (!Flag.TPCODE_ACCOUNT_ENABLED && agent.model)
-        return await Provider.getModel(agent.model.providerID, agent.model.modelID)
-      return (
-        (await Provider.getSmallModel(input.providerID)) ?? (await Provider.getModel(input.providerID, input.modelID))
-      )
-    })
+    const modelRef = await Provider.runtimeModel(
+      () => (!Flag.TPCODE_ACCOUNT_ENABLED && agent.model ? agent.model : undefined),
+      {
+        small: true,
+        fallback: async () => {
+          const small = await Provider.getSmallModel(input.providerID)
+          if (small) {
+            return {
+              providerID: small.providerID,
+              modelID: small.id,
+            }
+          }
+          return {
+            providerID: input.providerID,
+            modelID: input.modelID,
+          }
+        },
+      },
+    )
+    const model = await Provider.getModel(modelRef.providerID, modelRef.modelID)
     const result = await LLM.stream({
       agent,
       user: firstRealUser.info as MessageV2.User,

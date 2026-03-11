@@ -1367,6 +1367,9 @@ export const AccountRoutes = lazy(() =>
     .get("/admin/provider/global", UserRbac.requireRole("super_admin"), async (c) =>
       c.json(await AccountSystemSettingService.providerRows()),
     )
+    .get("/admin/providers/catalog/global", UserRbac.requireRole("super_admin"), async (c) =>
+      c.json(await AccountSystemSettingService.providerCatalog()),
+    )
     .put(
       "/admin/provider/:provider_id/global",
       UserRbac.requireRole("super_admin"),
@@ -1420,6 +1423,31 @@ export const AccountRoutes = lazy(() =>
         return c.json(true)
       },
     )
+    .delete(
+      "/admin/providers/:provider_id/global",
+      UserRbac.requireRole("super_admin"),
+      validator("param", z.object({ provider_id: z.string() })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        await AccountSystemSettingService.removeProvider(param.provider_id)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.provider.global.delete",
+          target_type: "system",
+          target_id: param.provider_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        await AccountProviderState.invalidate()
+        return c.json(true)
+      },
+    )
     .get("/admin/provider-control/global", UserRbac.requireRole("super_admin"), async (c) =>
       c.json(await AccountSystemSettingService.providerControl()),
     )
@@ -1431,14 +1459,16 @@ export const AccountRoutes = lazy(() =>
         const actor_user_id = requireLogin(c)
         if (typeof actor_user_id !== "string") return actor_user_id
         const body = c.req.valid("json")
-        await AccountSystemSettingService.setProviderControl(body)
+        const valid = await AccountSystemSettingService.validateProviderControl(body)
+        if (!valid.ok) return c.json(valid, 400)
+        await AccountSystemSettingService.setProviderControl(valid.value)
         await UserService.audit({
           actor_user_id,
           action: "account.provider.global.control.update",
           target_type: "system",
           target_id: "provider_control",
           result: "success",
-          detail_json: body,
+          detail_json: valid.value,
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
         })

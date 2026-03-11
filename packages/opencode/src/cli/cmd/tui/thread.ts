@@ -14,6 +14,7 @@ import type { EventSource } from "./context/sdk"
 import { win32DisableProcessedInput, win32InstallCtrlCGuard } from "./win32"
 import { TuiConfig } from "@/config/tui"
 import { Instance } from "@/project/instance"
+import { Flag } from "@/flag/flag"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -177,7 +178,7 @@ export const TuiThreadCommand = cmd({
           continue: args.continue,
           sessionID: args.session,
           agent: args.agent,
-          model: args.model,
+          model: Flag.TPCODE_ACCOUNT_ENABLED ? undefined : args.model,
           prompt,
           fork: args.fork,
         },

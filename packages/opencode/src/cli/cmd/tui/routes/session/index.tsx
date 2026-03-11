@@ -418,19 +418,26 @@ export function Session() {
         aliases: ["summarize"],
       },
       onSelect: (dialog) => {
-        const selectedModel = local.model.current()
-        if (!selectedModel) {
-          toast.show({
-            variant: "warning",
-            message: "Connect a provider to summarize this session",
-            duration: 3000,
+        if (!Flag.TPCODE_ACCOUNT_ENABLED) {
+          const selectedModel = local.model.current()
+          if (!selectedModel) {
+            toast.show({
+              variant: "warning",
+              message: "Connect a provider to summarize this session",
+              duration: 3000,
+            })
+            return
+          }
+          sdk.client.session.summarize({
+            sessionID: route.sessionID,
+            modelID: selectedModel.modelID,
+            providerID: selectedModel.providerID,
           })
+          dialog.clear()
           return
         }
         sdk.client.session.summarize({
           sessionID: route.sessionID,
-          modelID: selectedModel.modelID,
-          providerID: selectedModel.providerID,
         })
         dialog.clear()
       },

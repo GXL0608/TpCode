@@ -1717,6 +1717,61 @@ export type AccountPlanEvalRetryFailure = {
   permission?: string
 }
 
+export type AccountPlanEvalDetailSuccess = {
+  ok: true
+  eval: {
+    id: string
+    plan_id: string
+    vho_feedback_no?: string | null
+    user_id: string
+    session_id: string
+    user_message_id: string
+    assistant_message_id: string
+    part_id: string
+    status: string
+    rubric_version?: string | null
+    prompt_version?: string | null
+    judge_provider_id?: string | null
+    judge_model_id?: string | null
+    user_score?: number | null
+    assistant_score?: number | null
+    summary?: string | null
+    major_issue_side?: string | null
+    result_json?: {
+      [key: string]: unknown
+    } | null
+    error_code?: string | null
+    error_message?: string | null
+    time_started?: number | null
+    time_finished?: number | null
+    time_created: number
+    time_updated: number
+  }
+  items: Array<{
+    id: string
+    eval_id: string
+    plan_id: string
+    vho_feedback_no?: string | null
+    subject: string
+    dimension_code: string
+    dimension_name: string
+    max_deduction: number
+    deducted_score: number
+    final_score: number
+    reason: string
+    evidence_json: Array<string>
+    position: number
+    time_created: number
+    time_updated: number
+  }>
+}
+
+export type AccountPlanEvalDetailFailure = {
+  ok: false
+  code: "plan_eval_missing" | "forbidden"
+  permission?: string
+}
+
 export type AccountAdminUser = {
   id: string
   username: string
@@ -2851,6 +2906,37 @@ export type AccountPlanEvalRetryResponses = {
 
 export type AccountPlanEvalRetryResponse = AccountPlanEvalRetryResponses[keyof AccountPlanEvalRetryResponses]
 
+export type AccountPlanEvalGetData = {
+  body?: never
+  path: {
+    plan_id: string
+  }
+  query?: never
+  url: "/account/plan/eval/{plan_id}"
+}
+
+export type AccountPlanEvalGetErrors = {
+  /**
+   * Forbidden
+   */
+  403: AccountPlanEvalDetailFailure
+  /**
+   * Not found
+   */
+  404: AccountPlanEvalDetailFailure
+}
+
+export type AccountPlanEvalGetError = AccountPlanEvalGetErrors[keyof AccountPlanEvalGetErrors]
+
+export type AccountPlanEvalGetResponses = {
+  /**
+   * Evaluation detail
+   */
+  200: AccountPlanEvalDetailSuccess
+}
+
+export type AccountPlanEvalGetResponse = AccountPlanEvalGetResponses[keyof AccountPlanEvalGetResponses]
+
 export type AccountMeProviderData = {
   body?: never
   path: {
@@ -2889,16 +2975,6 @@ export type PutAccountMeProviderControlData = {
     disabled_providers?: Array<string>
     model?: string
     small_model?: string
-    model_prefs?: {
-      visibility?: {
-        [key: string]: "show" | "hide"
-      }
-      favorite?: Array<string>
-      recent?: Array<string>
-      variant?: {
-        [key: string]: string
-      }
-    }
   }
   path?: never
   query?: never
@@ -3206,22 +3282,25 @@ export type PutAccountAdminProviderProviderIdGlobalResponses = {
   200: unknown
 }
 
+export type DeleteAccountAdminProvidersProviderIdGlobalData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/admin/providers/{provider_id}/global"
+}
+
+export type DeleteAccountAdminProvidersProviderIdGlobalResponses = {
+  200: unknown
+}
+
 export type PutAccountAdminProviderControlGlobalData = {
   body?: {
     enabled_providers?: Array<string>
     disabled_providers?: Array<string>
     model?: string
     small_model?: string
-    model_prefs?: {
-      visibility?: {
-        [key: string]: "show" | "hide"
-      }
-      favorite?: Array<string>
-      recent?: Array<string>
-      variant?: {
-        [key: string]: string
-      }
-    }
   }
   path?: never
   query?: never
@@ -3528,16 +3607,6 @@ export type PutAccountAdminUsersUserIdProviderControlData = {
     disabled_providers?: Array<string>
     model?: string
     small_model?: string
-    model_prefs?: {
-      visibility?: {
-        [key: string]: "show" | "hide"
-      }
-      favorite?: Array<string>
-      recent?: Array<string>
-      variant?: {
-        [key: string]: string
-      }
-    }
   }
   path: {
     user_id: string
@@ -4861,8 +4930,8 @@ export type SessionDiffResponse = SessionDiffResponses[keyof SessionDiffResponse
 
 export type SessionSummarizeData = {
   body?: {
-    providerID: string
-    modelID: string
+    providerID?: string
+    modelID?: string
     auto?: boolean
   }
   path: {

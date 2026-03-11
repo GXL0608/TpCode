@@ -705,14 +705,17 @@ export const SessionRoutes = lazy(() =>
       validator(
         "json",
         z.object({
-          providerID: z.string(),
-          modelID: z.string(),
+          providerID: z.string().optional(),
+          modelID: z.string().optional(),
           auto: z.boolean().optional().default(false),
         }),
       ),
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
+        if (!Flag.TPCODE_ACCOUNT_ENABLED && (!body.providerID || !body.modelID)) {
+          return c.json({ error: "provider_model_required" }, 400)
+        }
         const session = await Session.get(sessionID)
         await SessionRevert.cleanup(session)
         const msgs = await Session.messages({ sessionID })
@@ -727,7 +730,9 @@ export const SessionRoutes = lazy(() =>
         await SessionCompaction.create({
           sessionID,
           agent: currentAgent,
-          model: Flag.TPCODE_ACCOUNT_ENABLED ? await Provider.defaultModel() : { providerID: body.providerID, modelID: body.modelID },
+          model: Flag.TPCODE_ACCOUNT_ENABLED
+            ? await Provider.runtimeModel()
+            : { providerID: body.providerID!, modelID: body.modelID! },
           auto: body.auto,
         })
         await SessionPrompt.loop({ sessionID })

@@ -50,6 +50,19 @@ import { AccountSystemSettingService } from "@/user/system-setting"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
+  type ModelRef = {
+    providerID: string
+    modelID: string
+  }
+  type RuntimeModelInput =
+    | ModelRef
+    | undefined
+    | Promise<ModelRef | undefined>
+    | (() => ModelRef | undefined | Promise<ModelRef | undefined>)
+  type RuntimeModelOptions = {
+    small?: boolean
+    fallback?: RuntimeModelInput
+  }
 
   function isGpt5OrLater(modelID: string): boolean {
     const match = /^gpt-(\d+)/.exec(modelID)
@@ -791,15 +804,7 @@ export namespace Provider {
       ? (Object.entries(await AccountSystemSettingService.providerConfigs()) as [string, z.output<typeof Config.Provider>][])
       : (Object.entries(config?.provider ?? {}) as [string, z.output<typeof Config.Provider>][])
     const configuredProviders = strictAccount
-      ? new Set(
-          [
-            ...Object.keys(sharedAuth),
-            ...configProviders.map(([providerID]) => providerID),
-            ...(control?.enabled_providers ?? []),
-            control?.model ? parseModel(control.model).providerID : undefined,
-            control?.small_model ? parseModel(control.small_model).providerID : undefined,
-          ].filter((item): item is string => !!item),
-        )
+      ? new Set([...Object.keys(sharedAuth), ...configProviders.map(([providerID]) => providerID)])
       : undefined
 
     const disabled = new Set(strictAccount ? (control?.disabled_providers ?? []) : (config?.disabled_providers ?? []))
@@ -1371,56 +1376,14 @@ export namespace Provider {
     const strictAccount = strictAccountScope()
     const providers = await list()
     if (strictAccount) {
-      const [control, providerConfigs] = await Promise.all([
-        AccountSystemSettingService.providerControl(),
-        AccountSystemSettingService.providerConfigs(),
-      ])
-      if (control.model) {
-        const parsed = parseModel(control.model)
-        if (providers[parsed.providerID]?.models[parsed.modelID]) return parsed
+      const control = await AccountSystemSettingService.providerControl()
+      if (!control.model) throw new Error("no global model configured")
+      const parsed = parseModel(control.model)
+      if (!parsed.providerID || !parsed.modelID) throw new Error("invalid global model configured")
+      if (!providers[parsed.providerID]?.models[parsed.modelID]) {
+        throw new Error(`configured global model not found: ${parsed.providerID}/${parsed.modelID}`)
       }
-
-      const seen = new Set<string>()
-      const providerIDs = [
-        ...(control.enabled_providers ?? []),
-        ...Object.keys(providerConfigs),
-        ...Object.keys(providers),
-      ].filter((providerID) => {
-        if (!providers[providerID]) return false
-        if (seen.has(providerID)) return false
-        seen.add(providerID)
-        return true
-      })
-
-      for (const providerID of providerIDs) {
-        const provider = providers[providerID]
-        if (!provider) continue
-
-        const configuredModels = providerConfigs[providerID]?.models
-        if (configuredModels && Object.keys(configuredModels).length > 0) {
-          const configured = sort(
-            Object.keys(configuredModels)
-              .map((modelID) => provider.models[modelID])
-              .filter((model): model is Model => !!model),
-          )
-          const firstConfigured = configured[0]
-          if (firstConfigured) {
-            return {
-              providerID: provider.id,
-              modelID: firstConfigured.id,
-            }
-          }
-        }
-
-        const [fallback] = sort(Object.values(provider.models))
-        if (fallback) {
-          return {
-            providerID: provider.id,
-            modelID: fallback.id,
-          }
-        }
-      }
-      throw new Error("no global model configured")
+      return parsed
     }
     const cfg = await Config.get()
     if (cfg.model) return parseModel(cfg.model)
@@ -1444,6 +1407,27 @@ export namespace Provider {
       providerID: provider.id,
       modelID: model.id,
     }
+  }
+
+  async function resolveRuntimeModel(input?: RuntimeModelInput) {
+    return typeof input === "function" ? await input() : await input
+  }
+
+  export async function runtimeModel(input?: RuntimeModelInput, options?: RuntimeModelOptions) {
+    if (strictAccountScope()) {
+      if (!options?.small) return defaultModel()
+      const model = await getSmallModel((await defaultModel()).providerID)
+      if (!model) throw new Error("no small model found")
+      return {
+        providerID: model.providerID,
+        modelID: model.id,
+      }
+    }
+    const candidate = await resolveRuntimeModel(input)
+    if (candidate) return candidate
+    const fallback = await resolveRuntimeModel(options?.fallback)
+    if (fallback) return fallback
+    return defaultModel()
   }
 
   export function parseModel(model: string) {

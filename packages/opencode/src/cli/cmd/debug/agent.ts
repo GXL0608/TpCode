@@ -70,7 +70,7 @@ export const AgentCommand = cmd({
 })
 
 async function getAvailableTools(agent: Agent.Info) {
-  const model = agent.model ?? (await Provider.defaultModel())
+  const model = await Provider.runtimeModel(agent.model)
   return ToolRegistry.tools(model, agent)
 }
 
@@ -114,7 +114,7 @@ function parseToolParams(input?: string) {
 async function createToolContext(agent: Agent.Info) {
   const session = await Session.create({ title: `Debug tool run (${agent.name})` })
   const messageID = Identifier.ascending("message")
-  const model = agent.model ?? (await Provider.defaultModel())
+  const model = await Provider.runtimeModel(agent.model)
   const now = Date.now()
   const message: MessageV2.Assistant = {
     id: messageID,

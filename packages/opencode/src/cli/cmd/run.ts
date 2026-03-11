@@ -591,18 +591,33 @@ export const RunCommand = cmd({
         await sdk.session.command({
           sessionID,
           agent,
-          model: args.model,
           command: args.command,
           arguments: message,
-          variant: args.variant,
+          ...(!Flag.TPCODE_ACCOUNT_ENABLED && args.model
+            ? {
+                model: args.model,
+              }
+            : {}),
+          ...(!Flag.TPCODE_ACCOUNT_ENABLED && args.variant
+            ? {
+                variant: args.variant,
+              }
+            : {}),
         })
       } else {
-        const model = args.model ? Provider.parseModel(args.model) : undefined
         await sdk.session.prompt({
           sessionID,
           agent,
-          model,
-          variant: args.variant,
+          ...(!Flag.TPCODE_ACCOUNT_ENABLED && args.model
+            ? {
+                model: Provider.parseModel(args.model),
+              }
+            : {}),
+          ...(!Flag.TPCODE_ACCOUNT_ENABLED && args.variant
+            ? {
+                variant: args.variant,
+              }
+            : {}),
           parts: [...files, { type: "text", text: message }],
         })
       }

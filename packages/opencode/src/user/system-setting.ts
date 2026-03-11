@@ -6,6 +6,8 @@ import z from "zod"
 import { Config } from "@/config/config"
 import { Database, eq } from "@/storage/db"
 import { TpSystemProviderSettingTable } from "./system-provider-setting.sql"
+import { State } from "@/project/state"
+import { ModelsDev } from "@/provider/models"
 
 const ProviderControl = z
   .object({
@@ -39,6 +41,9 @@ const ProviderAuthMap = z.record(z.string(), ProviderAuth)
 type Data = {
   project_scan_root?: string
 }
+
+type ProviderConfig = z.output<typeof Config.Provider>
+type ProviderModelConfig = NonNullable<ProviderConfig["models"]>[string]
 
 const filepath = path.join(Global.Path.data, "tp-system-settings.json")
 const GLOBAL_PROVIDER_SETTING_ID = "global"
@@ -90,6 +95,7 @@ async function setGlobalProviderSetting(input: {
       })
       .run(),
   )
+  await State.disposeAll()
 }
 
 function readProviderControl(row: Awaited<ReturnType<typeof globalProviderSetting>>) {
@@ -107,6 +113,51 @@ function readProviderAuths(row: Awaited<ReturnType<typeof globalProviderSetting>
   if (parsed.success) return parsed.data
 }
 
+function configuredProviderIDs(input: {
+  auth?: Record<string, z.output<typeof ProviderAuth>>
+  config?: Record<string, ProviderConfig>
+}) {
+  return [...new Set([...Object.keys(input.auth ?? {}), ...Object.keys(input.config ?? {})])].sort()
+}
+
+function parseModel(value?: string) {
+  if (!value?.trim()) return
+  const [provider_id, ...rest] = value.trim().split("/")
+  if (!provider_id || rest.length === 0) return
+  return {
+    provider_id,
+    model_id: rest.join("/"),
+  }
+}
+
+function providerModelName(input: {
+  model_id: string
+  base?: ModelsDev.Model
+  config?: ProviderModelConfig
+}) {
+  if (input.config?.name) return input.config.name
+  if (input.config?.id && input.config.id !== input.model_id) return input.model_id
+  return input.base?.name ?? input.model_id
+}
+
+function providerName(input: { provider_id: string; base?: ModelsDev.Provider; config?: ProviderConfig }) {
+  return input.config?.name ?? input.base?.name ?? input.provider_id
+}
+
+function modelAllowed(input: {
+  model_id: string
+  base?: ModelsDev.Model
+  config?: ProviderConfig
+  patch?: ProviderModelConfig
+}) {
+  const status = input.patch?.status ?? input.base?.status
+  if (status === "alpha" && !Flag.OPENCODE_ENABLE_EXPERIMENTAL_MODELS) return false
+  if (status === "deprecated") return false
+  if (input.config?.blacklist?.includes(input.model_id)) return false
+  if (input.config?.whitelist && !input.config.whitelist.includes(input.model_id)) return false
+  return true
+}
+
 export namespace AccountSystemSettingService {
   export type ProviderControl = z.output<typeof ProviderControl>
   export type ProviderAuth = z.output<typeof ProviderAuth>
@@ -114,6 +165,18 @@ export namespace AccountSystemSettingService {
     type?: z.output<typeof ProviderAuth>["type"]
     has_auth: boolean
     has_config: boolean
+  }
+  export type ManagedCatalog = {
+    rows: Record<string, GlobalProviderRow>
+    control: z.output<typeof ProviderControl>
+    providers: Array<{
+      provider_id: string
+      provider_name: string
+      models: Array<{
+        model_id: string
+        model_name: string
+      }>
+    }>
   }
 
   export async function projectScanRoot() {
@@ -218,7 +281,7 @@ export namespace AccountSystemSettingService {
     const row = await globalProviderSetting()
     const auth = readProviderAuths(row) ?? {}
     const config = readProviderConfigs(row) ?? {}
-    const ids = [...new Set([...Object.keys(auth), ...Object.keys(config)])].sort()
+    const ids = configuredProviderIDs({ auth, config })
     return Object.fromEntries(
       ids.map((provider_id) => [
         provider_id,
@@ -229,6 +292,89 @@ export namespace AccountSystemSettingService {
         },
       ]),
     ) as Record<string, GlobalProviderRow>
+  }
+
+  export async function providerCatalog(): Promise<ManagedCatalog> {
+    const row = await globalProviderSetting()
+    const auth = readProviderAuths(row) ?? {}
+    const config = readProviderConfigs(row) ?? {}
+    const control = readProviderControl(row) ?? ({} as z.output<typeof ProviderControl>)
+    const models = await ModelsDev.get()
+    const providers = configuredProviderIDs({ auth, config })
+      .map((provider_id) => {
+        const base = models[provider_id]
+        const patch = config[provider_id]
+        const items = new Map<string, { model_id: string; model_name: string }>()
+
+        for (const [model_id, model] of Object.entries(base?.models ?? {})) {
+          if (!modelAllowed({ model_id, base: model, config: patch })) continue
+          items.set(model_id, {
+            model_id,
+            model_name: providerModelName({ model_id, base: model }),
+          })
+        }
+
+        for (const [model_id, model] of Object.entries(patch?.models ?? {})) {
+          if (!modelAllowed({ model_id, base: base?.models?.[model_id], config: patch, patch: model })) continue
+          items.set(model_id, {
+            model_id,
+            model_name: providerModelName({ model_id, base: base?.models?.[model_id], config: model }),
+          })
+        }
+
+        return {
+          provider_id,
+          provider_name: providerName({ provider_id, base, config: patch }),
+          models: [...items.values()].sort((a, b) => a.model_name.localeCompare(b.model_name)),
+        }
+      })
+      .filter((item) => item.models.length > 0)
+      .sort((a, b) => a.provider_name.localeCompare(b.provider_name))
+
+    return {
+      rows: await providerRows(),
+      control,
+      providers,
+    }
+  }
+
+  export async function validateProviderControl(input: unknown) {
+    const value = ProviderControl.parse(input)
+    const catalog = await providerCatalog()
+    const providerMap = new Map(catalog.providers.map((item) => [item.provider_id, new Set(item.models.map((model) => model.model_id))]))
+
+    const providerError = (provider_id: string, field: string) => ({
+      ok: false as const,
+      code: "provider_not_configured" as const,
+      message: `${field} 引用了未配置的供应商：${provider_id}`,
+    })
+    const modelError = (value: string, field: string) => ({
+      ok: false as const,
+      code: "model_not_configured" as const,
+      message: `${field} 引用了未配置供应商下不可用的模型：${value}`,
+    })
+
+    for (const provider_id of value.enabled_providers ?? []) {
+      if (!providerMap.has(provider_id)) return providerError(provider_id, "enabled_providers")
+    }
+    for (const provider_id of value.disabled_providers ?? []) {
+      if (!providerMap.has(provider_id)) return providerError(provider_id, "disabled_providers")
+    }
+    for (const [field, raw] of [
+      ["model", value.model],
+      ["small_model", value.small_model],
+    ] as const) {
+      const parsed = parseModel(raw)
+      if (!parsed) continue
+      const models = providerMap.get(parsed.provider_id)
+      if (!models) return providerError(parsed.provider_id, field)
+      if (!models.has(parsed.model_id)) return modelError(raw!, field)
+    }
+
+    return {
+      ok: true as const,
+      value,
+    }
   }
 
   export async function providerAuth(provider_id: string) {
@@ -261,6 +407,36 @@ export namespace AccountSystemSettingService {
       provider_control_json: readProviderControl(row),
       provider_configs_json: readProviderConfigs(row),
       provider_auth_json: Object.keys(next).length === 0 ? undefined : next,
+    })
+  }
+
+  export async function removeProvider(provider_id: string) {
+    const row = await globalProviderSetting()
+    const control = readProviderControl(row) ?? {}
+    const auth = readProviderAuths(row)
+    const config = readProviderConfigs(row)
+    const nextAuth = auth ? { ...auth } : undefined
+    const nextConfig = config ? { ...config } : undefined
+    if (nextAuth) delete nextAuth[provider_id]
+    if (nextConfig) delete nextConfig[provider_id]
+
+    const nextControl = {
+      ...control,
+      enabled_providers: control.enabled_providers?.filter((item) => item !== provider_id),
+      disabled_providers: control.disabled_providers?.filter((item) => item !== provider_id),
+      model: parseModel(control.model)?.provider_id === provider_id ? undefined : control.model,
+      small_model: parseModel(control.small_model)?.provider_id === provider_id ? undefined : control.small_model,
+    }
+
+    await setGlobalProviderSetting({
+      provider_control_json: Object.fromEntries(
+        Object.entries(nextControl).filter(([, value]) => {
+          if (Array.isArray(value)) return value.length > 0
+          return value !== undefined
+        }),
+      ) as z.output<typeof ProviderControl>,
+      provider_configs_json: nextConfig && Object.keys(nextConfig).length > 0 ? nextConfig : undefined,
+      provider_auth_json: nextAuth && Object.keys(nextAuth).length > 0 ? nextAuth : undefined,
     })
   }
 }

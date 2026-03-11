@@ -71,9 +71,7 @@ export const ProviderRoutes = lazy(() =>
         const connected = await Provider.list()
 
         const strictAccount = Flag.TPCODE_ACCOUNT_ENABLED
-        const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
-        const superAdmin = roles.includes("super_admin")
-        if (strictAccount && !superAdmin) {
+        if (strictAccount) {
           const current = await Provider.defaultModel().catch(() => undefined)
           if (!current) {
             return c.json({

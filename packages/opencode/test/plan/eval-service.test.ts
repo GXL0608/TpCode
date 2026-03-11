@@ -13,6 +13,7 @@ const state = {
   body: "",
   system: "",
   object_error: undefined as Error | undefined,
+  runtime_calls: [] as Array<{ providerID: string; modelID: string } | undefined>,
   result: {
     rubric_version: "plan_eval_v3",
     prompt_version: "plan_eval_prompt_v4",
@@ -174,10 +175,32 @@ mock.module("../../src/provider/provider", () => ({
     }),
     getLanguage: async () => ({}),
     defaultModel: async () => ({ providerID: "openai", modelID: "gpt-4.1-mini" }),
+    runtimeModel: async (
+      input?:
+        | { providerID: string; modelID: string }
+        | (() => { providerID: string; modelID: string } | undefined | Promise<{ providerID: string; modelID: string } | undefined>)
+        | Promise<{ providerID: string; modelID: string } | undefined>,
+    ) => {
+      const pending =
+        typeof input === "function"
+          ? input()
+          : input && typeof (input as Promise<unknown>).then === "function"
+            ? input
+            : Promise.resolve(input)
+      const candidate = await pending
+      state.runtime_calls.push(candidate)
+      return { providerID: "openai", modelID: "gpt-4.1-mini" }
+    },
     parseModel: (input: string) => {
       const [providerID, ...rest] = input.split("/")
       return { providerID, modelID: rest.join("/") }
     },
+  },
+}))
+
+mock.module("../../src/flag/flag", () => ({
+  Flag: {
+    TPCODE_ACCOUNT_ENABLED: true,
   },
 }))
 
@@ -363,6 +386,7 @@ beforeEach(() => {
   state.body = ""
   state.system = ""
   state.object_error = undefined
+  state.runtime_calls = []
   state.result.summary = "用户输入略有歧义，模型回复基本到位。"
 })
 
@@ -397,6 +421,31 @@ describe("plan eval service", () => {
     )
     expect(items).toHaveLength(12)
     expect(items.every((x) => x.vho_feedback_no === "VHO-EVAL-1")).toBe(true)
+  })
+
+  test("uses runtime model selection for judge model", async () => {
+    const seeded = await seed()
+
+    await PlanEvalService.run({
+      plan_id: seeded.plan_id,
+      session_id: seeded.session_id,
+      user_id: "user_tp_admin",
+      message_id: seeded.assistant_message_id,
+      part_id: seeded.assistant_part_id,
+      vho_feedback_no: "VHO-EVAL-RT",
+      user_model_provider_id: "anthropic",
+      user_model_id: "claude-sonnet-4-20250514",
+      assistant_model_provider_id: "anthropic",
+      assistant_model_id: "claude-sonnet-4-20250514",
+    })
+
+    const row = await Database.use((db) =>
+      db.select().from(TpSavedPlanEvalTable).where(eq(TpSavedPlanEvalTable.plan_id, seeded.plan_id)).get(),
+    )
+    expect(state.runtime_calls).toHaveLength(1)
+    expect(state.runtime_calls[0]).toBeDefined()
+    expect(row?.judge_provider_id).toBe("openai")
+    expect(row?.judge_model_id).toBe("gpt-4.1-mini")
   })
 
   test("uses plan-mode specific scoring guidance in the judge prompt", async () => {

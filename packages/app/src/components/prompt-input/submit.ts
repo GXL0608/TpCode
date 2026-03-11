@@ -23,6 +23,10 @@ type PendingPrompt = {
 }
 
 const pending = new Map<string, PendingPrompt>()
+const managedModel = {
+  providerID: "managed",
+  modelID: "managed",
+}
 
 const forbidden = [
   { term: "rm -rf", pattern: /(?:^|\s)rm\s+-rf(?:\s|$)/i },
@@ -168,15 +172,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return
     }
 
-    const currentModel = local.model.current()
     const currentAgent = local.agent.current()
-    if (!currentModel || !currentAgent) {
-      showToast({
-        title: language.t("prompt.toast.modelAgentRequired.title"),
-        description: language.t("prompt.toast.modelAgentRequired.description"),
-      })
-      return
-    }
 
     input.addToHistory(currentPrompt, mode)
     input.resetHistoryNavigation()
@@ -256,12 +252,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     input.onSubmit?.()
 
-    const model = {
-      modelID: currentModel.id,
-      providerID: currentModel.provider.id,
-    }
-    const agent = currentAgent.name
-    const variant = local.model.variant.current()
+    const agent = currentAgent?.name ?? "build"
 
     const clearInput = () => {
       input.clearDraft?.()
@@ -289,7 +280,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         .shell({
           sessionID,
           agent,
-          model,
           command: text,
         })
         .catch((err) => {
@@ -314,8 +304,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
             command: commandName,
             arguments: args.join(" "),
             agent,
-            model: `${model.providerID}/${model.modelID}`,
-            variant,
             parts: [
               ...images.map((attachment) => ({
                 id: Identifier.ascending("part"),
@@ -366,7 +354,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       role: "user",
       time: { created: Date.now() },
       agent,
-      model,
+      model: managedModel,
     }
 
     const addOptimisticMessage = () =>
@@ -449,10 +437,8 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       await client.session.promptAsync({
         sessionID,
         agent,
-        model,
         messageID,
         parts: requestParts,
-        variant,
       })
       if (sessionDirectory !== projectDirectory) return
       sync.set("session_status", sessionID, { type: "busy" })

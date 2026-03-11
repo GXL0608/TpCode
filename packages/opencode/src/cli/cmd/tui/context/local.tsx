@@ -13,6 +13,7 @@ import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import { Filesystem } from "@/util/filesystem"
+import { Flag } from "@/flag/flag"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -152,7 +153,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       const args = useArgs()
       const fallbackModel = createMemo(() => {
-        if (args.model) {
+        if (!Flag.TPCODE_ACCOUNT_ENABLED && args.model) {
           const { providerID, modelID } = Provider.parseModel(args.model)
           if (isModelValid({ providerID, modelID })) {
             return {
@@ -162,7 +163,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }
 
-        if (sync.data.config.model) {
+        if (!Flag.TPCODE_ACCOUNT_ENABLED && sync.data.config.model) {
           const { providerID, modelID } = Provider.parseModel(sync.data.config.model)
           if (isModelValid({ providerID, modelID })) {
             return {
@@ -194,8 +195,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         const a = agent.current()
         return (
           getFirstValidModel(
-            () => modelStore.model[a.name],
-            () => a.model,
+            () => (!Flag.TPCODE_ACCOUNT_ENABLED ? modelStore.model[a.name] : undefined),
+            () => (!Flag.TPCODE_ACCOUNT_ENABLED ? a.model : undefined),
             fallbackModel,
           ) ?? undefined
         )
@@ -230,6 +231,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }),
         cycle(direction: 1 | -1) {
+          if (Flag.TPCODE_ACCOUNT_ENABLED) return
           const current = currentModel()
           if (!current) return
           const recent = modelStore.recent
@@ -243,6 +245,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setModelStore("model", agent.current().name, { ...val })
         },
         cycleFavorite(direction: 1 | -1) {
+          if (Flag.TPCODE_ACCOUNT_ENABLED) return
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
           if (!favorites.length) {
             toast.show({
@@ -276,6 +279,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           save()
         },
         set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
+          if (Flag.TPCODE_ACCOUNT_ENABLED) return
           batch(() => {
             if (!isModelValid(model)) {
               toast.show({
@@ -298,6 +302,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           })
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {
+          if (Flag.TPCODE_ACCOUNT_ENABLED) return
           batch(() => {
             if (!isModelValid(model)) {
               toast.show({
@@ -336,6 +341,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             return Object.keys(info.variants)
           },
           set(value: string | undefined) {
+            if (Flag.TPCODE_ACCOUNT_ENABLED) return
             const m = currentModel()
             if (!m) return
             const key = `${m.providerID}/${m.modelID}`

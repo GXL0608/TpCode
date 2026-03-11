@@ -46,7 +46,6 @@ import { Worktree as WorktreeState } from "@/utils/worktree"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useTheme, type ColorScheme } from "@opencode-ai/ui/theme"
-import { DialogSelectProvider } from "@/components/dialog-select-provider"
 import { DialogSelectServer } from "@/components/dialog-select-server"
 import { DialogSettings } from "@/components/dialog-settings"
 import { useCommand, type CommandOption } from "@/context/command"
@@ -1044,15 +1043,6 @@ export default function Layout(props: ParentProps) {
         onSelect: () => cycleTheme(1),
       },
     ]
-    if (isSuperAdmin()) {
-      commands.push({
-        id: "provider.connect",
-        title: language.t("command.provider.connect"),
-        category: language.t("command.category.provider"),
-        onSelect: () => connectProvider(),
-      })
-    }
-
     for (const [id, definition] of availableThemeEntries()) {
       commands.push({
         id: `theme.set.${id}`,
@@ -1105,11 +1095,6 @@ export default function Layout(props: ParentProps) {
 
     return commands
   })
-
-  function connectProvider() {
-    if (!isSuperAdmin()) return
-    dialog.show(() => <DialogSelectProvider scope={{ kind: "global" }} />)
-  }
 
   function openServer() {
     dialog.show(() => <DialogSelectServer />)
@@ -1992,14 +1977,6 @@ export default function Layout(props: ParentProps) {
               <div class="text-text-base">{language.t("sidebar.gettingStarted.line1")}</div>
               <div class="text-text-base">{language.t("sidebar.gettingStarted.line2")}</div>
             </div>
-            <Button
-              class="flex w-full text-left justify-start text-12-medium text-text-strong stroke-[1.5px] rounded-md rounded-t-none shadow-none border-t border-border-weak-base px-3"
-              size="large"
-              icon="plus"
-              onClick={connectProvider}
-            >
-              {language.t("command.provider.connect")}
-            </Button>
           </div>
         </div>
       </div>

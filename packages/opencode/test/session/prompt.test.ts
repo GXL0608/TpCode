@@ -9,6 +9,8 @@ import { SessionVoiceTable } from "../../src/session/session.sql"
 import { Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
+import { AccountSystemSettingService } from "../../src/user/system-setting"
+import { Flag } from "../../src/flag/flag"
 
 Log.init({ print: false })
 
@@ -208,6 +210,83 @@ describe("session.prompt agent variant", () => {
     } finally {
       if (prev === undefined) delete process.env.OPENAI_API_KEY
       else process.env.OPENAI_API_KEY = prev
+    }
+  })
+})
+
+describe("session.prompt managed model", () => {
+  test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("ignores client model, variant, and local agent model in strict account mode", async () => {
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-global-openai",
+      })
+      await AccountSystemSettingService.setProviderControl({
+        model: "openai/gpt-5.2-chat-latest",
+        small_model: "openai/gpt-5.2-chat-latest",
+        enabled_providers: ["openai"],
+      })
+
+      await using tmp = await tmpdir({
+        git: true,
+        config: {
+          agent: {
+            build: {
+              model: "anthropic/claude-sonnet-4-20250514",
+              variant: "xhigh",
+            },
+          },
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        init: async () => {
+          process.env.OPENAI_API_KEY = "test-openai-key"
+          process.env.ANTHROPIC_API_KEY = "test-anthropic-key"
+        },
+        fn: async () => {
+          const session = await Session.create({})
+
+          const message = await SessionPrompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+            variant: "high",
+            noReply: true,
+            parts: [{ type: "text", text: "hello" }],
+          })
+
+          if (message.info.role !== "user") throw new Error("expected user message")
+          expect(message.info.model).toEqual({
+            providerID: "openai",
+            modelID: "gpt-5.2-chat-latest",
+          })
+          expect(message.info.variant).toBeUndefined()
+
+          await Session.remove(session.id)
+        },
+      })
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
     }
   })
 })

@@ -287,7 +287,7 @@ function App() {
   onMount(() => {
     batch(() => {
       if (args.agent) local.agent.set(args.agent)
-      if (args.model) {
+      if (!Flag.TPCODE_ACCOUNT_ENABLED && args.model) {
         const { providerID, modelID } = Provider.parseModel(args.model)
         if (!providerID || !modelID)
           return toast.show({
@@ -394,59 +394,63 @@ function App() {
         dialog.clear()
       },
     },
-    {
-      title: "Switch model",
-      value: "model.list",
-      keybind: "model_list",
-      suggested: true,
-      category: "Agent",
-      slash: {
-        name: "models",
-      },
-      onSelect: () => {
-        dialog.replace(() => <DialogModel />)
-      },
-    },
-    {
-      title: "Model cycle",
-      value: "model.cycle_recent",
-      keybind: "model_cycle_recent",
-      category: "Agent",
-      hidden: true,
-      onSelect: () => {
-        local.model.cycle(1)
-      },
-    },
-    {
-      title: "Model cycle reverse",
-      value: "model.cycle_recent_reverse",
-      keybind: "model_cycle_recent_reverse",
-      category: "Agent",
-      hidden: true,
-      onSelect: () => {
-        local.model.cycle(-1)
-      },
-    },
-    {
-      title: "Favorite cycle",
-      value: "model.cycle_favorite",
-      keybind: "model_cycle_favorite",
-      category: "Agent",
-      hidden: true,
-      onSelect: () => {
-        local.model.cycleFavorite(1)
-      },
-    },
-    {
-      title: "Favorite cycle reverse",
-      value: "model.cycle_favorite_reverse",
-      keybind: "model_cycle_favorite_reverse",
-      category: "Agent",
-      hidden: true,
-      onSelect: () => {
-        local.model.cycleFavorite(-1)
-      },
-    },
+    ...(!Flag.TPCODE_ACCOUNT_ENABLED
+      ? [
+          {
+            title: "Switch model",
+            value: "model.list",
+            keybind: "model_list",
+            suggested: true,
+            category: "Agent",
+            slash: {
+              name: "models",
+            },
+            onSelect: () => {
+              dialog.replace(() => <DialogModel />)
+            },
+          },
+          {
+            title: "Model cycle",
+            value: "model.cycle_recent",
+            keybind: "model_cycle_recent",
+            category: "Agent",
+            hidden: true,
+            onSelect: () => {
+              local.model.cycle(1)
+            },
+          },
+          {
+            title: "Model cycle reverse",
+            value: "model.cycle_recent_reverse",
+            keybind: "model_cycle_recent_reverse",
+            category: "Agent",
+            hidden: true,
+            onSelect: () => {
+              local.model.cycle(-1)
+            },
+          },
+          {
+            title: "Favorite cycle",
+            value: "model.cycle_favorite",
+            keybind: "model_cycle_favorite",
+            category: "Agent",
+            hidden: true,
+            onSelect: () => {
+              local.model.cycleFavorite(1)
+            },
+          },
+          {
+            title: "Favorite cycle reverse",
+            value: "model.cycle_favorite_reverse",
+            keybind: "model_cycle_favorite_reverse",
+            category: "Agent",
+            hidden: true,
+            onSelect: () => {
+              local.model.cycleFavorite(-1)
+            },
+          },
+        ]
+      : []),
     {
       title: "Switch agent",
       value: "agent.list",
@@ -480,16 +484,20 @@ function App() {
         local.agent.move(1)
       },
     },
-    {
-      title: "Variant cycle",
-      value: "variant.cycle",
-      keybind: "variant_cycle",
-      category: "Agent",
-      hidden: true,
-      onSelect: () => {
-        local.model.variant.cycle()
-      },
-    },
+    ...(!Flag.TPCODE_ACCOUNT_ENABLED
+      ? [
+          {
+            title: "Variant cycle",
+            value: "variant.cycle",
+            keybind: "variant_cycle",
+            category: "Agent",
+            hidden: true,
+            onSelect: () => {
+              local.model.variant.cycle()
+            },
+          },
+        ]
+      : []),
     {
       title: "Agent cycle reverse",
       value: "agent.cycle.reverse",
@@ -500,18 +508,22 @@ function App() {
         local.agent.move(-1)
       },
     },
-    {
-      title: "Connect provider",
-      value: "provider.connect",
-      suggested: !connected(),
-      slash: {
-        name: "connect",
-      },
-      onSelect: () => {
-        dialog.replace(() => <DialogProviderList />)
-      },
-      category: "Provider",
-    },
+    ...(!Flag.TPCODE_ACCOUNT_ENABLED
+      ? [
+          {
+            title: "Connect provider",
+            value: "provider.connect",
+            suggested: !connected(),
+            slash: {
+              name: "connect",
+            },
+            onSelect: () => {
+              dialog.replace(() => <DialogProviderList />)
+            },
+            category: "Provider",
+          },
+        ]
+      : []),
     {
       title: "View status",
       keybind: "status_view",
@@ -660,6 +672,7 @@ function App() {
   ])
 
   createEffect(() => {
+    if (Flag.TPCODE_ACCOUNT_ENABLED) return
     const currentModel = local.model.current()
     if (!currentModel) return
     if (currentModel.providerID === "openrouter" && !kv.get("openrouter_warning", false)) {

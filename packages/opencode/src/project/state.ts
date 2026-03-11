@@ -74,4 +74,10 @@ export namespace State {
       await dispose(key)
     }
   }
+
+  export async function disposeAll() {
+    for (const key of [...recordsByKey.keys()]) {
+      await dispose(key)
+    }
+  }
 }

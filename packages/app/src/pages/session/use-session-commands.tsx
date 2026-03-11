@@ -311,18 +311,8 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       onSelect: async () => {
         const sessionID = params.id
         if (!sessionID) return
-        const model = local.model.current()
-        if (!model) {
-          showToast({
-            title: language.t("toast.model.none.title"),
-            description: language.t("toast.model.none.description"),
-          })
-          return
-        }
         await sdk.client.session.summarize({
           sessionID,
-          modelID: model.id,
-          providerID: model.provider.id,
         })
       },
     }),

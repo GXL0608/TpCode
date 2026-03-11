@@ -48,6 +48,8 @@ export async function parseAccountError(response?: Response) {
   if (code === "phone_invalid") return "手机号格式不正确（示例：13800138000）"
   if (code === "api_key_invalid") return "API 密钥不能为空"
   if (code === "api_key_not_found") return "未找到对应的 API 密钥"
+  if (code === "provider_not_configured") return "当前引用了未配置的供应商"
+  if (code === "model_not_configured") return "当前引用了未配置供应商下不可用的模型"
   if (code === "directory_missing") return "目录不存在或不可访问"
   if (code === "invalid_credentials") return "账号或密码错误"
   if (code === "user_locked") return "账号已被锁定，请稍后再试"

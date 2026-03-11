@@ -34,6 +34,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import { Flag } from "@/flag/flag"
 
 export type PromptProps = {
   sessionID?: string
@@ -77,8 +78,10 @@ export function Prompt(props: PromptProps) {
   const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  const strictAccount = Flag.TPCODE_ACCOUNT_ENABLED
 
   function promptModelWarning() {
+    if (strictAccount) return
     toast.show({
       variant: "warning",
       message: "Connect a provider to send prompts",
@@ -162,8 +165,8 @@ export function Prompt(props: PromptProps) {
       const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
       if (msg.agent && isPrimaryAgent) {
         local.agent.set(msg.agent)
-        if (msg.model) local.model.set(msg.model)
-        if (msg.variant) local.model.variant.set(msg.variant)
+        if (!strictAccount && msg.model) local.model.set(msg.model)
+        if (!strictAccount && msg.variant) local.model.variant.set(msg.variant)
       }
     }
   })
@@ -534,8 +537,8 @@ export function Prompt(props: PromptProps) {
       exit()
       return
     }
-    const selectedModel = local.model.current()
-    if (!selectedModel) {
+    const selectedModel = strictAccount ? undefined : local.model.current()
+    if (!strictAccount && !selectedModel) {
       promptModelWarning()
       return
     }
@@ -569,16 +572,18 @@ export function Prompt(props: PromptProps) {
 
     // Capture mode before it gets reset
     const currentMode = store.mode
-    const variant = local.model.variant.current()
+    const variant = strictAccount ? undefined : local.model.variant.current()
 
     if (store.mode === "shell") {
       sdk.client.session.shell({
         sessionID,
         agent: local.agent.current().name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
+        ...(selectedModel && {
+          model: {
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+          },
+        }),
         command: inputText,
       })
       setStore("mode", "normal")
@@ -602,9 +607,13 @@ export function Prompt(props: PromptProps) {
         command: command.slice(1),
         arguments: args,
         agent: local.agent.current().name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
         messageID,
-        variant,
+        ...(selectedModel && {
+          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+        }),
+        ...(variant && {
+          variant,
+        }),
         parts: nonTextParts
           .filter((x) => x.type === "file")
           .map((x) => ({
@@ -616,11 +625,16 @@ export function Prompt(props: PromptProps) {
       sdk.client.session
         .prompt({
           sessionID,
-          ...selectedModel,
           messageID,
           agent: local.agent.current().name,
-          model: selectedModel,
-          variant,
+          ...(selectedModel && {
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+            model: selectedModel,
+          }),
+          ...(variant && {
+            variant,
+          }),
           parts: [
             {
               id: Identifier.ascending("part"),
@@ -743,6 +757,7 @@ export function Prompt(props: PromptProps) {
   })
 
   const showVariant = createMemo(() => {
+    if (strictAccount) return false
     const variants = local.model.variant.list()
     if (variants.length === 0) return false
     const current = local.model.variant.current()
@@ -1000,7 +1015,7 @@ export function Prompt(props: PromptProps) {
               <text fg={highlight()}>
                 {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}{" "}
               </text>
-              <Show when={store.mode === "normal"}>
+              <Show when={store.mode === "normal" && !strictAccount}>
                 <box flexDirection="row" gap={1}>
                   <text flexShrink={0} fg={keybind.leader ? theme.textMuted : theme.text}>
                     {local.model.parsed().model}
@@ -1128,7 +1143,7 @@ export function Prompt(props: PromptProps) {
             <box gap={2} flexDirection="row">
               <Switch>
                 <Match when={store.mode === "normal"}>
-                  <Show when={local.model.variant.list().length > 0}>
+                  <Show when={!strictAccount && local.model.variant.list().length > 0}>
                     <text fg={theme.text}>
                       {keybind.print("variant_cycle")} <span style={{ fg: theme.textMuted }}>variants</span>
                     </text>

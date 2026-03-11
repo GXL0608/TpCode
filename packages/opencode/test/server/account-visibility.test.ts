@@ -4,6 +4,7 @@ import { and, Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { TpUserProviderTable } from "../../src/user/user-provider.sql"
 import { Flag } from "../../src/flag/flag"
+import { AccountSystemSettingService } from "../../src/user/system-setting"
 
 const root = path.join(__dirname, "../..")
 Log.init({ print: false })
@@ -706,5 +707,96 @@ describe("account visibility", () => {
     }
     expect((listBody.all ?? []).some((item) => item.id === "opencode")).toBe(true)
     expect((listBody.connected ?? []).includes("opencode")).toBe(true)
+  })
+
+  test.skipIf(!on)("super_admin sees the same managed provider visibility as normal user", async () => {
+    const svc = mem.user
+    if (!svc) throw new Error("user_service_missing")
+
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+
+    try {
+      const admin = await login("admin", process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026")
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-global-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderControl({
+        model: "openai/gpt-5.2-chat-latest",
+        small_model: "openai/gpt-5.2-chat-latest",
+        enabled_providers: ["openai"],
+      })
+
+      const username = uid("managed_scope")
+      const password = "TpCode@123A"
+      const created = await svc.createUser({
+        username,
+        password,
+        account_type: "internal",
+        org_id: "org_tp_internal",
+        role_codes: ["developer"],
+        actor_user_id: "user_tp_admin",
+      })
+      expect(created.ok).toBe(true)
+
+      const normal = await login(username, password)
+      const [adminProviders, userProviders, adminConfigProviders, userConfigProviders] = await Promise.all([
+        req({ path: "/provider", token: admin }),
+        req({ path: "/provider", token: normal }),
+        req({ path: "/config/providers", token: admin }),
+        req({ path: "/config/providers", token: normal }),
+      ])
+
+      expect(adminProviders.status).toBe(200)
+      expect(userProviders.status).toBe(200)
+      expect(adminConfigProviders.status).toBe(200)
+      expect(userConfigProviders.status).toBe(200)
+
+      const adminProviderBody = (await adminProviders.json()) as {
+        all?: Array<{ id: string; models?: Record<string, unknown> }>
+        connected?: string[]
+      }
+      const userProviderBody = (await userProviders.json()) as {
+        all?: Array<{ id: string; models?: Record<string, unknown> }>
+        connected?: string[]
+      }
+      const adminConfigBody = (await adminConfigProviders.json()) as {
+        providers?: Array<{ id: string; models?: Record<string, unknown> }>
+      }
+      const userConfigBody = (await userConfigProviders.json()) as {
+        providers?: Array<{ id: string; models?: Record<string, unknown> }>
+      }
+
+      expect(adminProviderBody).toEqual(userProviderBody)
+      expect(adminConfigBody).toEqual(userConfigBody)
+      expect(adminProviderBody.all?.map((item) => item.id)).toEqual(["openai"])
+      expect(Object.keys(adminProviderBody.all?.[0]?.models ?? {})).toEqual(["gpt-5.2-chat-latest"])
+      expect(adminProviderBody.connected).toEqual(["openai"])
+      expect(adminConfigBody.providers?.map((item) => item.id)).toEqual(["openai"])
+      expect(Object.keys(adminConfigBody.providers?.[0]?.models ?? {})).toEqual(["gpt-5.2-chat-latest"])
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
   })
 })

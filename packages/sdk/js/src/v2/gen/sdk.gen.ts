@@ -27,6 +27,8 @@ import type {
   AccountPasswordForgotRequestResponses,
   AccountPasswordForgotResetErrors,
   AccountPasswordForgotResetResponses,
+  AccountPlanEvalGetErrors,
+  AccountPlanEvalGetResponses,
   AccountPlanEvalRetryErrors,
   AccountPlanEvalRetryResponses,
   AccountPlanSaveErrors,
@@ -78,6 +80,7 @@ import type {
   DeleteAccountAdminProductsProductIdResponses,
   DeleteAccountAdminProviderProviderIdGlobalResponses,
   DeleteAccountAdminProvidersProviderIdConfigGlobalResponses,
+  DeleteAccountAdminProvidersProviderIdGlobalResponses,
   DeleteAccountAdminRolesRoleCodeResponses,
   DeleteAccountAdminUsersUserIdProvidersProviderIdResponses,
   DeleteAccountAdminUsersUserIdResponses,
@@ -734,6 +737,25 @@ export class Eval extends HeyApiClient {
       ThrowOnError
     >({
       url: "/account/plan/eval/{plan_id}/retry",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get saved plan evaluation
+   *
+   * Get saved plan evaluation detail, including model judge request and response debug payload.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      plan_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "plan_id" }] }])
+    return (options?.client ?? this.client).get<AccountPlanEvalGetResponses, AccountPlanEvalGetErrors, ThrowOnError>({
+      url: "/account/plan/eval/{plan_id}",
       ...options,
       ...params,
     })
@@ -4904,16 +4926,6 @@ export class OpencodeClient extends HeyApiClient {
       disabled_providers?: Array<string>
       model?: string
       small_model?: string
-      model_prefs?: {
-        visibility?: {
-          [key: string]: "show" | "hide"
-        }
-        favorite?: Array<string>
-        recent?: Array<string>
-        variant?: {
-          [key: string]: string
-        }
-      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -4926,7 +4938,6 @@ export class OpencodeClient extends HeyApiClient {
             { in: "body", key: "disabled_providers" },
             { in: "body", key: "model" },
             { in: "body", key: "small_model" },
-            { in: "body", key: "model_prefs" },
           ],
         },
       ],
@@ -5453,22 +5464,30 @@ export class OpencodeClient extends HeyApiClient {
     })
   }
 
+  public deleteAccountAdminProvidersProviderIdGlobal<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).delete<
+      DeleteAccountAdminProvidersProviderIdGlobalResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/providers/{provider_id}/global",
+      ...options,
+      ...params,
+    })
+  }
+
   public putAccountAdminProviderControlGlobal<ThrowOnError extends boolean = false>(
     parameters?: {
       enabled_providers?: Array<string>
       disabled_providers?: Array<string>
       model?: string
       small_model?: string
-      model_prefs?: {
-        visibility?: {
-          [key: string]: "show" | "hide"
-        }
-        favorite?: Array<string>
-        recent?: Array<string>
-        variant?: {
-          [key: string]: string
-        }
-      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5481,7 +5500,6 @@ export class OpencodeClient extends HeyApiClient {
             { in: "body", key: "disabled_providers" },
             { in: "body", key: "model" },
             { in: "body", key: "small_model" },
-            { in: "body", key: "model_prefs" },
           ],
         },
       ],
@@ -5962,16 +5980,6 @@ export class OpencodeClient extends HeyApiClient {
       disabled_providers?: Array<string>
       model?: string
       small_model?: string
-      model_prefs?: {
-        visibility?: {
-          [key: string]: "show" | "hide"
-        }
-        favorite?: Array<string>
-        recent?: Array<string>
-        variant?: {
-          [key: string]: string
-        }
-      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5985,7 +5993,6 @@ export class OpencodeClient extends HeyApiClient {
             { in: "body", key: "disabled_providers" },
             { in: "body", key: "model" },
             { in: "body", key: "small_model" },
-            { in: "body", key: "model_prefs" },
           ],
         },
       ],
