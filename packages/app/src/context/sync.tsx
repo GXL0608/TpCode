@@ -1,8 +1,9 @@
-import { batch, createMemo } from "solid-js"
+import { batch, createMemo, onCleanup } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { Binary } from "@opencode-ai/util/binary"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useGlobalSync } from "./global-sync"
+import { useGlobalSDK } from "./global-sdk"
 import { resolveProjectByDirectory } from "./project-resolver"
 import { useSDK } from "./sdk"
 import type { Message, Part } from "@opencode-ai/sdk/v2/client"
@@ -41,6 +42,17 @@ type OptimisticRemoveInput = {
   messageID: string
 }
 
+type FetchInput = {
+  sessionID: string
+  stale: boolean
+  session: Message[]
+  part: { id: string; part: Part[] }[]
+  removed?: {
+    message?: Set<string>
+    part?: Map<string, Set<string>>
+  }
+}
+
 export function applyOptimisticAdd(draft: OptimisticStore, input: OptimisticAddInput) {
   const messages = draft.message[input.sessionID]
   if (!messages) {
@@ -60,6 +72,56 @@ export function applyOptimisticRemove(draft: OptimisticStore, input: OptimisticR
     if (result.found) messages.splice(result.index, 1)
   }
   delete draft.part[input.messageID]
+}
+
+export function applyFetchedMessages(draft: OptimisticStore, input: FetchInput) {
+  if (!input.stale) {
+    draft.message[input.sessionID] = input.session.slice()
+    for (const item of input.part) {
+      draft.part[item.id] = sortParts(item.part)
+    }
+    return
+  }
+
+  const removedMessage = input.removed?.message
+  const removedPart = input.removed?.part
+  const current = draft.message[input.sessionID] ?? []
+  const next = current.slice()
+  let changed = draft.message[input.sessionID] === undefined
+
+  for (const message of input.session) {
+    if (removedMessage?.has(message.id)) continue
+    const result = Binary.search(next, message.id, (item) => item.id)
+    if (result.found) continue
+    next.splice(result.index, 0, message)
+    changed = true
+  }
+
+  if (changed) {
+    draft.message[input.sessionID] = next
+  }
+
+  for (const item of input.part) {
+    if (removedMessage?.has(item.id)) continue
+    const incoming = sortParts(item.part).filter((part) => !removedPart?.get(item.id)?.has(part.id))
+    if (incoming.length === 0) continue
+    const existing = draft.part[item.id]
+    if (!existing) {
+      draft.part[item.id] = incoming
+      continue
+    }
+    const merged = existing.slice()
+    let added = false
+    for (const part of incoming) {
+      const result = Binary.search(merged, part.id, (value) => value.id)
+      if (result.found) continue
+      merged.splice(result.index, 0, part)
+      added = true
+    }
+    if (added) {
+      draft.part[item.id] = merged
+    }
+  }
 }
 
 function setOptimisticAdd(setStore: (...args: unknown[]) => void, input: OptimisticAddInput) {
@@ -94,6 +156,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
     const globalSync = useGlobalSync()
+    const globalSDK = useGlobalSDK()
     const sdk = useSDK()
 
     type Child = ReturnType<(typeof globalSync)["child"]>
@@ -109,11 +172,77 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const inflight = new Map<string, Promise<void>>()
     const inflightDiff = new Map<string, Promise<void>>()
     const inflightTodo = new Map<string, Promise<void>>()
+    const version = new Map<string, number>()
+    const removedMessage = new Map<string, Set<string>>()
+    const removedPart = new Map<string, Map<string, Set<string>>>()
     const [meta, setMeta] = createStore({
       limit: {} as Record<string, number>,
       complete: {} as Record<string, boolean>,
       loading: {} as Record<string, boolean>,
     })
+
+    const touch = (directory: string, sessionID: string) => {
+      const key = keyFor(directory, sessionID)
+      version.set(key, (version.get(key) ?? 0) + 1)
+    }
+
+    const markRemovedMessage = (directory: string, sessionID: string, messageID: string) => {
+      const key = keyFor(directory, sessionID)
+      const existing = removedMessage.get(key)
+      if (existing) {
+        existing.add(messageID)
+      }
+      if (!existing) {
+        removedMessage.set(key, new Set([messageID]))
+      }
+      removedPart.get(key)?.delete(messageID)
+      touch(directory, sessionID)
+    }
+
+    const markRemovedPart = (directory: string, sessionID: string, messageID: string, partID: string) => {
+      const key = keyFor(directory, sessionID)
+      const messages = removedPart.get(key) ?? new Map<string, Set<string>>()
+      const parts = messages.get(messageID) ?? new Set<string>()
+      parts.add(partID)
+      messages.set(messageID, parts)
+      removedPart.set(key, messages)
+      touch(directory, sessionID)
+    }
+
+    const stop = globalSDK.event.listen((event) => {
+      if (event.name !== sdk.directory) return
+      if (event.details.type === "message.updated") {
+        const sessionID = event.details.properties.info?.sessionID
+        if (!sessionID) return
+        touch(event.name, sessionID)
+        return
+      }
+      if (event.details.type === "message.removed") {
+        const sessionID = event.details.properties.sessionID
+        const messageID = event.details.properties.messageID
+        if (!sessionID || !messageID) return
+        markRemovedMessage(event.name, sessionID, messageID)
+        return
+      }
+      if (event.details.type === "message.part.updated" || event.details.type === "message.part.delta") {
+        const sessionID =
+          event.details.type === "message.part.updated"
+            ? event.details.properties.part?.sessionID
+            : event.details.properties.sessionID
+        if (!sessionID) return
+        touch(event.name, sessionID)
+        return
+      }
+      if (event.details.type === "message.part.removed") {
+        const sessionID = event.details.properties.sessionID
+        const messageID = event.details.properties.messageID
+        const partID = event.details.properties.partID
+        if (!sessionID || !messageID || !partID) return
+        markRemovedPart(event.name, sessionID, messageID, partID)
+      }
+    })
+
+    onCleanup(stop)
 
     const getSession = (sessionID: string) => {
       const store = current()[0]
@@ -152,17 +281,35 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const key = keyFor(input.directory, input.sessionID)
       if (meta.loading[key]) return
 
+      const start = version.get(key) ?? 0
       setMeta("loading", key, true)
       await fetchMessages(input)
         .then((next) => {
+          const stale = (version.get(key) ?? 0) !== start
           batch(() => {
-            input.setStore("message", input.sessionID, reconcile(next.session, { key: "id" }))
-            for (const message of next.part) {
-              input.setStore("part", message.id, reconcile(message.part, { key: "id" }))
-            }
+            input.setStore(
+              produce((draft) => {
+                applyFetchedMessages(draft, {
+                  sessionID: input.sessionID,
+                  stale,
+                  session: next.session,
+                  part: next.part,
+                  removed: stale
+                    ? {
+                        message: removedMessage.get(key),
+                        part: removedPart.get(key),
+                      }
+                    : undefined,
+                })
+              }),
+            )
             setMeta("limit", key, input.limit)
             setMeta("complete", key, next.complete)
           })
+          if (!stale) {
+            removedMessage.delete(key)
+            removedPart.delete(key)
+          }
         })
         .finally(() => {
           setMeta("loading", key, false)
@@ -189,12 +336,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         get: getSession,
         optimistic: {
           add(input: { directory?: string; sessionID: string; message: Message; parts: Part[] }) {
+            const directory = input.directory ?? sdk.directory
             const [, setStore] = target(input.directory)
             setOptimisticAdd(setStore as (...args: unknown[]) => void, input)
+            touch(directory, input.sessionID)
           },
           remove(input: { directory?: string; sessionID: string; messageID: string }) {
+            const directory = input.directory ?? sdk.directory
             const [, setStore] = target(input.directory)
             setOptimisticRemove(setStore as (...args: unknown[]) => void, input)
+            markRemovedMessage(directory, input.sessionID, input.messageID)
           },
         },
         addOptimisticMessage(input: {
@@ -218,6 +369,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             message,
             parts: input.parts,
           })
+          touch(sdk.directory, input.sessionID)
         },
         async sync(sessionID: string) {
           const directory = sdk.directory

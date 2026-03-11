@@ -1,6 +1,9 @@
+import type { Page } from "@playwright/test"
 import { test, expect } from "../fixtures"
 import { promptSelector } from "../selectors"
-import { sessionIDFromUrl, withSession } from "../actions"
+import { sessionIDFromUrl } from "../actions"
+
+const reply = (page: Page, token: string) => page.getByRole("log").getByText(token)
 
 test("can send a prompt and receive a reply", async ({ page, sdk, gotoSession }) => {
   test.setTimeout(120_000)
@@ -29,6 +32,8 @@ test("can send a prompt and receive a reply", async ({ page, sdk, gotoSession })
   })()
 
   try {
+    await expect(reply(page, token)).toBeVisible({ timeout: 90_000 })
+
     await expect
       .poll(
         async () => {
@@ -51,5 +56,41 @@ test("can send a prompt and receive a reply", async ({ page, sdk, gotoSession })
 
   if (pageErrors.length > 0) {
     throw new Error(`Page error(s):\n${pageErrors.join("\n")}`)
+  }
+})
+
+test("reply stays visible when hydration returns a stale snapshot", async ({ page, sdk, gotoSession }) => {
+  test.setTimeout(120_000)
+
+  let delayed = false
+  await page.route(/\/session\/[^/]+\/message(?:\?.*)?$/, async (route) => {
+    if (route.request().method() !== "GET" || delayed) {
+      await route.continue()
+      return
+    }
+
+    delayed = true
+    const response = await route.fetch()
+    const body = await response.body()
+    await page.waitForTimeout(2000)
+    await route.fulfill({ response, body })
+  })
+
+  await gotoSession()
+
+  const token = `E2E_STALE_${Date.now()}`
+  await page.locator(promptSelector).click()
+  await page.keyboard.type(`Reply with exactly: ${token}`)
+  await page.keyboard.press("Enter")
+
+  await expect(page).toHaveURL(/\/session\/[^/?#]+/, { timeout: 30_000 })
+  const sessionID = sessionIDFromUrl(page.url())!
+
+  try {
+    await expect(reply(page, token)).toBeVisible({ timeout: 90_000 })
+    await page.waitForTimeout(2500)
+    await expect(reply(page, token)).toBeVisible()
+  } finally {
+    await sdk.session.delete({ sessionID }).catch(() => undefined)
   }
 })
