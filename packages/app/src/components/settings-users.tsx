@@ -6,6 +6,8 @@ import { createStore } from "solid-js/store"
 import { useAccountAuth } from "@/context/account-auth"
 import { passwordError, passwordRule, phoneError, phoneRule } from "@/utils/account-rule"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
+import { filterRoles } from "./settings-users-filter"
+import { createUserLayout } from "./settings-users-layout"
 import { type AccountRole, type AccountUser, roleZh } from "./settings-rbac-zh"
 
 function list<T>(input: unknown) {
@@ -34,6 +36,7 @@ const pageSizes = [10, 20, 50, 100, 500] as const
 export const SettingsUsers = () => {
   const auth = useAccountAuth()
   const request = useAccountRequest()
+  const layout = createUserLayout()
   const canView = createMemo(() => auth.has("user:manage"))
   const canManage = createMemo(() => auth.has("user:manage"))
   const canRole = createMemo(() => auth.has("role:manage"))
@@ -56,6 +59,7 @@ export const SettingsUsers = () => {
     createPassword: "",
     createPhone: "",
     createType: "internal" as "internal" | "hospital" | "partner",
+    createRoleQuery: "",
     createRoles: [] as string[],
     editOpen: false,
     editUserID: "",
@@ -73,6 +77,7 @@ export const SettingsUsers = () => {
   const roleMap = createMemo(() => new Map(state.roles.map((item) => [item.code, item])))
   const createPasswordIssue = createMemo(() => passwordError(state.createPassword))
   const createPhoneIssue = createMemo(() => phoneError(state.createPhone))
+  const filteredCreateRoles = createMemo(() => filterRoles(state.roles, state.createRoleQuery))
   const userPageTotal = createMemo(() => Math.max(1, Math.ceil(state.userTotal / state.userPageSize)))
   const userRangeStart = createMemo(() => {
     if (state.userTotal === 0 || state.users.length === 0) return 0
@@ -101,6 +106,7 @@ export const SettingsUsers = () => {
     setState("createPassword", "")
     setState("createPhone", "")
     setState("createType", "internal")
+    setState("createRoleQuery", "")
     setState("createRoles", [])
   }
 
@@ -539,80 +545,91 @@ export const SettingsUsers = () => {
 
       <Show when={state.createOpen}>
         <div class="fixed inset-0 z-[140] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
-          <form class="w-full max-w-lg rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3" onSubmit={createUser}>
-            <div class="text-16-medium text-text-strong">新增用户</div>
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              placeholder="用户名"
-              value={state.createUsername}
-              onInput={(event) => setState("createUsername", event.currentTarget.value)}
-            />
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              placeholder="显示名（可选）"
-              value={state.createDisplayName}
-              onInput={(event) => setState("createDisplayName", event.currentTarget.value)}
-            />
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              type="password"
-              placeholder="初始密码"
-              value={state.createPassword}
-              onInput={(event) => setState("createPassword", event.currentTarget.value)}
-            />
-            <Show when={state.createPassword}>
-              <div class={`text-12-regular ${createPasswordIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
-                {createPasswordIssue() || "密码格式正确"}
-              </div>
-            </Show>
-            <Show when={!state.createPassword}>
-              <div class="text-12-regular text-text-weak">{passwordRule}</div>
-            </Show>
-            <input
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              placeholder="手机号"
-              value={state.createPhone}
-              onInput={(event) => setState("createPhone", event.currentTarget.value)}
-            />
-            <Show when={state.createPhone}>
-              <div class={`text-12-regular ${createPhoneIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
-                {createPhoneIssue() || "手机号格式正确"}
-              </div>
-            </Show>
-            <Show when={!state.createPhone}>
-              <div class="text-12-regular text-text-weak">{phoneRule}</div>
-            </Show>
-            <select
-              class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-              value={state.createType}
-              onChange={(event) => setState("createType", event.currentTarget.value as "internal" | "hospital" | "partner")}
-            >
-              <option value="internal">内部账号</option>
-              <option value="hospital">医院账号</option>
-              <option value="partner">合作方账号</option>
-            </select>
-
-            <Show when={canRole()}>
-              <div class="rounded-md border border-border-weak-base bg-surface-panel p-3">
-                <div class="text-12-medium text-text-weak mb-2">初始角色</div>
-                <div class="flex flex-wrap gap-2">
-                  <For each={state.roles}>
-                    {(role) => (
-                      <label class="inline-flex items-center gap-2 rounded-full border border-border-weak-base bg-surface-base px-3 py-1.5 text-12-regular">
-                        <input
-                          type="checkbox"
-                          checked={state.createRoles.includes(role.code)}
-                          onChange={() => toggleCreateRole(role.code)}
-                        />
-                        <span>{role.name?.trim() || roleZh(role.code)}</span>
-                      </label>
-                    )}
-                  </For>
+          <form class={layout.dialog} onSubmit={createUser}>
+            <div class={layout.body}>
+              <div class="text-16-medium text-text-strong">新增用户</div>
+              <input
+                class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                placeholder="用户名"
+                value={state.createUsername}
+                onInput={(event) => setState("createUsername", event.currentTarget.value)}
+              />
+              <input
+                class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                placeholder="显示名（可选）"
+                value={state.createDisplayName}
+                onInput={(event) => setState("createDisplayName", event.currentTarget.value)}
+              />
+              <input
+                class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                type="password"
+                placeholder="初始密码"
+                value={state.createPassword}
+                onInput={(event) => setState("createPassword", event.currentTarget.value)}
+              />
+              <Show when={state.createPassword}>
+                <div class={`text-12-regular ${createPasswordIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+                  {createPasswordIssue() || "密码格式正确"}
                 </div>
-              </div>
-            </Show>
+              </Show>
+              <Show when={!state.createPassword}>
+                <div class="text-12-regular text-text-weak">{passwordRule}</div>
+              </Show>
+              <input
+                class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                placeholder="手机号"
+                value={state.createPhone}
+                onInput={(event) => setState("createPhone", event.currentTarget.value)}
+              />
+              <Show when={state.createPhone}>
+                <div class={`text-12-regular ${createPhoneIssue() ? "text-icon-critical-base" : "text-icon-success-base"}`}>
+                  {createPhoneIssue() || "手机号格式正确"}
+                </div>
+              </Show>
+              <Show when={!state.createPhone}>
+                <div class="text-12-regular text-text-weak">{phoneRule}</div>
+              </Show>
+              <select
+                class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                value={state.createType}
+                onChange={(event) => setState("createType", event.currentTarget.value as "internal" | "hospital" | "partner")}
+              >
+                <option value="internal">内部账号</option>
+                <option value="hospital">医院账号</option>
+                <option value="partner">合作方账号</option>
+              </select>
 
-            <div class="flex justify-end gap-2">
+              <Show when={canRole()}>
+                <div class={layout.rolePanel}>
+                  <div class="text-12-medium text-text-weak mb-2">初始角色</div>
+                  <input
+                    class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular mb-2"
+                    placeholder="搜索角色名称或编码"
+                    value={state.createRoleQuery}
+                    onInput={(event) => setState("createRoleQuery", event.currentTarget.value)}
+                  />
+                  <div class={layout.roleList}>
+                    <For each={filteredCreateRoles()}>
+                      {(role) => (
+                        <label class={layout.roleItem}>
+                          <input
+                            type="checkbox"
+                            checked={state.createRoles.includes(role.code)}
+                            onChange={() => toggleCreateRole(role.code)}
+                          />
+                          <span>{role.name?.trim() || roleZh(role.code)}</span>
+                        </label>
+                      )}
+                    </For>
+                  </div>
+                  <Show when={filteredCreateRoles().length === 0}>
+                    <div class="py-6 text-center text-12-regular text-text-weak">未找到匹配角色</div>
+                  </Show>
+                </div>
+              </Show>
+            </div>
+
+            <div class={layout.footer}>
               <Button type="button" variant="secondary" onClick={resetCreate} disabled={state.pending}>
                 取消
               </Button>
