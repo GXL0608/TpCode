@@ -1,5 +1,5 @@
 import { For, createEffect, createMemo, on, onCleanup, Show, type JSX } from "solid-js"
-import { createStore, produce } from "solid-js/store"
+import { createStore, produce, reconcile } from "solid-js/store"
 import { useNavigate, useParams } from "@solidjs/router"
 import { Button } from "@opencode-ai/ui/button"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
@@ -22,6 +22,7 @@ import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
+import { setReasoningManual, type ReasoningState } from "@opencode-ai/util/reasoning-state"
 
 type MessageComment = {
   path: string
@@ -137,6 +138,7 @@ export function MessageTimeline(props: {
     menuOpen: false,
     pendingRename: false,
   })
+  const [reasoning, setReasoning] = createStore<Record<string, ReasoningState>>({})
   let titleRef: HTMLInputElement | undefined
 
   const errorMessage = (err: unknown) => {
@@ -151,7 +153,10 @@ export function MessageTimeline(props: {
   createEffect(
     on(
       sessionKey,
-      () => setTitle({ draft: "", editing: false, saving: false, menuOpen: false, pendingRename: false }),
+      () => {
+        setTitle({ draft: "", editing: false, saving: false, menuOpen: false, pendingRename: false })
+        setReasoning(reconcile({}))
+      },
       { defer: true },
     ),
   )
@@ -600,6 +605,8 @@ export function MessageTimeline(props: {
                       messageID={message.id}
                       lastUserMessageID={props.lastUserMessageID}
                       showReasoningSummaries={settings.general.showReasoningSummaries()}
+                      reasoningState={reasoning[message.id]}
+                      onReasoningOpenChange={(open) => setReasoning(message.id, setReasoningManual(open))}
                       shellToolDefaultOpen={settings.general.shellToolPartsExpanded()}
                       editToolDefaultOpen={settings.general.editToolPartsExpanded()}
                       attachmentBaseUrl={server.current?.http.url}

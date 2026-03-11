@@ -57,6 +57,9 @@ export const dict = {
   "ui.sessionTurn.status.runningCommands": "Pokretanje komandi",
   "ui.sessionTurn.status.thinking": "Razmišljanje",
   "ui.sessionTurn.status.thinkingWithTopic": "Razmišljanje - {{topic}}",
+  "ui.sessionTurn.status.completedThinking": "Razmišljanje završeno",
+  "ui.sessionTurn.action.expand": "Proširi",
+  "ui.sessionTurn.action.collapse": "Sažmi",
   "ui.sessionTurn.status.gatheringThoughts": "Sređivanje misli",
   "ui.sessionTurn.status.consideringNextSteps": "Razmatranje sljedećih koraka",
 

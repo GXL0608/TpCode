@@ -66,6 +66,79 @@
     }
   }
 
+  [data-slot="session-turn-reasoning"] {
+    width: 100%;
+    min-width: 0;
+
+    > [data-component="collapsible"] {
+      border: 1px solid var(--border-weak-base);
+      border-radius: 20px;
+      background-color: var(--surface-base);
+    }
+
+    > [data-component="collapsible"] > [data-slot="collapsible-trigger"] {
+      padding: 20px 24px;
+    }
+
+    > [data-component="collapsible"] > [data-slot="collapsible-content"] {
+      padding: 0 24px 24px;
+    }
+  }
+
+  [data-component="session-turn-reasoning-trigger"] {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  [data-slot="session-turn-reasoning-title"] {
+    min-width: 0;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  [data-slot="session-turn-reasoning-label"] {
+    flex-shrink: 0;
+    color: var(--text-strong);
+    font-family: var(--font-family-sans);
+    font-size: 15px;
+    font-weight: var(--font-weight-medium);
+    line-height: 22px;
+  }
+
+  [data-slot="session-turn-reasoning-heading"] {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-weaker);
+    font-family: var(--font-family-sans);
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-regular);
+    line-height: var(--line-height-large);
+  }
+
+  [data-slot="session-turn-reasoning-action"] {
+    flex-shrink: 0;
+    color: var(--text-weak);
+    font-family: var(--font-family-sans);
+    font-size: var(--font-size-small);
+    font-weight: var(--font-weight-medium);
+    line-height: var(--line-height-large);
+  }
+
+  [data-slot="session-turn-reasoning-content"] {
+    width: 100%;
+    min-width: 0;
+  }
+
   .error-card {
     color: var(--text-on-critical-base);
     max-height: 240px;

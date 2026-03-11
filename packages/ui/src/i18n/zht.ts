@@ -57,6 +57,9 @@ export const dict = {
   "ui.sessionTurn.status.runningCommands": "正在執行命令",
   "ui.sessionTurn.status.thinking": "思考中",
   "ui.sessionTurn.status.thinkingWithTopic": "思考 - {{topic}}",
+  "ui.sessionTurn.status.completedThinking": "已完成思考",
+  "ui.sessionTurn.action.expand": "展開",
+  "ui.sessionTurn.action.collapse": "折疊",
   "ui.sessionTurn.status.gatheringThoughts": "正在整理思緒",
   "ui.sessionTurn.status.consideringNextSteps": "正在考慮下一步",
 

@@ -4,9 +4,10 @@ import { useFileComponent } from "../context/file"
 
 import { Binary } from "@opencode-ai/util/binary"
 import { getDirectory, getFilename } from "@opencode-ai/util/path"
+import { resolveReasoningLabel, resolveReasoningOpen, type ReasoningState } from "@opencode-ai/util/reasoning-state"
 import { createEffect, createMemo, createSignal, For, on, ParentProps, Show } from "solid-js"
 import { Dynamic } from "solid-js/web"
-import { AssistantParts, Message, PART_MAPPING } from "./message-part"
+import { AssistantParts, Message, PART_MAPPING, Part } from "./message-part"
 import { Card } from "./card"
 import { Accordion } from "./accordion"
 import { StickyAccordionHeader } from "./sticky-accordion-header"
@@ -140,6 +141,8 @@ export function SessionTurn(
     messageID: string
     lastUserMessageID?: string
     showReasoningSummaries?: boolean
+    reasoningState?: ReasoningState
+    onReasoningOpenChange?: (open: boolean) => void
     shellToolDefaultOpen?: boolean
     editToolDefaultOpen?: boolean
     onUserInteracted?: () => void
@@ -287,6 +290,19 @@ export function SessionTurn(
   const status = createMemo(() => data.store.session_status[props.sessionID] ?? idle)
   const working = createMemo(() => status().type !== "idle" && isLastUserMessage())
   const showReasoningSummaries = createMemo(() => props.showReasoningSummaries ?? true)
+  const reasoningEntries = createMemo(() =>
+    showReasoningSummaries()
+      ? assistantMessages().flatMap((message) =>
+          list(data.store.part?.[message.id], emptyParts)
+            .filter((part): part is PartType & { type: "reasoning"; text: string } => part.type === "reasoning")
+            .filter((part) => !!part.text?.trim())
+            .map((part) => ({ message, part })),
+        )
+      : [],
+  )
+  const reasoningOpen = createMemo(() => resolveReasoningOpen(props.reasoningState, working()))
+  const hasReasoning = createMemo(() => reasoningEntries().length > 0)
+  const showReasoningCard = createMemo(() => showReasoningSummaries() && (hasReasoning() || working()))
 
   const assistantCopyPartID = createMemo(() => {
     if (working()) return null
@@ -310,29 +326,37 @@ export function SessionTurn(
   const assistantVisible = createMemo(() =>
     assistantMessages().reduce((count, message) => {
       const parts = list(data.store.part?.[message.id], emptyParts)
-      return count + parts.filter((part) => partState(part, showReasoningSummaries()) === "visible").length
+      return count + parts.filter((part) => partState(part, false) === "visible").length
     }, 0),
   )
   const assistantTailVisible = createMemo(() =>
     assistantMessages()
       .flatMap((message) => list(data.store.part?.[message.id], emptyParts))
       .flatMap((part) => {
-        if (partState(part, showReasoningSummaries()) !== "visible") return []
+        if (partState(part, false) !== "visible") return []
         if (part.type === "text") return ["text" as const]
         return ["other" as const]
       })
       .at(-1),
   )
   const reasoningHeading = createMemo(() =>
-    assistantMessages()
-      .flatMap((message) => list(data.store.part?.[message.id], emptyParts))
-      .filter((part): part is PartType & { type: "reasoning"; text: string } => part.type === "reasoning")
-      .map((part) => heading(part.text))
+    reasoningEntries()
+      .map((entry) => heading(entry.part.text))
       .filter((text): text is string => !!text)
       .at(-1),
   )
+  const reasoningLabel = createMemo(() =>
+    resolveReasoningLabel(working()) === "thinking"
+      ? i18n.t("ui.sessionTurn.status.thinking")
+      : i18n.t("ui.sessionTurn.status.completedThinking"),
+  )
+  const reasoningAction = createMemo(() =>
+    i18n.t(reasoningOpen() ? "ui.sessionTurn.action.collapse" : "ui.sessionTurn.action.expand"),
+  )
   const showThinking = createMemo(() => {
     if (!working() || !!error()) return false
+    if (showReasoningCard()) return false
+    if (showReasoningSummaries() && hasReasoning()) return false
     if (showReasoningSummaries()) return assistantVisible() === 0
     if (assistantTailVisible() === "text") return false
     return true
@@ -371,12 +395,42 @@ export function SessionTurn(
                 </div>
                 <Show when={assistantMessages().length > 0}>
                   <div data-slot="session-turn-assistant-content" aria-hidden={working()}>
+                    <Show when={showReasoningCard()}>
+                      <div data-slot="session-turn-reasoning">
+                        <Collapsible
+                          open={reasoningOpen()}
+                          onOpenChange={(open) => props.onReasoningOpenChange?.(!!open)}
+                          variant="ghost"
+                        >
+                          <Collapsible.Trigger>
+                            <div data-component="session-turn-reasoning-trigger">
+                              <div data-slot="session-turn-reasoning-title">
+                                <span data-slot="session-turn-reasoning-label">{reasoningLabel()}</span>
+                                <Show when={reasoningHeading()}>
+                                  {(text) => <span data-slot="session-turn-reasoning-heading">{text()}</span>}
+                                </Show>
+                              </div>
+                              <span data-slot="session-turn-reasoning-action">{reasoningAction()}</span>
+                            </div>
+                          </Collapsible.Trigger>
+                          <Show when={hasReasoning()}>
+                            <Collapsible.Content>
+                              <div data-slot="session-turn-reasoning-content">
+                                <For each={reasoningEntries()}>
+                                  {(entry) => <Part part={entry.part} message={entry.message} />}
+                                </For>
+                              </div>
+                            </Collapsible.Content>
+                          </Show>
+                        </Collapsible>
+                      </div>
+                    </Show>
                     <AssistantParts
                       messages={assistantMessages()}
                       showAssistantCopyPartID={assistantCopyPartID()}
                       turnDurationMs={turnDurationMs()}
                       working={working()}
-                      showReasoningSummaries={showReasoningSummaries()}
+                      showReasoningSummaries={false}
                       shellToolDefaultOpen={props.shellToolDefaultOpen}
                       editToolDefaultOpen={props.editToolDefaultOpen}
                     />
