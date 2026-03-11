@@ -124,6 +124,36 @@ export function applyFetchedMessages(draft: OptimisticStore, input: FetchInput) 
   }
 }
 
+export function isFetchedSnapshotStale(input: {
+  sessionID: string
+  current: OptimisticStore
+  next: { session: Message[]; part: { id: string; part: Part[] }[] }
+  removed?: FetchInput["removed"]
+}) {
+  const messages = input.current.message[input.sessionID] ?? []
+  const fetched = new Set(input.next.session.map((item) => item.id))
+  if (messages.some((item) => !fetched.has(item.id))) return true
+
+  const removedMessage = input.removed?.message
+  if (removedMessage && input.next.session.some((item) => removedMessage.has(item.id))) return true
+
+  const parts = new Map(input.next.part.map((item) => [item.id, new Set(item.part.map((part) => part.id))]))
+  for (const message of messages) {
+    const current = input.current.part[message.id] ?? []
+    const fetched = parts.get(message.id) ?? new Set<string>()
+    if (current.some((part) => !fetched.has(part.id))) return true
+  }
+
+  const removedPart = input.removed?.part
+  if (!removedPart) return false
+  for (const [messageID, ids] of removedPart.entries()) {
+    const fetched = parts.get(messageID)
+    if (!fetched) continue
+    if ([...ids].some((partID) => fetched.has(partID))) return true
+  }
+  return false
+}
+
 function setOptimisticAdd(setStore: (...args: unknown[]) => void, input: OptimisticAddInput) {
   setStore("message", input.sessionID, (messages: Message[] | undefined) => {
     if (!messages) return [input.message]
@@ -172,6 +202,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const inflight = new Map<string, Promise<void>>()
     const inflightDiff = new Map<string, Promise<void>>()
     const inflightTodo = new Map<string, Promise<void>>()
+    const tracked = new Set<string>()
     const version = new Map<string, number>()
     const removedMessage = new Map<string, Set<string>>()
     const removedPart = new Map<string, Map<string, Set<string>>>()
@@ -181,13 +212,25 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       loading: {} as Record<string, boolean>,
     })
 
+    const track = (directory: string, sessionID: string) => {
+      tracked.add(keyFor(directory, sessionID))
+    }
+
+    const clear = (key: string) => {
+      version.delete(key)
+      removedMessage.delete(key)
+      removedPart.delete(key)
+    }
+
     const touch = (directory: string, sessionID: string) => {
       const key = keyFor(directory, sessionID)
+      if (!tracked.has(key)) return
       version.set(key, (version.get(key) ?? 0) + 1)
     }
 
     const markRemovedMessage = (directory: string, sessionID: string, messageID: string) => {
       const key = keyFor(directory, sessionID)
+      if (!tracked.has(key)) return
       const existing = removedMessage.get(key)
       if (existing) {
         existing.add(messageID)
@@ -201,6 +244,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     const markRemovedPart = (directory: string, sessionID: string, messageID: string, partID: string) => {
       const key = keyFor(directory, sessionID)
+      if (!tracked.has(key)) return
       const messages = removedPart.get(key) ?? new Map<string, Set<string>>()
       const parts = messages.get(messageID) ?? new Set<string>()
       parts.add(partID)
@@ -243,6 +287,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     })
 
     onCleanup(stop)
+    onCleanup(() => {
+      tracked.clear()
+      version.clear()
+      removedMessage.clear()
+      removedPart.clear()
+    })
 
     const getSession = (sessionID: string) => {
       const store = current()[0]
@@ -281,11 +331,23 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const key = keyFor(input.directory, input.sessionID)
       if (meta.loading[key]) return
 
+      track(input.directory, input.sessionID)
       const start = version.get(key) ?? 0
       setMeta("loading", key, true)
       await fetchMessages(input)
         .then((next) => {
-          const stale = (version.get(key) ?? 0) !== start
+          const removed = {
+            message: removedMessage.get(key),
+            part: removedPart.get(key),
+          }
+          const stale =
+            (version.get(key) ?? 0) !== start ||
+            isFetchedSnapshotStale({
+              sessionID: input.sessionID,
+              current: current()[0],
+              next,
+              removed,
+            })
           batch(() => {
             input.setStore(
               produce((draft) => {
@@ -294,22 +356,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                   stale,
                   session: next.session,
                   part: next.part,
-                  removed: stale
-                    ? {
-                        message: removedMessage.get(key),
-                        part: removedPart.get(key),
-                      }
-                    : undefined,
+                  removed: stale ? removed : undefined,
                 })
               }),
             )
             setMeta("limit", key, input.limit)
             setMeta("complete", key, next.complete)
           })
-          if (!stale) {
-            removedMessage.delete(key)
-            removedPart.delete(key)
-          }
+          clear(key)
         })
         .finally(() => {
           setMeta("loading", key, false)
@@ -337,12 +391,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         optimistic: {
           add(input: { directory?: string; sessionID: string; message: Message; parts: Part[] }) {
             const directory = input.directory ?? sdk.directory
+            track(directory, input.sessionID)
             const [, setStore] = target(input.directory)
             setOptimisticAdd(setStore as (...args: unknown[]) => void, input)
             touch(directory, input.sessionID)
           },
           remove(input: { directory?: string; sessionID: string; messageID: string }) {
             const directory = input.directory ?? sdk.directory
+            track(directory, input.sessionID)
             const [, setStore] = target(input.directory)
             setOptimisticRemove(setStore as (...args: unknown[]) => void, input)
             markRemovedMessage(directory, input.sessionID, input.messageID)
@@ -363,6 +419,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             agent: input.agent,
             model: input.model,
           }
+          track(sdk.directory, input.sessionID)
           const [, setStore] = target()
           setOptimisticAdd(setStore as (...args: unknown[]) => void, {
             sessionID: input.sessionID,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Message, Part } from "@opencode-ai/sdk/v2/client"
-import { applyFetchedMessages } from "./sync"
+import { applyFetchedMessages, isFetchedSnapshotStale } from "./sync"
 
 const userMessage = (id: string, sessionID: string): Message => ({
   id,
@@ -29,6 +29,46 @@ const textPart = (id: string, sessionID: string, messageID: string, text = id): 
 })
 
 describe("sync hydration", () => {
+  test("snapshot is stale when local message is missing from fetch", () => {
+    const sessionID = "ses_1"
+    expect(
+      isFetchedSnapshotStale({
+        sessionID,
+        current: {
+          message: {
+            [sessionID]: [userMessage("msg_2", sessionID)],
+          },
+          part: {},
+        },
+        next: {
+          session: [userMessage("msg_1", sessionID)],
+          part: [{ id: "msg_1", part: [textPart("prt_1", sessionID, "msg_1")] }],
+        },
+      }),
+    ).toBeTrue()
+  })
+
+  test("snapshot is stale when local part is missing from fetch", () => {
+    const sessionID = "ses_1"
+    expect(
+      isFetchedSnapshotStale({
+        sessionID,
+        current: {
+          message: {
+            [sessionID]: [assistantMessage("msg_1", sessionID)],
+          },
+          part: {
+            msg_1: [textPart("prt_2", sessionID, "msg_1", "live")],
+          },
+        },
+        next: {
+          session: [assistantMessage("msg_1", sessionID)],
+          part: [{ id: "msg_1", part: [textPart("prt_1", sessionID, "msg_1", "old")] }],
+        },
+      }),
+    ).toBeTrue()
+  })
+
   test("stale fetch keeps newer messages and backfills older history", () => {
     const sessionID = "ses_1"
     const draft = {
