@@ -7,6 +7,10 @@ import { spawn, type ChildProcess } from "child_process"
 const SIGKILL_TIMEOUT_MS = 200
 
 export namespace Shell {
+  function name(shell: string) {
+    return (shell.split(/[\\/]/).pop() || shell).replace(/\.exe$/i, "").toLowerCase()
+  }
+
   export async function killTree(proc: ChildProcess, opts?: { exited?: () => boolean }): Promise<void> {
     const pid = proc.pid
     if (!pid || opts?.exited?.()) return
@@ -65,4 +69,22 @@ export namespace Shell {
     if (s && !BLACKLIST.has(process.platform === "win32" ? path.win32.basename(s) : path.basename(s))) return s
     return fallback()
   })
+
+  export function info(shell = acceptable(), platform = process.platform) {
+    const normalized = name(shell)
+    if (["bash", "zsh", "sh", "dash", "ash"].includes(normalized)) {
+      return { path: shell, name: normalized, family: "posix" as const }
+    }
+    if (normalized === "cmd") {
+      return { path: shell, name: normalized, family: "cmd" as const }
+    }
+    if (["powershell", "pwsh"].includes(normalized)) {
+      return { path: shell, name: normalized, family: "powershell" as const }
+    }
+    return {
+      path: shell,
+      name: normalized,
+      family: platform === "win32" ? ("cmd" as const) : ("posix" as const),
+    }
+  }
 }

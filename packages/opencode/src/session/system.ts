@@ -10,6 +10,7 @@ import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_CODEX from "./prompt/codex_header.txt"
 import PROMPT_TRINITY from "./prompt/trinity.txt"
 import type { Provider } from "@/provider/provider"
+import { Shell } from "@/shell/shell"
 
 export namespace SystemPrompt {
   export function instructions() {
@@ -28,6 +29,7 @@ export namespace SystemPrompt {
 
   export async function environment(model: Provider.Model) {
     const project = Instance.project
+    const shell = Shell.info()
     return [
       [
         `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
@@ -36,6 +38,9 @@ export namespace SystemPrompt {
         `  Working directory: ${Instance.directory}`,
         `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
         `  Platform: ${process.platform}`,
+        `  Actual shell: ${shell.path}`,
+        `  Shell syntax family: ${shell.family}`,
+        `  Command syntax must match the actual shell syntax family, not just the platform.`,
         `  Today's date: ${new Date().toDateString()}`,
         `</env>`,
         `<directories>`,
