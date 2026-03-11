@@ -151,6 +151,7 @@ describe("plan service save", () => {
       db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, result.id)).get(),
     )
     expect(row?.vho_feedback_no).toBe("VHO-SAVE-1")
+    expect(row?.vho_synced).toBe(0)
     expect(row?.project_id).toBe(seeded.project_id)
     expect(calls).toHaveLength(1)
     expect(calls[0]?.plan_id).toBe(result.id)
@@ -188,6 +189,11 @@ describe("plan service save", () => {
     })
 
     expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(result.code)
+    const row = await Database.use((db) =>
+      db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, result.id)).get(),
+    )
+    expect(row?.vho_synced).toBe(0)
     expect(calls).toHaveLength(1)
     expect(sync).toHaveBeenCalledTimes(0)
     sync.mockRestore()

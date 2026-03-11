@@ -207,6 +207,7 @@ describe("account plan save", () => {
     expect(row?.message_id).toBe(plan.messageID)
     expect(row?.part_id).toBe(plan.partID)
     expect(row?.vho_feedback_no).toBe("VHO-12345")
+    expect([0, 1]).toContain(row?.vho_synced)
 
     await new Promise((resolve) => setTimeout(resolve, 20))
     const audit = await Database.use((db) =>

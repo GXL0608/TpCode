@@ -303,6 +303,7 @@ export namespace Server {
               "/account/password/forgot/request",
               "/account/password/forgot/reset",
               "/account/token/refresh",
+              "/account/admin/plan/vho-sync",
               "/global/health",
               "/global/ready",
             ]

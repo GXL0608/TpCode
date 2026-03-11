@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import z from "zod"
+import { Database, eq } from "../../src/storage/db"
+import { TpSavedPlanTable } from "../../src/plan/saved-plan.sql"
 
 const state = {
   info: [] as { message: unknown; extra: Record<string, unknown> | undefined }[],
@@ -109,8 +111,44 @@ function input(vho_feedback_no: string) {
   }
 }
 
+async function save(input: { id?: string; feedback?: string; synced?: number }) {
+  const now = Date.now()
+  const id = input.id ?? `plan_${now}_${Math.random().toString(36).slice(2, 8)}`
+  await Database.use((db) =>
+    db.insert(TpSavedPlanTable)
+      .values({
+        id,
+        session_id: "session_1",
+        message_id: "message_1",
+        part_id: "part_1",
+        project_id: "global",
+        project_name: "global",
+        project_worktree: process.cwd(),
+        session_title: "title",
+        user_id: `task_feedback_${id}`,
+        username: "admin",
+        display_name: "admin",
+        account_type: "internal",
+        org_id: "org_tp_internal",
+        department_id: "",
+        agent: "plan",
+        provider_id: "openai",
+        model_id: "gpt-4.1-mini",
+        message_created_at: now,
+        plan_content: "# plan",
+        vho_feedback_no: input.feedback,
+        vho_synced: input.synced ?? 0,
+        time_created: now,
+        time_updated: now,
+      })
+      .run(),
+  )
+  return id
+}
+
 describe("plan.task-feedback", () => {
   test("posts umUpdateHaveAiPlan with feedbackId json body", async () => {
+    const plan_id = await save({ feedback: "FK20260310001" })
     listen(async (req) => {
       seen.push({
         path: new URL(req.url).pathname,
@@ -121,7 +159,10 @@ describe("plan.task-feedback", () => {
       return Response.json({ code: 200, message: "更新成功", content: null })
     })
 
-    const result = await TaskFeedbackService.markAiPlan(input("FK20260310001"))
+    const result = await TaskFeedbackService.markAiPlan({
+      ...input("FK20260310001"),
+      plan_id,
+    })
 
     expect(result).toEqual({ ok: true })
     expect(seen).toHaveLength(1)
@@ -129,6 +170,10 @@ describe("plan.task-feedback", () => {
     expect(seen[0]?.method).toBe("POST")
     expect(seen[0]?.body).toBe(JSON.stringify({ feedbackId: "FK20260310001" }))
     expect(seen[0]?.content_type).toContain("application/json")
+    const row = await Database.use((db) =>
+      db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, plan_id)).get(),
+    )
+    expect(row?.vho_synced).toBe(1)
   })
 
   test("blank feedback number skips upstream request", async () => {
@@ -137,6 +182,21 @@ describe("plan.task-feedback", () => {
     })
 
     const result = await TaskFeedbackService.markAiPlan(input("   "))
+
+    expect(result).toEqual({ ok: true })
+    expect(seen).toHaveLength(0)
+  })
+
+  test("already synced plan skips upstream request", async () => {
+    const plan_id = await save({ feedback: "FK_SYNCED", synced: 1 })
+    listen(() => {
+      throw new Error("should_not_call")
+    })
+
+    const result = await TaskFeedbackService.markAiPlan({
+      ...input("FK_SYNCED"),
+      plan_id,
+    })
 
     expect(result).toEqual({ ok: true })
     expect(seen).toHaveLength(0)

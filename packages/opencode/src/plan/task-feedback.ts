@@ -1,5 +1,7 @@
 import { Log } from "@/util/log"
 import { ThirdPartyClient } from "@/third-party/client"
+import { Database, eq } from "@/storage/db"
+import { TpSavedPlanTable } from "./saved-plan.sql"
 
 const log = Log.create({ service: "plan.task_feedback" })
 
@@ -33,10 +35,44 @@ function body(data: unknown) {
   }
 }
 
+async function synced(plan_id: string) {
+  return Database.use((db) =>
+    db
+      .select({
+        vho_synced: TpSavedPlanTable.vho_synced,
+      })
+      .from(TpSavedPlanTable)
+      .where(eq(TpSavedPlanTable.id, plan_id))
+      .get(),
+  )
+}
+
+async function mark(plan_id: string) {
+  await Database.use((db) =>
+    db.update(TpSavedPlanTable)
+      .set({
+        vho_synced: 1,
+        time_updated: Date.now(),
+      })
+      .where(eq(TpSavedPlanTable.id, plan_id))
+      .run(),
+  )
+}
+
 export namespace TaskFeedbackService {
   export async function markAiPlan(input: Input): Promise<Result> {
     const vho_feedback_no = input.vho_feedback_no.trim()
     if (!vho_feedback_no) return { ok: true as const }
+    const row = await synced(input.plan_id)
+    if (row?.vho_synced === 1) {
+      log.info("third-party ai plan already synced", {
+        plan_id: input.plan_id,
+        session_id: input.session_id,
+        message_id: input.message_id,
+        vho_feedback_no,
+      })
+      return { ok: true as const }
+    }
 
     const result = await ThirdPartyClient.post("/feedbackTask/umUpdateHaveAiPlan", {
       feedbackId: vho_feedback_no,
@@ -76,6 +112,7 @@ export namespace TaskFeedbackService {
         message,
       }
     }
+    await mark(input.plan_id)
     log.info("third-party ai plan updated", {
       plan_id: input.plan_id,
       session_id: input.session_id,

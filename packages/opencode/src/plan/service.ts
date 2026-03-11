@@ -114,6 +114,7 @@ export namespace PlanService {
           message_created_at: info.time.created,
           plan_content: selected.part.text,
           vho_feedback_no: vho_feedback_no ? vho_feedback_no : undefined,
+          vho_synced: 0,
           time_created: now,
           time_updated: now,
         })

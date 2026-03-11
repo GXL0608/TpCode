@@ -17,6 +17,7 @@ import path from "path"
 import { readdir } from "fs/promises"
 import { PlanService } from "@/plan/service"
 import { PlanEvalService } from "@/plan/eval-service"
+import { VhoSyncService } from "@/plan/vho-sync"
 import { Config } from "@/config/config"
 import { AccountProviderState } from "@/provider/account-provider-state"
 
@@ -160,6 +161,18 @@ const PlanEvalDetailFailure = z
     permission: z.string().optional(),
   })
   .meta({ ref: "AccountPlanEvalDetailFailure" })
+
+const PlanVhoSyncSuccess = z
+  .object({
+    ok: z.literal(true),
+    scanned: z.number(),
+    deduped: z.number(),
+    synced: z.number(),
+    failed: z.number(),
+    skipped: z.number(),
+    failed_feedback_ids: z.array(z.string()),
+  })
+  .meta({ ref: "AccountPlanVhoSyncSuccess" })
 
 const ModelPrefsBody = z.object({
   visibility: z.record(z.string(), z.enum(["show", "hide"])).optional(),
@@ -792,6 +805,51 @@ export const AccountRoutes = lazy(() =>
           user_agent: c.req.header("user-agent"),
         })
         return c.json(result)
+      },
+    )
+    .get(
+      "/admin/plan/vho-sync",
+      describeRoute({
+        summary: "Sync pending VHO feedback flags",
+        description: "Sync all tp_saved_plan rows with pending vho feedback state to the third-party VHO service.",
+        operationId: "account.plan.vho_sync",
+        responses: {
+          200: {
+            description: "Sync finished",
+            content: {
+              "application/json": {
+                schema: resolver(PlanVhoSyncSuccess),
+              },
+            },
+          },
+          400: {
+            description: "Validation failed",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ error: z.string() })),
+              },
+            },
+          },
+          403: {
+            description: "Forbidden",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ error: z.string() })),
+              },
+            },
+          },
+        },
+      }),
+      validator("query", z.object({ password: z.string().min(1) })),
+      async (c) => {
+        const query = c.req.valid("query")
+        if (!VhoSyncService.checkPassword(query.password)) {
+          return c.json({ error: "forbidden" }, 403)
+        }
+        if (!VhoSyncService.canRun()) {
+          return c.json({ error: "forbidden" }, 403)
+        }
+        return c.json(await VhoSyncService.syncAll())
       },
     )
     .post(
