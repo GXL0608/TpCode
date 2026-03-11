@@ -11,6 +11,7 @@ import { defer } from "@/util/defer"
 import { Config } from "../config/config"
 import { PermissionNext } from "@/permission/next"
 import { Provider } from "../provider/provider"
+import { Flag } from "@/flag/flag"
 
 const parameters = z.object({
   description: z.string().describe("A short (3-5 words) description of the task"),
@@ -108,7 +109,9 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         providerID: msg.info.providerID,
       }
 
-      const model = await Provider.runtimeModel(() => agent.model ?? fallback)
+      const model = Flag.TPCODE_ACCOUNT_ENABLED
+        ? await Session.runtimeModel(session.id)
+        : await Provider.runtimeModel(() => agent.model ?? fallback)
 
       ctx.metadata({
         title: params.description,

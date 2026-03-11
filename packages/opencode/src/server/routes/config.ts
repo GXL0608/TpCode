@@ -11,6 +11,24 @@ import { Flag } from "@/flag/flag"
 import { AccountSystemSettingService } from "@/user/system-setting"
 
 const log = Log.create({ service: "server" })
+const ManagedSessionModelPool = z
+  .array(
+    z.object({
+      provider_id: z.string(),
+      weight: z.number().int().positive(),
+      models: z.array(
+        z.object({
+          model_id: z.string(),
+          weight: z.number().int().positive(),
+        }),
+      ),
+    }),
+  )
+  .optional()
+const ManagedConfig = Config.Info.extend({
+  session_model_pool: ManagedSessionModelPool,
+})
+const ConfigPatchBody = Config.Info.catchall(z.unknown())
 
 export const ConfigRoutes = lazy(() =>
   new Hono()
@@ -25,7 +43,7 @@ export const ConfigRoutes = lazy(() =>
             description: "Get config info",
             content: {
               "application/json": {
-                schema: resolver(Config.Info),
+                schema: resolver(ManagedConfig),
               },
             },
           },
@@ -52,6 +70,7 @@ export const ConfigRoutes = lazy(() =>
           disabled_providers: control.disabled_providers,
           model,
           small_model: control.small_model,
+          session_model_pool: control.session_model_pool,
         })
       },
     )
@@ -61,6 +80,15 @@ export const ConfigRoutes = lazy(() =>
         summary: "Update configuration",
         description: "Update TpCode configuration settings and preferences.",
         operationId: "config.update",
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/Config",
+              },
+            },
+          },
+        },
         responses: {
           200: {
             description: "Successfully updated config",
@@ -73,13 +101,13 @@ export const ConfigRoutes = lazy(() =>
           ...errors(400),
         },
       }),
-      validator("json", Config.Info),
+      validator("json", ConfigPatchBody),
       async (c) => {
-        const config = c.req.valid("json")
+        const raw = c.req.valid("json")
         if (Flag.TPCODE_ACCOUNT_ENABLED) {
           const managed = (
-            ["provider", "model", "small_model", "enabled_providers", "disabled_providers"] as const
-          ).some((key) => key in config)
+            ["provider", "model", "small_model", "enabled_providers", "disabled_providers", "session_model_pool"] as const
+          ).some((key) => key in raw)
           if (managed) {
             return c.json(
               {
@@ -90,6 +118,7 @@ export const ConfigRoutes = lazy(() =>
             )
           }
         }
+        const config = Config.Info.parse(raw)
         await Config.update(config)
         return c.json(config)
       },

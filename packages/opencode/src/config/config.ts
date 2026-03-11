@@ -38,6 +38,22 @@ import { Filesystem } from "@/util/filesystem"
 
 export namespace Config {
   const ModelId = z.string().meta({ $ref: "https://models.dev/model-schema.json#/$defs/Model" })
+  const SessionModelPool = z
+    .array(
+      z.object({
+        provider_id: z.string().min(1),
+        weight: z.number().int().positive(),
+        models: z
+          .array(
+            z.object({
+              model_id: z.string().min(1),
+              weight: z.number().int().positive(),
+            }),
+          )
+          .min(1),
+      }),
+    )
+    .optional()
 
   const log = Log.create({ service: "config" })
 

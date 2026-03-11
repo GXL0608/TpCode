@@ -428,7 +428,7 @@ export namespace SessionPrompt {
         : lastUser
 
       step++
-      const modelRef = await Provider.runtimeModel(runtimeUser.model)
+      const modelRef = Flag.TPCODE_ACCOUNT_ENABLED ? runtimeUser.model : await Provider.runtimeModel(runtimeUser.model)
       const model = await Provider.getModel(modelRef.providerID, modelRef.modelID).catch((e) => {
         if (Provider.ModelNotFoundError.isInstance(e)) {
           const hint = e.data.suggestions?.length ? ` Did you mean: ${e.data.suggestions.join(", ")}?` : ""
@@ -837,7 +837,7 @@ export namespace SessionPrompt {
   })
 
   async function lastModel(sessionID: string) {
-    if (Flag.TPCODE_ACCOUNT_ENABLED) return Provider.runtimeModel()
+    if (Flag.TPCODE_ACCOUNT_ENABLED) return Session.runtimeModel(sessionID)
     for await (const item of MessageV2.stream(sessionID)) {
       if (item.info.role === "user" && item.info.model) return item.info.model
     }
@@ -1068,7 +1068,9 @@ export namespace SessionPrompt {
   async function createUserMessage(input: PromptInput) {
     const agent = await Agent.get(input.agent ?? (await Agent.defaultAgent()))
 
-    const model = await Provider.runtimeModel(async () => input.model ?? agent.model ?? (await lastModel(input.sessionID)))
+    const model = Flag.TPCODE_ACCOUNT_ENABLED
+      ? await Session.runtimeModel(input.sessionID)
+      : await Provider.runtimeModel(async () => input.model ?? agent.model ?? (await lastModel(input.sessionID)))
     const full =
       !input.variant && agent.variant
         ? await Provider.getModel(model.providerID, model.modelID).catch(() => undefined)
@@ -1718,7 +1720,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       await SessionRevert.cleanup(session)
     }
     const agent = await Agent.get(input.agent)
-    const model = await Provider.runtimeModel(async () => input.model ?? agent.model ?? (await lastModel(input.sessionID)))
+    const model = Flag.TPCODE_ACCOUNT_ENABLED
+      ? await Session.runtimeModel(input.sessionID)
+      : await Provider.runtimeModel(async () => input.model ?? agent.model ?? (await lastModel(input.sessionID)))
     const userMsg: MessageV2.User = {
       id: Identifier.ascending("message"),
       sessionID: input.sessionID,
@@ -2015,19 +2019,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     }
     template = template.trim()
 
-    const taskModel = await Provider.runtimeModel(async () => {
-      if (command.model) {
-        return Provider.parseModel(command.model)
-      }
-      if (command.agent) {
-        const cmdAgent = await Agent.get(command.agent)
-        if (cmdAgent?.model) {
-          return cmdAgent.model
-        }
-      }
-      if (input.model) return Provider.parseModel(input.model)
-      return await lastModel(input.sessionID)
-    })
+    const taskModel = Flag.TPCODE_ACCOUNT_ENABLED
+      ? await Session.runtimeModel(input.sessionID)
+      : await Provider.runtimeModel(async () => {
+          if (command.model) {
+            return Provider.parseModel(command.model)
+          }
+          if (command.agent) {
+            const cmdAgent = await Agent.get(command.agent)
+            if (cmdAgent?.model) {
+              return cmdAgent.model
+            }
+          }
+          if (input.model) return Provider.parseModel(input.model)
+          return await lastModel(input.sessionID)
+        })
 
     try {
       await Provider.getModel(taskModel.providerID, taskModel.modelID)

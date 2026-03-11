@@ -731,7 +731,7 @@ export const SessionRoutes = lazy(() =>
           sessionID,
           agent: currentAgent,
           model: Flag.TPCODE_ACCOUNT_ENABLED
-            ? await Provider.runtimeModel()
+            ? await Session.runtimeModel(sessionID)
             : { providerID: body.providerID!, modelID: body.modelID! },
           auto: body.auto,
         })

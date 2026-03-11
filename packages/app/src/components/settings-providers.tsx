@@ -15,6 +15,7 @@ import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogCustomProvider } from "./dialog-custom-provider"
 import type { ProviderSettingsScope } from "./provider-settings-scope"
 import { getManagedCatalogState } from "./settings-providers-catalog"
+import { draftPool, normalizePool, type PoolRow, validatePoolControl } from "./settings-provider-pool"
 
 type ManagedRow = {
   provider_id: string
@@ -111,6 +112,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     managedProviders: [] as ManagedCatalogProvider[],
     model: "",
     smallModel: "",
+    sessionModelPool: [] as PoolRow[],
     enabledProviders: "",
     disabledProviders: "",
   })
@@ -148,6 +150,15 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     }
     return [...map.values()].sort((a, b) => a.provider_name.localeCompare(b.provider_name))
   })
+  const poolProviderOptions = createMemo(() =>
+    [...state.managedProviders]
+      .map((item) => ({
+        provider_id: item.provider_id,
+        provider_name: item.provider_name,
+      }))
+      .sort((a, b) => a.provider_name.localeCompare(b.provider_name)),
+  )
+  const poolProviderMap = createMemo(() => new Map(state.managedProviders.map((item) => [item.provider_id, item])))
   const managedCatalog = createMemo(() =>
     getManagedCatalogState({
       providers: state.managedProviders,
@@ -185,6 +196,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     return {
       model: state.model.trim() || undefined,
       small_model: state.smallModel.trim() || undefined,
+      session_model_pool: state.sessionModelPool.length > 0 ? normalizePool(state.sessionModelPool) : undefined,
       enabled_providers: enabled.length > 0 ? enabled : undefined,
       disabled_providers: disabled.length > 0 ? disabled : undefined,
     }
@@ -235,7 +247,13 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
 
     const catalogBody = (await catalogResponse.json().catch(() => undefined)) as
       | {
-          control?: { model?: unknown; small_model?: unknown; enabled_providers?: unknown; disabled_providers?: unknown }
+          control?: {
+            model?: unknown
+            small_model?: unknown
+            session_model_pool?: unknown
+            enabled_providers?: unknown
+            disabled_providers?: unknown
+          }
           providers?: unknown
         }
       | undefined
@@ -285,6 +303,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     setState("providerID", providerID)
     setState("model", typeof control?.model === "string" ? control.model : "")
     setState("smallModel", typeof control?.small_model === "string" ? control.small_model : "")
+    setState("sessionModelPool", draftPool(control?.session_model_pool))
     setState("enabledProviders", list<string>(control?.enabled_providers).join(", "))
     setState("disabledProviders", list<string>(control?.disabled_providers).join(", "))
     setState("loading", false)
@@ -293,6 +312,15 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
 
   const saveControl = async () => {
     if (!canManage()) return
+    const valid = validatePoolControl({
+      model: state.model,
+      pool: state.sessionModelPool,
+    })
+    if (!valid.ok) {
+      setState("error", valid.errors.join("；"))
+      setState("message", "")
+      return
+    }
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -307,6 +335,54 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       return
     }
     await complete("全局模型控制已更新")
+  }
+
+  const addPoolProvider = () => {
+    const used = new Set(state.sessionModelPool.map((item) => item.provider_id))
+    const providerID =
+      poolProviderOptions().find((item) => !used.has(item.provider_id))?.provider_id ?? poolProviderOptions()[0]?.provider_id ?? ""
+    const modelID = poolProviderMap().get(providerID)?.models[0]?.model_id ?? ""
+    setState("sessionModelPool", (items) => [
+      ...items,
+      {
+        provider_id: providerID,
+        weight: "1",
+        models: modelID ? [{ model_id: modelID, weight: "1" }] : [],
+      },
+    ])
+  }
+
+  const updatePoolProvider = (index: number, providerID: string) => {
+    const modelID = poolProviderMap().get(providerID)?.models[0]?.model_id ?? ""
+    setState("sessionModelPool", (items) =>
+      items.map((item, itemIndex) =>
+        itemIndex === index
+          ? {
+              provider_id: providerID,
+              weight: item.weight,
+              models: modelID ? [{ model_id: modelID, weight: "1" }] : [],
+            }
+          : item,
+      ),
+    )
+  }
+
+  const addPoolModel = (index: number) => {
+    const providerID = state.sessionModelPool[index]?.provider_id ?? ""
+    const models = poolProviderMap().get(providerID)?.models ?? []
+    const used = new Set((state.sessionModelPool[index]?.models ?? []).map((item) => item.model_id))
+    const modelID = models.find((item) => !used.has(item.model_id))?.model_id ?? models[0]?.model_id ?? ""
+    if (!modelID) return
+    setState("sessionModelPool", (items) =>
+      items.map((item, itemIndex) =>
+        itemIndex === index
+          ? {
+              ...item,
+              models: [...item.models, { model_id: modelID, weight: "1" }],
+            }
+          : item,
+      ),
+    )
   }
 
   const saveProviderConfig = async () => {
@@ -591,6 +667,116 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
           <div class="flex items-center gap-2">
             <Button type="button" onClick={() => void saveControl()} disabled={state.pending}>
               {state.pending ? "保存中..." : "保存控制项"}
+            </Button>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-4">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex flex-col gap-1">
+              <div class="text-14-medium text-text-strong">Session 模型池</div>
+              <div class="text-12-regular text-text-weak">先按渠道权重抽签，再按渠道下模型权重抽签；命中后整段 session 固定使用该模型。</div>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={addPoolProvider}
+              disabled={state.pending || poolProviderOptions().length === 0}
+            >
+              添加渠道
+            </Button>
+          </div>
+
+          <Show
+            when={state.sessionModelPool.length > 0}
+            fallback={<div class="text-12-regular text-text-weak">未配置时继续使用上面的单模型回退。</div>}
+          >
+            <For each={state.sessionModelPool}>
+              {(provider, providerIndex) => (
+                <div class="rounded-lg border border-border-weak-base bg-surface-base p-3 flex flex-col gap-3">
+                  <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px_auto] gap-2">
+                    <select
+                      class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                      value={provider.provider_id}
+                      onChange={(event) => updatePoolProvider(providerIndex(), event.currentTarget.value.trim())}
+                    >
+                      <option value="">选择渠道</option>
+                      <For each={poolProviderOptions()}>
+                        {(item) => <option value={item.provider_id}>{item.provider_name}</option>}
+                      </For>
+                    </select>
+                    <input
+                      class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                      inputMode="numeric"
+                      placeholder="渠道权重"
+                      value={provider.weight}
+                      onInput={(event) => setState("sessionModelPool", providerIndex(), "weight", event.currentTarget.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => setState("sessionModelPool", (items) => items.filter((_, index) => index !== providerIndex()))}
+                      disabled={state.pending}
+                    >
+                      删除渠道
+                    </Button>
+                  </div>
+
+                  <div class="flex flex-col gap-2">
+                    <For each={provider.models}>
+                      {(model, modelIndex) => (
+                        <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px_auto] gap-2">
+                          <select
+                            class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                            value={model.model_id}
+                            onChange={(event) =>
+                              setState("sessionModelPool", providerIndex(), "models", modelIndex(), "model_id", event.currentTarget.value)
+                            }
+                          >
+                            <option value="">选择模型</option>
+                            <For each={poolProviderMap().get(provider.provider_id)?.models ?? []}>
+                              {(item) => <option value={item.model_id}>{item.model_name}</option>}
+                            </For>
+                          </select>
+                          <input
+                            class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                            inputMode="numeric"
+                            placeholder="模型权重"
+                            value={model.weight}
+                            onInput={(event) =>
+                              setState("sessionModelPool", providerIndex(), "models", modelIndex(), "weight", event.currentTarget.value)
+                            }
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            onClick={() =>
+                              setState("sessionModelPool", providerIndex(), "models", (items) =>
+                                items.filter((_, index) => index !== modelIndex()),
+                              )
+                            }
+                            disabled={state.pending}
+                          >
+                            删除模型
+                          </Button>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+
+                  <div class="flex items-center gap-2">
+                    <Button type="button" variant="secondary" onClick={() => addPoolModel(providerIndex())} disabled={state.pending}>
+                      添加模型
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </For>
+          </Show>
+
+          <div class="flex items-center gap-2">
+            <Button type="button" onClick={() => void saveControl()} disabled={state.pending}>
+              {state.pending ? "保存中..." : "保存模型池"}
             </Button>
           </div>
         </div>

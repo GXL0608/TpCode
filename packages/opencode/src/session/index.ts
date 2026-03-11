@@ -23,13 +23,14 @@ import { fn } from "@/util/fn"
 import { Command } from "../command"
 import { Snapshot } from "@/snapshot"
 
-import type { Provider } from "@/provider/provider"
+import { Provider } from "@/provider/provider"
 import { PermissionNext } from "@/permission/next"
 import { Global } from "@/global"
 import type { LanguageModelV2Usage } from "@ai-sdk/provider"
 import { iife } from "@/util/iife"
 import { AccountCurrent } from "@/user/current"
 import { TokenUsageService } from "@/usage/service"
+import { AccountSystemSettingService } from "@/user/system-setting"
 
 export namespace Session {
   const log = Log.create({ service: "session" })
@@ -48,6 +49,13 @@ export namespace Session {
   }
 
   type SessionRow = typeof SessionTable.$inferSelect
+  const RuntimeModelSource = z.enum(["single", "pool"])
+  type RuntimeModelSource = z.infer<typeof RuntimeModelSource>
+  type RuntimeModelState = {
+    providerID: string
+    modelID: string
+    source: RuntimeModelSource
+  }
 
   function actor() {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return
@@ -79,6 +87,104 @@ export namespace Session {
     if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
     if (!canWrite(row)) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
     return row
+  }
+
+  function runtimeState(row: SessionRow) {
+    const source = RuntimeModelSource.safeParse(row.runtime_model_source)
+    if (!source.success) return
+    if (!row.runtime_provider_id || !row.runtime_model_id) return
+    return {
+      providerID: row.runtime_provider_id,
+      modelID: row.runtime_model_id,
+      source: source.data,
+    } satisfies RuntimeModelState
+  }
+
+  function pick<T extends { weight: number }>(items: T[]) {
+    const total = items.reduce((sum, item) => sum + item.weight, 0)
+    let n = Math.random() * total
+    return items.find((item) => {
+      n -= item.weight
+      return n < 0
+    }) ?? items[items.length - 1]
+  }
+
+  async function availablePool() {
+    const [control, providers] = await Promise.all([AccountSystemSettingService.providerControl(), Provider.list()])
+    return (control.session_model_pool ?? [])
+      .map((item) => ({
+        provider_id: item.provider_id,
+        weight: item.weight,
+        models: item.models.filter((model) => providers[item.provider_id]?.models[model.model_id]),
+      }))
+      .filter((item) => providers[item.provider_id] && item.models.length > 0)
+  }
+
+  async function persistRuntimeModel(sessionID: string, input: RuntimeModelState) {
+    await Database.use((db) =>
+      db
+        .update(SessionTable)
+        .set({
+          runtime_provider_id: input.providerID,
+          runtime_model_id: input.modelID,
+          runtime_model_source: input.source,
+        })
+        .where(eq(SessionTable.id, sessionID))
+        .run(),
+    )
+  }
+
+  export async function runtimeModel(sessionID: string) {
+    if (!Flag.TPCODE_ACCOUNT_ENABLED) return Provider.runtimeModel()
+    const row = await assertWritable(sessionID)
+    const current = runtimeState(row)
+    const providers = await Provider.list()
+    if (current?.source === "single" && providers[current.providerID]?.models[current.modelID]) {
+      return {
+        providerID: current.providerID,
+        modelID: current.modelID,
+      }
+    }
+
+    const pool = await availablePool()
+    if (
+      current?.source === "pool" &&
+      pool.some(
+        (item) => item.provider_id === current.providerID && item.models.some((model) => model.model_id === current.modelID),
+      )
+    ) {
+      return {
+        providerID: current.providerID,
+        modelID: current.modelID,
+      }
+    }
+
+    const next = iife(() => {
+      if (pool.length === 0) return
+      const provider = pick(pool)
+      const model = pick(provider.models)
+      return {
+        providerID: provider.provider_id,
+        modelID: model.model_id,
+        source: "pool",
+      } satisfies RuntimeModelState
+    })
+    const fallback = next ?? {
+      ...(await Provider.defaultModel()),
+      source: "single" as const,
+    }
+
+    if (
+      current?.providerID !== fallback.providerID ||
+      current?.modelID !== fallback.modelID ||
+      current?.source !== fallback.source
+    ) {
+      await persistRuntimeModel(sessionID, fallback)
+    }
+    return {
+      providerID: fallback.providerID,
+      modelID: fallback.modelID,
+    }
   }
 
   export async function readableSessionIDs(sessionIDs: string[]) {

@@ -3301,6 +3301,14 @@ export type PutAccountAdminProviderControlGlobalData = {
     disabled_providers?: Array<string>
     model?: string
     small_model?: string
+    session_model_pool?: Array<{
+      provider_id: string
+      weight: number
+      models: Array<{
+        model_id: string
+        weight: number
+      }>
+    }>
   }
   path?: never
   query?: never
@@ -4079,13 +4087,706 @@ export type ConfigGetResponses = {
   /**
    * Get config info
    */
-  200: Config
+  200: {
+    /**
+     * JSON schema reference for configuration validation
+     */
+    $schema?: string
+    /**
+     * Enable TpCode account system
+     */
+    TPCODE_ACCOUNT_ENABLED?: boolean
+    /**
+     * Enable TpCode feedback forum
+     */
+    TPCODE_FEEDBACK_ENABLED?: boolean
+    logLevel?: LogLevel
+    server?: ServerConfig
+    /**
+     * Command configuration, see https://opencode.ai/docs/commands
+     */
+    command?: {
+      [key: string]: {
+        template: string
+        description?: string
+        agent?: string
+        model?: string
+        subtask?: boolean
+      }
+    }
+    /**
+     * Additional skill folder paths
+     */
+    skills?: {
+      /**
+       * Additional paths to skill folders
+       */
+      paths?: Array<string>
+      /**
+       * URLs to fetch skills from (e.g., https://example.com/.well-known/skills/)
+       */
+      urls?: Array<string>
+    }
+    watcher?: {
+      ignore?: Array<string>
+    }
+    plugin?: Array<string>
+    snapshot?: boolean
+    /**
+     * Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing
+     */
+    share?: "manual" | "auto" | "disabled"
+    /**
+     * @deprecated Use 'share' field instead. Share newly created sessions automatically
+     */
+    autoshare?: boolean
+    /**
+     * Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications
+     */
+    autoupdate?: boolean | "notify"
+    /**
+     * Disable providers that are loaded automatically
+     */
+    disabled_providers?: Array<string>
+    /**
+     * When set, ONLY these providers will be enabled. All other providers will be ignored
+     */
+    enabled_providers?: Array<string>
+    /**
+     * Model to use in the format of provider/model, eg anthropic/claude-2
+     */
+    model?: string
+    /**
+     * Small model to use for tasks like title generation in the format of provider/model
+     */
+    small_model?: string
+    /**
+     * Fallback model to use for saved plan quality evaluation in the format of provider/model
+     */
+    plan_evaluation_model?: string
+    /**
+     * Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.
+     */
+    default_agent?: string
+    /**
+     * Custom username to display in conversations instead of system username
+     */
+    username?: string
+    /**
+     * @deprecated Use `agent` field instead.
+     */
+    mode?: {
+      build?: AgentConfig
+      plan?: AgentConfig
+      [key: string]: AgentConfig | undefined
+    }
+    /**
+     * Agent configuration, see https://opencode.ai/docs/agents
+     */
+    agent?: {
+      plan?: AgentConfig
+      build?: AgentConfig
+      general?: AgentConfig
+      explore?: AgentConfig
+      title?: AgentConfig
+      summary?: AgentConfig
+      compaction?: AgentConfig
+      [key: string]: AgentConfig | undefined
+    }
+    /**
+     * Custom provider configurations and model overrides
+     */
+    provider?: {
+      [key: string]: ProviderConfig
+    }
+    /**
+     * MCP (Model Context Protocol) server configurations
+     */
+    mcp?: {
+      [key: string]:
+        | McpLocalConfig
+        | McpRemoteConfig
+        | {
+            enabled: boolean
+          }
+    }
+    formatter?:
+      | false
+      | {
+          [key: string]: {
+            disabled?: boolean
+            command?: Array<string>
+            environment?: {
+              [key: string]: string
+            }
+            extensions?: Array<string>
+          }
+        }
+    lsp?:
+      | false
+      | {
+          [key: string]:
+            | {
+                disabled: true
+              }
+            | {
+                command: Array<string>
+                extensions?: Array<string>
+                disabled?: boolean
+                env?: {
+                  [key: string]: string
+                }
+                initialization?: {
+                  [key: string]: unknown
+                }
+              }
+        }
+    /**
+     * Additional instruction files or patterns to include
+     */
+    instructions?: Array<string>
+    layout?: LayoutConfig
+    permission?: PermissionConfig
+    tools?: {
+      [key: string]: boolean
+    }
+    enterprise?: {
+      /**
+       * Enterprise URL
+       */
+      url?: string
+    }
+    compaction?: {
+      /**
+       * Enable automatic compaction when context is full (default: true)
+       */
+      auto?: boolean
+      /**
+       * Enable pruning of old tool outputs (default: true)
+       */
+      prune?: boolean
+      /**
+       * Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
+       */
+      reserved?: number
+    }
+    experimental?: {
+      disable_paste_summary?: boolean
+      /**
+       * Enable the batch tool
+       */
+      batch_tool?: boolean
+      /**
+       * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
+       */
+      openTelemetry?: boolean
+      /**
+       * Tools that should only be available to primary agents.
+       */
+      primary_tools?: Array<string>
+      /**
+       * Continue the agent loop when a tool call is denied
+       */
+      continue_loop_on_deny?: boolean
+      /**
+       * Timeout in milliseconds for model context protocol (MCP) requests
+       */
+      mcp_timeout?: number
+    }
+    /**
+     * Conversation data synchronization configuration
+     */
+    sync?: {
+      /**
+       * Enable conversation data synchronization to central server
+       */
+      enabled?: boolean
+      /**
+       * Central server API endpoint URL
+       */
+      endpoint: string
+      /**
+       * API key for authentication
+       */
+      apiKey?: string
+      /**
+       * Request timeout in milliseconds (default: 30000)
+       */
+      timeout?: number
+      /**
+       * Maximum number of retry attempts for failed sync (default: 5)
+       */
+      retryAttempts?: number
+      /**
+       * Initial retry delay in milliseconds (default: 5000)
+       */
+      retryDelay?: number
+      /**
+       * Number of tasks to process in each retry batch (default: 10)
+       */
+      batchSize?: number
+      /**
+       * History backfill mode: startup runs once after startup, periodic replays at intervals
+       */
+      backfillMode?: "startup" | "periodic"
+      /**
+       * History backfill replay interval in milliseconds when backfillMode=periodic (default: 21600000)
+       */
+      backfillInterval?: number
+      /**
+       * Number of sessions per history backfill batch (default: 25)
+       */
+      backfillBatchSize?: number
+    }
+    session_model_pool?: Array<{
+      provider_id: string
+      weight: number
+      models: Array<{
+        model_id: string
+        weight: number
+      }>
+    }>
+  }
 }
 
 export type ConfigGetResponse = ConfigGetResponses[keyof ConfigGetResponses]
 
 export type ConfigUpdateData = {
-  body?: Config
+  body?: {
+    /**
+     * JSON schema reference for configuration validation
+     */
+    $schema?: string
+    /**
+     * Enable TpCode account system
+     */
+    TPCODE_ACCOUNT_ENABLED?: boolean
+    /**
+     * Enable TpCode feedback forum
+     */
+    TPCODE_FEEDBACK_ENABLED?: boolean
+    logLevel?: LogLevel
+    server?: ServerConfig
+    /**
+     * Command configuration, see https://opencode.ai/docs/commands
+     */
+    command?: {
+      [key: string]: {
+        template: string
+        description?: string
+        agent?: string
+        model?: string
+        subtask?: boolean
+      }
+    }
+    /**
+     * Additional skill folder paths
+     */
+    skills?: {
+      /**
+       * Additional paths to skill folders
+       */
+      paths?: Array<string>
+      /**
+       * URLs to fetch skills from (e.g., https://example.com/.well-known/skills/)
+       */
+      urls?: Array<string>
+    }
+    watcher?: {
+      ignore?: Array<string>
+    }
+    plugin?: Array<string>
+    snapshot?: boolean
+    /**
+     * Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing
+     */
+    share?: "manual" | "auto" | "disabled"
+    /**
+     * @deprecated Use 'share' field instead. Share newly created sessions automatically
+     */
+    autoshare?: boolean
+    /**
+     * Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications
+     */
+    autoupdate?: boolean | "notify"
+    /**
+     * Disable providers that are loaded automatically
+     */
+    disabled_providers?: Array<string>
+    /**
+     * When set, ONLY these providers will be enabled. All other providers will be ignored
+     */
+    enabled_providers?: Array<string>
+    /**
+     * Model to use in the format of provider/model, eg anthropic/claude-2
+     */
+    model?: string
+    /**
+     * Small model to use for tasks like title generation in the format of provider/model
+     */
+    small_model?: string
+    /**
+     * Fallback model to use for saved plan quality evaluation in the format of provider/model
+     */
+    plan_evaluation_model?: string
+    /**
+     * Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.
+     */
+    default_agent?: string
+    /**
+     * Custom username to display in conversations instead of system username
+     */
+    username?: string
+    /**
+     * @deprecated Use `agent` field instead.
+     */
+    mode?: {
+      build?: AgentConfig
+      plan?: AgentConfig
+      [key: string]: AgentConfig | undefined
+    }
+    /**
+     * Agent configuration, see https://opencode.ai/docs/agents
+     */
+    agent?: {
+      plan?: AgentConfig
+      build?: AgentConfig
+      general?: AgentConfig
+      explore?: AgentConfig
+      title?: AgentConfig
+      summary?: AgentConfig
+      compaction?: AgentConfig
+      [key: string]: AgentConfig | undefined
+    }
+    /**
+     * Custom provider configurations and model overrides
+     */
+    provider?: {
+      [key: string]: ProviderConfig
+    }
+    /**
+     * MCP (Model Context Protocol) server configurations
+     */
+    mcp?: {
+      [key: string]:
+        | McpLocalConfig
+        | McpRemoteConfig
+        | {
+            enabled: boolean
+          }
+    }
+    formatter?:
+      | false
+      | {
+          [key: string]: {
+            disabled?: boolean
+            command?: Array<string>
+            environment?: {
+              [key: string]: string
+            }
+            extensions?: Array<string>
+          }
+        }
+    lsp?:
+      | false
+      | {
+          [key: string]:
+            | {
+                disabled: true
+              }
+            | {
+                command: Array<string>
+                extensions?: Array<string>
+                disabled?: boolean
+                env?: {
+                  [key: string]: string
+                }
+                initialization?: {
+                  [key: string]: unknown
+                }
+              }
+        }
+    /**
+     * Additional instruction files or patterns to include
+     */
+    instructions?: Array<string>
+    layout?: LayoutConfig
+    permission?: PermissionConfig
+    tools?: {
+      [key: string]: boolean
+    }
+    enterprise?: {
+      /**
+       * Enterprise URL
+       */
+      url?: string
+    }
+    compaction?: {
+      /**
+       * Enable automatic compaction when context is full (default: true)
+       */
+      auto?: boolean
+      /**
+       * Enable pruning of old tool outputs (default: true)
+       */
+      prune?: boolean
+      /**
+       * Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
+       */
+      reserved?: number
+    }
+    experimental?: {
+      disable_paste_summary?: boolean
+      /**
+       * Enable the batch tool
+       */
+      batch_tool?: boolean
+      /**
+       * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
+       */
+      openTelemetry?: boolean
+      /**
+       * Tools that should only be available to primary agents.
+       */
+      primary_tools?: Array<string>
+      /**
+       * Continue the agent loop when a tool call is denied
+       */
+      continue_loop_on_deny?: boolean
+      /**
+       * Timeout in milliseconds for model context protocol (MCP) requests
+       */
+      mcp_timeout?: number
+    }
+    /**
+     * Conversation data synchronization configuration
+     */
+    sync?: {
+      /**
+       * Enable conversation data synchronization to central server
+       */
+      enabled?: boolean
+      /**
+       * Central server API endpoint URL
+       */
+      endpoint: string
+      /**
+       * API key for authentication
+       */
+      apiKey?: string
+      /**
+       * Request timeout in milliseconds (default: 30000)
+       */
+      timeout?: number
+      /**
+       * Maximum number of retry attempts for failed sync (default: 5)
+       */
+      retryAttempts?: number
+      /**
+       * Initial retry delay in milliseconds (default: 5000)
+       */
+      retryDelay?: number
+      /**
+       * Number of tasks to process in each retry batch (default: 10)
+       */
+      batchSize?: number
+      /**
+       * History backfill mode: startup runs once after startup, periodic replays at intervals
+       */
+      backfillMode?: "startup" | "periodic"
+      /**
+       * History backfill replay interval in milliseconds when backfillMode=periodic (default: 21600000)
+       */
+      backfillInterval?: number
+      /**
+       * Number of sessions per history backfill batch (default: 25)
+       */
+      backfillBatchSize?: number
+    }
+    [key: string]:
+      | unknown
+      | string
+      | boolean
+      | LogLevel
+      | ServerConfig
+      | {
+          [key: string]: {
+            template: string
+            description?: string
+            agent?: string
+            model?: string
+            subtask?: boolean
+          }
+        }
+      | {
+          /**
+           * Additional paths to skill folders
+           */
+          paths?: Array<string>
+          /**
+           * URLs to fetch skills from (e.g., https://example.com/.well-known/skills/)
+           */
+          urls?: Array<string>
+        }
+      | {
+          ignore?: Array<string>
+        }
+      | Array<string>
+      | "manual"
+      | "auto"
+      | "disabled"
+      | boolean
+      | "notify"
+      | Array<string>
+      | Array<string>
+      | {
+          build?: AgentConfig
+          plan?: AgentConfig
+          [key: string]: AgentConfig | undefined
+        }
+      | {
+          plan?: AgentConfig
+          build?: AgentConfig
+          general?: AgentConfig
+          explore?: AgentConfig
+          title?: AgentConfig
+          summary?: AgentConfig
+          compaction?: AgentConfig
+          [key: string]: AgentConfig | undefined
+        }
+      | {
+          [key: string]: ProviderConfig
+        }
+      | {
+          [key: string]:
+            | McpLocalConfig
+            | McpRemoteConfig
+            | {
+                enabled: boolean
+              }
+        }
+      | false
+      | {
+          [key: string]: {
+            disabled?: boolean
+            command?: Array<string>
+            environment?: {
+              [key: string]: string
+            }
+            extensions?: Array<string>
+          }
+        }
+      | false
+      | {
+          [key: string]:
+            | {
+                disabled: true
+              }
+            | {
+                command: Array<string>
+                extensions?: Array<string>
+                disabled?: boolean
+                env?: {
+                  [key: string]: string
+                }
+                initialization?: {
+                  [key: string]: unknown
+                }
+              }
+        }
+      | Array<string>
+      | LayoutConfig
+      | PermissionConfig
+      | {
+          [key: string]: boolean
+        }
+      | {
+          /**
+           * Enterprise URL
+           */
+          url?: string
+        }
+      | {
+          /**
+           * Enable automatic compaction when context is full (default: true)
+           */
+          auto?: boolean
+          /**
+           * Enable pruning of old tool outputs (default: true)
+           */
+          prune?: boolean
+          /**
+           * Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
+           */
+          reserved?: number
+        }
+      | {
+          disable_paste_summary?: boolean
+          /**
+           * Enable the batch tool
+           */
+          batch_tool?: boolean
+          /**
+           * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
+           */
+          openTelemetry?: boolean
+          /**
+           * Tools that should only be available to primary agents.
+           */
+          primary_tools?: Array<string>
+          /**
+           * Continue the agent loop when a tool call is denied
+           */
+          continue_loop_on_deny?: boolean
+          /**
+           * Timeout in milliseconds for model context protocol (MCP) requests
+           */
+          mcp_timeout?: number
+        }
+      | {
+          /**
+           * Enable conversation data synchronization to central server
+           */
+          enabled?: boolean
+          /**
+           * Central server API endpoint URL
+           */
+          endpoint: string
+          /**
+           * API key for authentication
+           */
+          apiKey?: string
+          /**
+           * Request timeout in milliseconds (default: 30000)
+           */
+          timeout?: number
+          /**
+           * Maximum number of retry attempts for failed sync (default: 5)
+           */
+          retryAttempts?: number
+          /**
+           * Initial retry delay in milliseconds (default: 5000)
+           */
+          retryDelay?: number
+          /**
+           * Number of tasks to process in each retry batch (default: 10)
+           */
+          batchSize?: number
+          /**
+           * History backfill mode: startup runs once after startup, periodic replays at intervals
+           */
+          backfillMode?: "startup" | "periodic"
+          /**
+           * History backfill replay interval in milliseconds when backfillMode=periodic (default: 21600000)
+           */
+          backfillInterval?: number
+          /**
+           * Number of sessions per history backfill batch (default: 25)
+           */
+          backfillBatchSize?: number
+        }
+      | undefined
+  }
   path?: never
   query?: {
     directory?: string

@@ -154,7 +154,7 @@ describe("session.prompt special characters", () => {
 })
 
 describe("session.prompt agent variant", () => {
-  test("applies agent variant only when using agent model", async () => {
+  test.skipIf(Flag.TPCODE_ACCOUNT_ENABLED)("applies agent variant only when using agent model", async () => {
     const prev = process.env.OPENAI_API_KEY
     process.env.OPENAI_API_KEY = "test-openai-key"
 
@@ -174,7 +174,7 @@ describe("session.prompt agent variant", () => {
       await Instance.provide({
         directory: tmp.path,
         fn: async () => {
-          const session = await Session.create({})
+          const session = await Session.create({ title: "locked model test" })
 
           const other = await SessionPrompt.prompt({
             sessionID: session.id,
@@ -217,6 +217,176 @@ describe("session.prompt agent variant", () => {
 })
 
 describe("session.prompt managed model", () => {
+  test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("locks pool model per session and reselects after configured model is removed", async () => {
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+    const random = spyOn(Math, "random")
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-global-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+          "gpt-4.1-mini": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderAuth("anthropic", {
+        type: "api",
+        key: "sk-global-anthropic",
+      })
+      await AccountSystemSettingService.setProviderConfig("anthropic", {
+        models: {
+          "claude-sonnet-4-20250514": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderControl({
+        model: "openai/gpt-4.1-mini",
+        small_model: "openai/gpt-4.1-mini",
+        enabled_providers: ["openai", "anthropic"],
+        session_model_pool: [
+          {
+            provider_id: "openai",
+            weight: 2,
+            models: [
+              { model_id: "gpt-5.2-chat-latest", weight: 5 },
+              { model_id: "gpt-4.1-mini", weight: 1 },
+            ],
+          },
+          {
+            provider_id: "anthropic",
+            weight: 1,
+            models: [{ model_id: "claude-sonnet-4-20250514", weight: 1 }],
+          },
+        ],
+      })
+
+      await using tmp = await tmpdir({
+        git: true,
+        config: {
+          agent: {
+            build: {
+              model: "anthropic/claude-sonnet-4-20250514",
+            },
+          },
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        init: async () => {
+          process.env.OPENAI_API_KEY = "test-openai-key"
+          process.env.ANTHROPIC_API_KEY = "test-anthropic-key"
+        },
+        fn: async () => {
+          const session = await Session.create({ title: "locked model test" })
+          const models: Array<{ providerID: string; modelID: string }> = []
+          let calls = 0
+          random.mockReturnValueOnce(0.1).mockReturnValueOnce(0.05).mockReturnValueOnce(0.99).mockReturnValueOnce(0.99)
+          const stream = spyOn(LLM, "stream").mockImplementation(async (input) => {
+            calls++
+            models.push({
+              providerID: input.model.providerID,
+              modelID: input.model.id,
+            })
+            return {
+              fullStream: (async function* () {
+                yield { type: "start" }
+                yield { type: "text-start" }
+                yield { type: "text-delta", text: `reply-${calls}` }
+                yield { type: "text-end" }
+                yield {
+                  type: "finish-step",
+                  finishReason: "stop",
+                  usage: {
+                    inputTokens: 1,
+                    outputTokens: 1,
+                    totalTokens: 2,
+                  },
+                }
+                yield { type: "finish" }
+              })(),
+              text: Promise.resolve(`reply-${calls}`),
+              totalUsage: Promise.resolve(undefined),
+              providerMetadata: Promise.resolve(undefined),
+            } as unknown as Awaited<ReturnType<typeof LLM.stream>>
+          })
+
+          try {
+            await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "hello" }],
+            })
+            await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "hello again" }],
+            })
+
+            expect(models).toEqual([
+              { providerID: "openai", modelID: "gpt-5.2-chat-latest" },
+              { providerID: "openai", modelID: "gpt-5.2-chat-latest" },
+            ])
+
+            await AccountSystemSettingService.setProviderControl({
+              model: "openai/gpt-4.1-mini",
+              small_model: "openai/gpt-4.1-mini",
+              enabled_providers: ["openai", "anthropic"],
+              session_model_pool: [
+                {
+                  provider_id: "openai",
+                  weight: 1,
+                  models: [{ model_id: "gpt-4.1-mini", weight: 1 }],
+                },
+                {
+                  provider_id: "anthropic",
+                  weight: 4,
+                  models: [{ model_id: "claude-sonnet-4-20250514", weight: 1 }],
+                },
+              ],
+            })
+
+            await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "third" }],
+            })
+
+            expect(models).toEqual([
+              { providerID: "openai", modelID: "gpt-5.2-chat-latest" },
+              { providerID: "openai", modelID: "gpt-5.2-chat-latest" },
+              { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+            ])
+          } finally {
+            stream.mockRestore()
+            await Session.remove(session.id)
+          }
+        },
+      })
+    } finally {
+      random.mockRestore()
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
+  })
+
   test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("ignores client model, variant, and local agent model in strict account mode", async () => {
     const control = await AccountSystemSettingService.providerControl()
     const auths = await AccountSystemSettingService.providerAuths()

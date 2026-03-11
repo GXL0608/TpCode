@@ -181,11 +181,30 @@ const ModelPrefsBody = z.object({
   variant: z.record(z.string(), z.string()).optional(),
 })
 
-const ProviderControlBody = z.object({
+const UserProviderControlBody = z.object({
   enabled_providers: z.array(z.string()).optional(),
   disabled_providers: z.array(z.string()).optional(),
   model: z.string().optional(),
   small_model: z.string().optional(),
+})
+
+const ProviderControlBody = UserProviderControlBody.extend({
+  session_model_pool: z
+    .array(
+      z.object({
+        provider_id: z.string().min(1),
+        weight: z.number().int().positive(),
+        models: z
+          .array(
+            z.object({
+              model_id: z.string().min(1),
+              weight: z.number().int().positive(),
+            }),
+          )
+          .min(1),
+      }),
+    )
+    .optional(),
 })
 
 const AccountProjectStateLastSession = z.object({
@@ -1004,17 +1023,38 @@ export const AccountRoutes = lazy(() =>
         },
       }),
       validator("param", z.object({ provider_id: z.string() })),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const param = c.req.valid("param")
+        const state = await AccountProviderState.load(user_id)
+        const auth = AccountProviderState.auth(state, param.provider_id)
+        const source = AccountProviderState.authSource(state, param.provider_id)
+        return c.json({
+          provider_id: param.provider_id,
+          configured: source !== "none",
+          source,
+          auth_type: auth?.type,
+        })
+      },
     )
     .get(
       "/me/provider-control",
       async (c) => {
-        return c.json(forbidUserProviderConfig(), 403)
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const control = await AccountSystemSettingService.providerControl()
+        return c.json({
+          model: control.model,
+          small_model: control.small_model,
+          enabled_providers: control.enabled_providers,
+          disabled_providers: control.disabled_providers,
+        })
       },
     )
     .put(
       "/me/provider-control",
-      validator("json", ProviderControlBody),
+      validator("json", UserProviderControlBody),
       async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(
@@ -1948,7 +1988,7 @@ export const AccountRoutes = lazy(() =>
     .put(
       "/admin/users/:user_id/provider-control",
       validator("param", z.object({ user_id: z.string() })),
-      validator("json", ProviderControlBody),
+      validator("json", UserProviderControlBody),
       async (c) => c.json(forbidUserProviderConfig(), 403),
     )
     .get(

@@ -15,6 +15,22 @@ const ProviderControl = z
     disabled_providers: z.array(z.string()).optional(),
     model: z.string().optional(),
     small_model: z.string().optional(),
+    session_model_pool: z
+      .array(
+        z.object({
+          provider_id: z.string().min(1),
+          weight: z.number().int().positive(),
+          models: z
+            .array(
+              z.object({
+                model_id: z.string().min(1),
+                weight: z.number().int().positive(),
+              }),
+            )
+            .min(1),
+        }),
+      )
+      .optional(),
   })
 
 const ProviderConfigMap = z.record(z.string(), Config.Provider)
@@ -342,6 +358,8 @@ export namespace AccountSystemSettingService {
     const value = ProviderControl.parse(input)
     const catalog = await providerCatalog()
     const providerMap = new Map(catalog.providers.map((item) => [item.provider_id, new Set(item.models.map((model) => model.model_id))]))
+    const enabled = value.enabled_providers ? new Set(value.enabled_providers) : undefined
+    const disabled = new Set(value.disabled_providers ?? [])
 
     const providerError = (provider_id: string, field: string) => ({
       ok: false as const,
@@ -353,6 +371,16 @@ export namespace AccountSystemSettingService {
       code: "model_not_configured" as const,
       message: `${field} 引用了未配置供应商下不可用的模型：${value}`,
     })
+    const invalidError = (field: string, message: string) => ({
+      ok: false as const,
+      code: "invalid_provider_control" as const,
+      message: `${field} ${message}`,
+    })
+    const isAllowed = (provider_id: string) => {
+      if (enabled && !enabled.has(provider_id)) return false
+      if (disabled.has(provider_id)) return false
+      return true
+    }
 
     for (const provider_id of value.enabled_providers ?? []) {
       if (!providerMap.has(provider_id)) return providerError(provider_id, "enabled_providers")
@@ -368,7 +396,31 @@ export namespace AccountSystemSettingService {
       if (!parsed) continue
       const models = providerMap.get(parsed.provider_id)
       if (!models) return providerError(parsed.provider_id, field)
+      if (!isAllowed(parsed.provider_id)) return providerError(parsed.provider_id, field)
       if (!models.has(parsed.model_id)) return modelError(raw!, field)
+    }
+    if ((value.session_model_pool?.length ?? 0) > 0 && !value.model?.trim()) {
+      return invalidError("model", "不能为空，作为 session_model_pool 不可用时的全局回退模型")
+    }
+    const providers = new Set<string>()
+    for (const item of value.session_model_pool ?? []) {
+      if (providers.has(item.provider_id)) {
+        return invalidError("session_model_pool", `存在重复渠道：${item.provider_id}`)
+      }
+      providers.add(item.provider_id)
+      const models = providerMap.get(item.provider_id)
+      if (!models) return providerError(item.provider_id, "session_model_pool")
+      if (!isAllowed(item.provider_id)) return providerError(item.provider_id, "session_model_pool")
+      const pool = new Set<string>()
+      for (const model of item.models) {
+        if (pool.has(model.model_id)) {
+          return invalidError("session_model_pool", `渠道 ${item.provider_id} 下存在重复模型：${model.model_id}`)
+        }
+        pool.add(model.model_id)
+        if (!models.has(model.model_id)) {
+          return modelError(`${item.provider_id}/${model.model_id}`, "session_model_pool")
+        }
+      }
     }
 
     return {
@@ -426,6 +478,7 @@ export namespace AccountSystemSettingService {
       disabled_providers: control.disabled_providers?.filter((item) => item !== provider_id),
       model: parseModel(control.model)?.provider_id === provider_id ? undefined : control.model,
       small_model: parseModel(control.small_model)?.provider_id === provider_id ? undefined : control.small_model,
+      session_model_pool: control.session_model_pool?.filter((item) => item.provider_id !== provider_id),
     }
 
     await setGlobalProviderSetting({

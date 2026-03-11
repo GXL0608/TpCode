@@ -231,6 +231,11 @@ export function DialogConnectProvider(props: { provider: string; scope?: Provide
       ? ((await control.json().catch(() => undefined)) as {
           model?: string
           small_model?: string
+          session_model_pool?: Array<{
+            provider_id: string
+            weight: number
+            models: Array<{ model_id: string; weight: number }>
+          }>
           enabled_providers?: string[]
           disabled_providers?: string[]
         } | undefined)
@@ -245,6 +250,7 @@ export function DialogConnectProvider(props: { provider: string; scope?: Provide
       body: {
         model: body?.model,
         small_model: body?.small_model,
+        session_model_pool: body?.session_model_pool,
         enabled_providers: enabled,
         disabled_providers: (body?.disabled_providers ?? []).filter((item) => item !== props.provider),
       },

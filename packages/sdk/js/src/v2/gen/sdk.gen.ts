@@ -37,6 +37,7 @@ import type {
   AccountRegisterResponses,
   AccountTokenRefreshErrors,
   AccountTokenRefreshResponses,
+  AgentConfig,
   AgentPartInput,
   AppAgentsResponses,
   AppLogErrors,
@@ -146,6 +147,8 @@ import type {
   GlobalReadyErrors,
   GlobalReadyResponses,
   InstanceDisposeResponses,
+  LayoutConfig,
+  LogLevel,
   LspStatusResponses,
   McpAddErrors,
   McpAddResponses,
@@ -173,6 +176,7 @@ import type {
   PatchAccountAdminUsersUserIdResponses,
   PatchAccountMeProvidersProviderIdDisabledResponses,
   PathGetResponses,
+  PermissionConfig,
   PermissionListResponses,
   PermissionReplyErrors,
   PermissionReplyResponses,
@@ -231,6 +235,7 @@ import type {
   QuestionRejectResponses,
   QuestionReplyErrors,
   QuestionReplyResponses,
+  ServerConfig,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionChildrenErrors,
@@ -1455,7 +1460,193 @@ export class Config2 extends HeyApiClient {
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
       directory?: string
-      config?: Config3
+      $schema?: string
+      TPCODE_ACCOUNT_ENABLED?: boolean
+      TPCODE_FEEDBACK_ENABLED?: boolean
+      logLevel?: LogLevel
+      server?: ServerConfig
+      command?: {
+        [key: string]: {
+          template: string
+          description?: string
+          agent?: string
+          model?: string
+          subtask?: boolean
+        }
+      }
+      skills?: {
+        /**
+         * Additional paths to skill folders
+         */
+        paths?: Array<string>
+        /**
+         * URLs to fetch skills from (e.g., https://example.com/.well-known/skills/)
+         */
+        urls?: Array<string>
+      }
+      watcher?: {
+        ignore?: Array<string>
+      }
+      plugin?: Array<string>
+      snapshot?: boolean
+      share?: "manual" | "auto" | "disabled"
+      autoshare?: boolean
+      autoupdate?: boolean | "notify"
+      disabled_providers?: Array<string>
+      enabled_providers?: Array<string>
+      model?: string
+      small_model?: string
+      plan_evaluation_model?: string
+      default_agent?: string
+      username?: string
+      mode?: {
+        build?: AgentConfig
+        plan?: AgentConfig
+        [key: string]: AgentConfig | undefined
+      }
+      agent?: {
+        plan?: AgentConfig
+        build?: AgentConfig
+        general?: AgentConfig
+        explore?: AgentConfig
+        title?: AgentConfig
+        summary?: AgentConfig
+        compaction?: AgentConfig
+        [key: string]: AgentConfig | undefined
+      }
+      provider?: {
+        [key: string]: ProviderConfig
+      }
+      mcp?: {
+        [key: string]:
+          | McpLocalConfig
+          | McpRemoteConfig
+          | {
+              enabled: boolean
+            }
+      }
+      formatter?:
+        | false
+        | {
+            [key: string]: {
+              disabled?: boolean
+              command?: Array<string>
+              environment?: {
+                [key: string]: string
+              }
+              extensions?: Array<string>
+            }
+          }
+      lsp?:
+        | false
+        | {
+            [key: string]:
+              | {
+                  disabled: true
+                }
+              | {
+                  command: Array<string>
+                  extensions?: Array<string>
+                  disabled?: boolean
+                  env?: {
+                    [key: string]: string
+                  }
+                  initialization?: {
+                    [key: string]: unknown
+                  }
+                }
+          }
+      instructions?: Array<string>
+      layout?: LayoutConfig
+      permission?: PermissionConfig
+      tools?: {
+        [key: string]: boolean
+      }
+      enterprise?: {
+        /**
+         * Enterprise URL
+         */
+        url?: string
+      }
+      compaction?: {
+        /**
+         * Enable automatic compaction when context is full (default: true)
+         */
+        auto?: boolean
+        /**
+         * Enable pruning of old tool outputs (default: true)
+         */
+        prune?: boolean
+        /**
+         * Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
+         */
+        reserved?: number
+      }
+      experimental?: {
+        disable_paste_summary?: boolean
+        /**
+         * Enable the batch tool
+         */
+        batch_tool?: boolean
+        /**
+         * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
+         */
+        openTelemetry?: boolean
+        /**
+         * Tools that should only be available to primary agents.
+         */
+        primary_tools?: Array<string>
+        /**
+         * Continue the agent loop when a tool call is denied
+         */
+        continue_loop_on_deny?: boolean
+        /**
+         * Timeout in milliseconds for model context protocol (MCP) requests
+         */
+        mcp_timeout?: number
+      }
+      sync?: {
+        /**
+         * Enable conversation data synchronization to central server
+         */
+        enabled?: boolean
+        /**
+         * Central server API endpoint URL
+         */
+        endpoint: string
+        /**
+         * API key for authentication
+         */
+        apiKey?: string
+        /**
+         * Request timeout in milliseconds (default: 30000)
+         */
+        timeout?: number
+        /**
+         * Maximum number of retry attempts for failed sync (default: 5)
+         */
+        retryAttempts?: number
+        /**
+         * Initial retry delay in milliseconds (default: 5000)
+         */
+        retryDelay?: number
+        /**
+         * Number of tasks to process in each retry batch (default: 10)
+         */
+        batchSize?: number
+        /**
+         * History backfill mode: startup runs once after startup, periodic replays at intervals
+         */
+        backfillMode?: "startup" | "periodic"
+        /**
+         * History backfill replay interval in milliseconds when backfillMode=periodic (default: 21600000)
+         */
+        backfillInterval?: number
+        /**
+         * Number of sessions per history backfill batch (default: 25)
+         */
+        backfillBatchSize?: number
+      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1465,7 +1656,40 @@ export class Config2 extends HeyApiClient {
         {
           args: [
             { in: "query", key: "directory" },
-            { key: "config", map: "body" },
+            { in: "body", key: "$schema" },
+            { in: "body", key: "TPCODE_ACCOUNT_ENABLED" },
+            { in: "body", key: "TPCODE_FEEDBACK_ENABLED" },
+            { in: "body", key: "logLevel" },
+            { in: "body", key: "server" },
+            { in: "body", key: "command" },
+            { in: "body", key: "skills" },
+            { in: "body", key: "watcher" },
+            { in: "body", key: "plugin" },
+            { in: "body", key: "snapshot" },
+            { in: "body", key: "share" },
+            { in: "body", key: "autoshare" },
+            { in: "body", key: "autoupdate" },
+            { in: "body", key: "disabled_providers" },
+            { in: "body", key: "enabled_providers" },
+            { in: "body", key: "model" },
+            { in: "body", key: "small_model" },
+            { in: "body", key: "plan_evaluation_model" },
+            { in: "body", key: "default_agent" },
+            { in: "body", key: "username" },
+            { in: "body", key: "mode" },
+            { in: "body", key: "agent" },
+            { in: "body", key: "provider" },
+            { in: "body", key: "mcp" },
+            { in: "body", key: "formatter" },
+            { in: "body", key: "lsp" },
+            { in: "body", key: "instructions" },
+            { in: "body", key: "layout" },
+            { in: "body", key: "permission" },
+            { in: "body", key: "tools" },
+            { in: "body", key: "enterprise" },
+            { in: "body", key: "compaction" },
+            { in: "body", key: "experimental" },
+            { in: "body", key: "sync" },
           ],
         },
       ],
@@ -5488,6 +5712,14 @@ export class OpencodeClient extends HeyApiClient {
       disabled_providers?: Array<string>
       model?: string
       small_model?: string
+      session_model_pool?: Array<{
+        provider_id: string
+        weight: number
+        models: Array<{
+          model_id: string
+          weight: number
+        }>
+      }>
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5500,6 +5732,7 @@ export class OpencodeClient extends HeyApiClient {
             { in: "body", key: "disabled_providers" },
             { in: "body", key: "model" },
             { in: "body", key: "small_model" },
+            { in: "body", key: "session_model_pool" },
           ],
         },
       ],

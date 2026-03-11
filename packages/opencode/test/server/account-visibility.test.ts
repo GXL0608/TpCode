@@ -519,6 +519,13 @@ describe("account visibility", () => {
     expect(Array.isArray(body)).toBe(true)
   })
 
+  test.skipIf(!on)("provider control requires login", async () => {
+    const response = await req({
+      path: "/account/me/provider-control",
+    })
+    expect(response.status).toBe(401)
+  })
+
   test.skipIf(!on)("super_admin can manage target user provider and does not use target config for self", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")

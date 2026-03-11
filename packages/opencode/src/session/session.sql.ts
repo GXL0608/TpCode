@@ -38,6 +38,9 @@ export const SessionTable = table(
     visibility: text()
       .notNull()
       .$default(() => "private"),
+    runtime_provider_id: text(),
+    runtime_model_id: text(),
+    runtime_model_source: text(),
     ...Timestamps,
     time_compacting: integer(),
     time_archived: integer(),
