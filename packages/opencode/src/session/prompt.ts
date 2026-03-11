@@ -63,6 +63,7 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
   const QUEUE_TIMEOUT_MS = Number(process.env.OPENCODE_SESSION_QUEUE_TIMEOUT_MS ?? "120000")
+  const terminal = (finish?: string) => !!finish && finish !== "tool-calls"
 
   const QueueTimeoutError = NamedError.create(
     "SessionPromptQueueTimeoutError",
@@ -414,11 +415,7 @@ export namespace SessionPrompt {
       }
 
       if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
-      if (
-        lastAssistant?.finish &&
-        !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
-        lastUser.id < lastAssistant.id
-      ) {
+      if (lastAssistant && terminal(lastAssistant.finish) && lastUser.id < lastAssistant.id) {
         log.info("exiting loop", { sessionID })
         break
       }
@@ -799,8 +796,8 @@ export namespace SessionPrompt {
         break
       }
 
-      // Check if model finished (finish reason is not "tool-calls" or "unknown")
-      const modelFinished = processor.message.finish && !["tool-calls", "unknown"].includes(processor.message.finish)
+      // Unknown finish reasons still indicate a completed turn when no tool calls are pending.
+      const modelFinished = terminal(processor.message.finish)
 
       if (modelFinished && !processor.message.error) {
         if (format.type === "json_schema") {

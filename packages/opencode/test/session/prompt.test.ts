@@ -1,11 +1,13 @@
 import path from "path"
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { fileURLToPath } from "url"
 import { Instance } from "../../src/project/instance"
 import { Session } from "../../src/session"
+import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionVoiceTable } from "../../src/session/session.sql"
+import { SessionStatus } from "../../src/session/status"
 import { Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
@@ -30,7 +32,7 @@ describe("session.prompt missing file", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        const session = await Session.create({})
+        const session = await Session.create({ title: "unknown finish test" })
 
         const missing = path.join(tmp.path, "does-not-exist.ts")
         const msg = await SessionPrompt.prompt({
@@ -288,6 +290,69 @@ describe("session.prompt managed model", () => {
         await AccountSystemSettingService.setProviderConfig(providerID, config)
       }
     }
+  })
+})
+
+describe("session.prompt finish reason", () => {
+  test("treats unknown finish reason as terminal when there are no tool calls", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "unknown finish test" })
+        let calls = 0
+        const stream = spyOn(LLM, "stream").mockImplementation(async () => {
+          calls++
+          if (calls > 1) throw new Error("unexpected second stream")
+          return {
+            fullStream: (async function* () {
+              yield { type: "start" }
+              yield { type: "text-start" }
+              yield { type: "text-delta", text: "done" }
+              yield { type: "text-end" }
+              yield {
+                type: "finish-step",
+                finishReason: "unknown",
+                usage: {
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  totalTokens: 2,
+                },
+              }
+              yield { type: "finish" }
+            })(),
+          } as unknown as Awaited<ReturnType<typeof LLM.stream>>
+        })
+
+        try {
+          const message = await SessionPrompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "hello" }],
+          })
+
+          expect(calls).toBe(1)
+          expect(message.info.role).toBe("assistant")
+          if (message.info.role === "assistant") {
+            expect(message.info.finish).toBe("unknown")
+          }
+          expect(SessionStatus.get(session.id).type).toBe("idle")
+        } finally {
+          stream.mockRestore()
+          await Session.remove(session.id)
+        }
+      },
+    })
   })
 })
 
