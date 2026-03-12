@@ -77,12 +77,6 @@ export const dict: Record<string, string> = {
   "ui.messagePart.plan.saved": "Saved",
   "ui.messagePart.plan.export": "Export plan",
   "ui.messagePart.plan.exported": "Exported",
-  "ui.messagePart.plan.dialog.title": "Save plan",
-  "ui.messagePart.plan.dialog.feedbackLabel": "VHO feedback no. (optional)",
-  "ui.messagePart.plan.dialog.feedbackPlaceholder": "Enter feedback no.",
-  "ui.messagePart.plan.dialog.feedbackHint": "Leave empty if not needed.",
-  "ui.messagePart.plan.dialog.cancel": "Cancel",
-  "ui.messagePart.plan.dialog.confirm": "Save",
 
   "ui.list.loading": "Loading",
   "ui.list.empty": "No results",

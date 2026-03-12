@@ -249,29 +249,6 @@
   }
 }
 
-[data-slot="text-part-save-dialog"] {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 6px 10px 8px;
-  min-width: min(520px, calc(100vw - 72px));
-}
-
-[data-slot="text-part-save-dialog-hint"] {
-  color: var(--text-weak);
-  font-family: var(--font-family-sans);
-  font-size: var(--font-size-small);
-  font-weight: var(--font-weight-regular);
-  line-height: var(--line-height-large);
-  margin-top: -2px;
-}
-
-[data-slot="text-part-save-dialog-actions"] {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 [data-component="reasoning-part"] {
   width: 100%;
   color: var(--text-base);

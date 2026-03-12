@@ -48,9 +48,8 @@ import { Tooltip } from "./tooltip"
 import { IconButton } from "./icon-button"
 import { TextShimmer } from "./text-shimmer"
 import { Button } from "./button"
-import { Dialog } from "./dialog"
-import { TextField } from "./text-field"
 import { resolveMessageAttachmentUrl } from "./message-attachment-url"
+import { submitPlanSave } from "./plan-save"
 
 interface Diagnostic {
   range: {
@@ -1116,7 +1115,6 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
 PART_MAPPING["text"] = function TextPartDisplay(props) {
   const data = useData()
   const i18n = useI18n()
-  const dialog = useDialog()
   const part = props.part as TextPart
   const interrupted = createMemo(
     () =>
@@ -1216,67 +1214,23 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
     setTimeout(() => setExported(false), 2000)
   }
 
-  const save = async (vho_feedback_no?: string) => {
+  /**
+   * 直接保存计划，并在成功后继续后置反馈流程。
+   */
+  const handleSave = async () => {
     if (!canSave()) return false
-    if (saving()) return false
-    const fn = data.savePlan
-    if (!fn) return false
-    setSaving(true)
-    const result = await fn({
+    return submitPlanSave({
+      saving: saving(),
       sessionID: props.message.sessionID,
       messageID: props.message.id,
       partID: part.id,
-      vho_feedback_no,
-    })
-    setSaving(false)
-    if (!result.ok) return false
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
-    return true
-  }
-
-  const openSaveDialog = () => {
-    if (!canSave()) return
-    dialog.show(() => {
-      const [feedback, setFeedback] = createSignal("")
-      const [pending, setPending] = createSignal(false)
-      const submit = async () => {
-        if (pending()) return
-        setPending(true)
-        const ok = await save(feedback().trim() || undefined)
-        setPending(false)
-        if (!ok) return
-        dialog.close()
-      }
-      const onKeyDown = (event: KeyboardEvent) => {
-        if (event.key !== "Enter" || event.isComposing) return
-        event.preventDefault()
-        void submit()
-      }
-      return (
-        <Dialog title={i18n.t("ui.messagePart.plan.dialog.title")} fit>
-          <div data-slot="text-part-save-dialog">
-            <TextField
-              label={i18n.t("ui.messagePart.plan.dialog.feedbackLabel")}
-              placeholder={i18n.t("ui.messagePart.plan.dialog.feedbackPlaceholder")}
-              value={feedback()}
-              autofocus
-              disabled={pending()}
-              onChange={setFeedback}
-              onKeyDown={onKeyDown}
-            />
-            <span data-slot="text-part-save-dialog-hint">{i18n.t("ui.messagePart.plan.dialog.feedbackHint")}</span>
-            <div data-slot="text-part-save-dialog-actions">
-              <Button type="button" variant="ghost" size="large" onClick={() => dialog.close()} disabled={pending()}>
-                {i18n.t("ui.messagePart.plan.dialog.cancel")}
-              </Button>
-              <Button type="button" variant="primary" size="large" onClick={() => void submit()} disabled={pending()}>
-                {i18n.t("ui.messagePart.plan.dialog.confirm")}
-              </Button>
-            </div>
-          </div>
-        </Dialog>
-      )
+      savePlan: data.savePlan,
+      afterSavePlan: data.afterSavePlan,
+      onSaving: setSaving,
+      onSaved: () => {
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+      },
     })
   }
 
@@ -1293,7 +1247,7 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
               size="small"
               variant={saved() ? "secondary" : "primary"}
               onMouseDown={(event: MouseEvent) => event.preventDefault()}
-              onClick={openSaveDialog}
+              onClick={() => void handleSave()}
               aria-label={saveLabel()}
               disabled={saving()}
             >

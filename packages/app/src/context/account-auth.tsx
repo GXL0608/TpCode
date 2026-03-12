@@ -79,7 +79,6 @@ type SavePlanInput = {
   message_id: string
   part_id?: string
   project_id?: string
-  vho_feedback_no?: string
 }
 
 type SavePlanResult =
@@ -96,6 +95,15 @@ type SavePlanResult =
       code: string
       message?: string
     }
+
+type VhoBindInfo = {
+  user_id: string
+  phone?: string
+  vho_user_id?: string
+  phone_bound?: boolean
+  vho_bound?: boolean
+  bound?: boolean
+}
 
 function json<T>(input: unknown): T | undefined {
   if (!input || typeof input !== "object") return
@@ -481,6 +489,19 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           }
         }
         return body
+      },
+      // 读取当前登录用户的手机号/VHO 绑定信息，供保存计划后的反馈跳转使用。
+      async meVho() {
+        const response = await request({
+          path: "/account/me/vho-bind",
+          method: "GET",
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) {
+          if (response) setState("last_error", (await responseCode(response)) ?? "account_me_vho_failed")
+          return
+        }
+        return json<VhoBindInfo>(await response.json().catch(() => undefined))
       },
       async contextProjects() {
         const response = await request({

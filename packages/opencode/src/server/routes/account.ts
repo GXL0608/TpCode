@@ -73,9 +73,8 @@ const PlanSaveFailure = z
       "part_missing",
       "plan_text_missing",
       "forbidden",
-      "oracle_feedback_missing",
-      "oracle_feedback_update_failed",
-      "oracle_feedback_row_count_invalid",
+      "project_forbidden",
+      "project_missing",
     ]),
     message: z.string().optional(),
     permission: z.string().optional(),
@@ -766,14 +765,6 @@ export const AccountRoutes = lazy(() =>
           },
           404: {
             description: "Not found",
-            content: {
-              "application/json": {
-                schema: resolver(PlanSaveFailure),
-              },
-            },
-          },
-          502: {
-            description: "Upstream sync failed",
             content: {
               "application/json": {
                 schema: resolver(PlanSaveFailure),

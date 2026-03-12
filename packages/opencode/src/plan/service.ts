@@ -118,7 +118,7 @@ export namespace PlanService {
         })
         .run()
     })
-    // VHO 回写暂时停用，保存计划仅落本地 tp_saved_plan。
+    // 保存计划只负责本地落库与触发内部评估，不再同步第三方反馈系统。
     PlanEvalService.start({
       plan_id: id,
       session_id: input.session_id,

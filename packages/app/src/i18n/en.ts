@@ -357,6 +357,15 @@ export const dict = {
   "dialog.server.menu.delete": "Delete",
   "dialog.server.current": "Current Server",
   "dialog.server.status.default": "Default",
+  "plan.feedback.dialog.title": "Submit plan feedback",
+  "plan.feedback.dialog.description":
+    "The plan has been saved. You can continue filling out feedback in the third-party page below. If embedding is inconvenient in the current environment, open it in a new window.",
+  "plan.feedback.dialog.openExternal": "Open in new window",
+  "plan.feedback.dialog.frameTitle": "Plan feedback",
+  "plan.feedback.toast.savedTitle": "Plan saved",
+  "plan.feedback.toast.phoneRequiredToSave": "Bind a phone number in Settings > My before saving the plan.",
+  "plan.feedback.toast.phoneRequired": "Bind a phone number before submitting feedback.",
+  "plan.feedback.toast.phoneFetchFailed": "Failed to load the phone number. Please try again later.",
 
   "dialog.project.edit.title": "Edit project",
   "dialog.project.edit.name": "Name",
