@@ -49,7 +49,7 @@ export namespace Session {
   }
 
   type SessionRow = typeof SessionTable.$inferSelect
-  const RuntimeModelSource = z.enum(["single", "pool"])
+  const RuntimeModelSource = z.enum(["single", "pool", "manual"])
   type RuntimeModelSource = z.infer<typeof RuntimeModelSource>
   type RuntimeModelState = {
     providerID: string
@@ -134,11 +134,48 @@ export namespace Session {
     )
   }
 
+  /** 中文注释：清空 session 级手动模型状态，恢复系统自动选择。 */
+  async function clearRuntimeState(sessionID: string) {
+    await Database.use((db) =>
+      db
+        .update(SessionTable)
+        .set({
+          runtime_provider_id: null,
+          runtime_model_id: null,
+          runtime_model_source: null,
+        })
+        .where(eq(SessionTable.id, sessionID))
+        .run(),
+    )
+  }
+
+  /** 中文注释：设置当前 session 的手动模型。 */
+  export async function setRuntimeModel(sessionID: string, input: { providerID: string; modelID: string }) {
+    await assertWritable(sessionID)
+    await persistRuntimeModel(sessionID, {
+      providerID: input.providerID,
+      modelID: input.modelID,
+      source: "manual",
+    })
+  }
+
+  /** 中文注释：清除当前 session 的手动模型。 */
+  export async function clearRuntimeModel(sessionID: string) {
+    await assertWritable(sessionID)
+    await clearRuntimeState(sessionID)
+  }
+
   export async function runtimeModel(sessionID: string) {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return Provider.runtimeModel()
     const row = await assertWritable(sessionID)
     const current = runtimeState(row)
     const providers = await Provider.list()
+    if (current?.source === "manual" && providers[current.providerID]?.models[current.modelID]) {
+      return {
+        providerID: current.providerID,
+        modelID: current.modelID,
+      }
+    }
     if (current?.source === "single" && providers[current.providerID]?.models[current.modelID]) {
       return {
         providerID: current.providerID,
@@ -222,6 +259,7 @@ export namespace Session {
         : undefined
     const share = row.share_url ? { url: row.share_url } : undefined
     const revert = row.revert ?? undefined
+    const runtime_model = runtimeState(row)
     return {
       id: row.id,
       slug: row.slug,
@@ -233,6 +271,7 @@ export namespace Session {
       summary,
       share,
       revert,
+      runtime_model,
       permission: row.permission ?? undefined,
       visibility: row.visibility as "private" | "department" | "org" | "public",
       time: {
@@ -259,6 +298,9 @@ export namespace Session {
       summary_files: info.summary?.files,
       summary_diffs: info.summary?.diffs,
       revert: info.revert ?? null,
+      runtime_provider_id: info.runtime_model?.providerID,
+      runtime_model_id: info.runtime_model?.modelID,
+      runtime_model_source: info.runtime_model?.source,
       permission: info.permission,
       visibility: info.visibility ?? "private",
       time_created: info.time.created,
@@ -314,6 +356,13 @@ export namespace Session {
           partID: z.string().optional(),
           snapshot: z.string().optional(),
           diff: z.string().optional(),
+        })
+        .optional(),
+      runtime_model: z
+        .object({
+          providerID: z.string(),
+          modelID: z.string(),
+          source: RuntimeModelSource,
         })
         .optional(),
     })

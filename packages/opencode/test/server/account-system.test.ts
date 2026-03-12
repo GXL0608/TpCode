@@ -578,7 +578,7 @@ describe("account system", () => {
     expect(allowed.status).toBe(200)
   })
 
-  test.skipIf(!accountEnabled)("ordinary user cannot self-configure provider or model without provider:config_own", async () => {
+  test.skipIf(!accountEnabled)("ordinary user cannot self-configure provider or model without build permission", async () => {
     const service = state.user
     if (!service) throw new Error("user_service_missing")
     const username = uid("locked_provider")

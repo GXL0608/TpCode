@@ -35,6 +35,7 @@ import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useAccountAuth } from "@/context/account-auth"
+import { useAccountRequest } from "./settings-account-api"
 import { createTextFragment, getCursorPosition, setCursorPosition, setRangeEdge } from "./prompt-input/editor-dom"
 import { createPromptAttachments, ACCEPTED_FILE_TYPES } from "./prompt-input/attachments"
 import {
@@ -54,6 +55,8 @@ import { PromptVoiceAttachments } from "./prompt-input/voice-attachments"
 import { PromptDragOverlay } from "./prompt-input/drag-overlay"
 import { shouldClearVoiceDraft, shouldResetPromptDraft } from "./prompt-input/draft"
 import { promptPlaceholder } from "./prompt-input/placeholder"
+import { canUseRuntimeModelSelector } from "./prompt-input/runtime-model-access"
+import { canUseBuildCapability } from "@/utils/account-build-access"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
 import { createSpeechRecognition } from "@/utils/speech"
 
@@ -131,6 +134,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const language = useLanguage()
   const platform = usePlatform()
   const auth = useAccountAuth()
+  const accountRequest = useAccountRequest()
   const accountID = auth.user()?.id ?? "anonymous"
   let editorRef!: HTMLDivElement
   let fileInputRef: HTMLInputElement | undefined
@@ -257,6 +261,15 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return paths
   })
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
+  const canSelectRuntimeModel = createMemo(() =>
+    canUseRuntimeModelSelector({
+      hasBuild: canUseBuildCapability(auth.user()),
+      isSuperAdmin: (auth.user()?.roles ?? []).includes("super_admin"),
+      agent: local.agent.current()?.name,
+    }),
+  )
+  const [runtimeValue, setRuntimeValue] = createSignal("__auto__")
+  const [runtimeOptions, setRuntimeOptions] = createSignal<Array<{ value: string; label: string }>>([])
   const status = createMemo(
     () =>
       sync.data.session_status[params.id ?? ""] ?? {
@@ -322,6 +335,61 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     ]
     return preferred.find((item) => MediaRecorder.isTypeSupported(item))
   }
+
+  /** 中文注释：把选择器值拆成 providerID 和 modelID。 */
+  const parseRuntimeValue = (value: string) => {
+    const [providerID, ...rest] = value.split("/")
+    const modelID = rest.join("/")
+    if (!providerID || !modelID) return
+    return { providerID, modelID }
+  }
+
+  /** 中文注释：把当前选择同步到 session 手动模型接口。 */
+  const updateRuntimeModel = async (sessionID: string, value: string) => {
+    if (value === "__auto__") {
+      const response = await accountRequest({
+        method: "DELETE",
+        path: `/session/${encodeURIComponent(sessionID)}/runtime-model?directory=${encodeURIComponent(sdk.directory)}`,
+      }).catch(() => undefined)
+      if (!response?.ok) throw new Error(language.t("common.requestFailed"))
+      return
+    }
+    const parsed = parseRuntimeValue(value)
+    if (!parsed) return
+    const response = await accountRequest({
+      method: "PUT",
+      path: `/session/${encodeURIComponent(sessionID)}/runtime-model?directory=${encodeURIComponent(sdk.directory)}`,
+      body: parsed,
+    }).catch(() => undefined)
+    if (!response?.ok) throw new Error(language.t("common.requestFailed"))
+  }
+
+  createEffect(() => {
+    const runtime = info()?.runtime_model
+    if (!params.id) return
+    setRuntimeValue(runtime ? `${runtime.providerID}/${runtime.modelID}` : "__auto__")
+  })
+
+  createEffect(() => {
+    if (!auth.ready()) return
+    if (!auth.authenticated()) return
+    if (!canSelectRuntimeModel()) return
+    void accountRequest({ path: "/account/me/providers/catalog" })
+      .then((response) => response?.json().catch(() => undefined))
+      .then((body) => {
+        const items = Array.isArray((body as { selectable_models?: unknown })?.selectable_models)
+          ? ((body as { selectable_models: Array<{ value?: string; source?: string }> }).selectable_models ?? [])
+          : []
+        setRuntimeOptions(
+          items
+            .filter((item) => !!item.value)
+            .map((item) => ({
+              value: item.value!,
+              label: `${item.source === "user" ? "个人" : item.source === "pool" ? "系统模型池" : "系统指定"} · ${item.value}`,
+            })),
+        )
+      })
+  })
   const voiceFilename = (mime: string, now = Date.now()) => {
     const subtype = mime.split("/")[1]?.split(";")[0] || "webm"
     return `voice-${now}.${subtype}`
@@ -1252,6 +1320,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const { abort, handleSubmit } = createPromptSubmit({
     info,
+    currentRuntimeModel: () => info()?.runtime_model,
     imageAttachments,
     commentCount,
     mode: () => store.mode,
@@ -1266,6 +1335,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     clearDraft: clearVoiceDraft,
     setMode: () => setStore("mode", "normal"),
     setPopover: (popover) => setStore("popover", popover),
+    syncRuntimeModel: async (sessionID) => {
+      if (!canSelectRuntimeModel()) return
+      await updateRuntimeModel(sessionID, runtimeValue())
+    },
     newSessionWorktree: () => props.newSessionWorktree,
     onNewSessionWorktreeReset: props.onNewSessionWorktreeReset,
     onSubmit: props.onSubmit,
@@ -1706,6 +1779,32 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 variant="ghost"
               />
             </TooltipKeybind>
+            <Show when={canSelectRuntimeModel()}>
+              <Select
+                size="normal"
+                options={["__auto__", ...runtimeOptions().map((item) => item.value)]}
+                current={runtimeValue()}
+                label={(option) => {
+                  if (option === "__auto__") return "系统自动"
+                  return runtimeOptions().find((item) => item.value === option)?.label ?? option
+                }}
+                onSelect={(value) => {
+                  if (!value) return
+                  setRuntimeValue(value)
+                  if (!params.id) return
+                  void updateRuntimeModel(params.id, value).catch(() => {
+                    showToast({
+                      title: language.t("common.requestFailed"),
+                      description: "模型切换失败",
+                    })
+                  })
+                }}
+                class="max-w-[260px]"
+                valueClass="truncate text-13-regular"
+                triggerStyle={{ height: "28px" }}
+                variant="ghost"
+              />
+            </Show>
           </div>
         </div>
       </DockTray>

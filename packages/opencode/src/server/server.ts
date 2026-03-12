@@ -61,6 +61,7 @@ import { Filesystem } from "@/util/filesystem"
 import { Installation } from "@/installation"
 import { resolveWebGateway, webGatewayBootstrap } from "./web-gateway"
 import { AccountProviderState } from "@/provider/account-provider-state"
+import { UserRbac } from "@/user/rbac"
 import { randomUUID } from "crypto"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
@@ -568,26 +569,29 @@ export namespace Server {
               providerID: z.string(),
             }),
           ),
+          validator("query", z.object({ scope: z.enum(["self", "global"]).optional() })),
           validator("json", Auth.Info),
           async (c) => {
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
-              return c.json(
-                {
-                  error: "forbidden",
-                  permission: "provider:config_global|provider:config_user",
-                },
-                403,
-              )
-            }
-            const providerID = c.req.valid("param").providerID
-            const info = c.req.valid("json")
-            if (Flag.TPCODE_ACCOUNT_ENABLED) {
               const user_id = c.get("account_user_id" as never) as string | undefined
+              const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+              const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
               if (!user_id) return c.json({ error: "unauthorized" }, 401)
-              await Auth.setUser(user_id, providerID, info)
+              const scope = c.req.valid("query").scope ?? "self"
+              if (scope === "global") {
+                if (!roles.includes("super_admin")) {
+                  return c.json({ error: "forbidden", permission: "provider:config_global" }, 403)
+                }
+                await Auth.setGlobal(c.req.valid("param").providerID, c.req.valid("json"))
+              } else {
+                if (!UserRbac.canUseBuild({ roles, permissions })) {
+                  return c.json({ error: "forbidden", permission: "agent:use_build" }, 403)
+                }
+                await Auth.setUser(user_id, c.req.valid("param").providerID, c.req.valid("json"))
+              }
               await AccountProviderState.invalidate()
             } else {
-              await Auth.set(providerID, info)
+              await Auth.set(c.req.valid("param").providerID, c.req.valid("json"))
             }
             return c.json(true)
           },
@@ -616,24 +620,28 @@ export namespace Server {
               providerID: z.string(),
             }),
           ),
+          validator("query", z.object({ scope: z.enum(["self", "global"]).optional() })),
           async (c) => {
             if (Flag.TPCODE_ACCOUNT_ENABLED) {
-              return c.json(
-                {
-                  error: "forbidden",
-                  permission: "provider:config_global|provider:config_user",
-                },
-                403,
-              )
-            }
-            const providerID = c.req.valid("param").providerID
-            if (Flag.TPCODE_ACCOUNT_ENABLED) {
               const user_id = c.get("account_user_id" as never) as string | undefined
+              const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+              const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
               if (!user_id) return c.json({ error: "unauthorized" }, 401)
-              await Auth.removeUser(user_id, providerID)
+              const scope = c.req.valid("query").scope ?? "self"
+              if (scope === "global") {
+                if (!roles.includes("super_admin")) {
+                  return c.json({ error: "forbidden", permission: "provider:config_global" }, 403)
+                }
+                await Auth.removeGlobal(c.req.valid("param").providerID)
+              } else {
+                if (!UserRbac.canUseBuild({ roles, permissions })) {
+                  return c.json({ error: "forbidden", permission: "agent:use_build" }, 403)
+                }
+                await Auth.removeUser(user_id, c.req.valid("param").providerID)
+              }
               await AccountProviderState.invalidate()
             } else {
-              await Auth.remove(providerID)
+              await Auth.remove(c.req.valid("param").providerID)
             }
             return c.json(true)
           },

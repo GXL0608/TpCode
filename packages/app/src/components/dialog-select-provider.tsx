@@ -10,6 +10,7 @@ import { DialogConnectProvider } from "./dialog-connect-provider"
 import { useLanguage } from "@/context/language"
 import { DialogCustomProvider } from "./dialog-custom-provider"
 import { useAccountAuth } from "@/context/account-auth"
+import { canUseBuildCapability } from "@/utils/account-build-access"
 import type { ProviderSettingsScope } from "./provider-settings-scope"
 
 const CUSTOM_ID = "_custom"
@@ -28,6 +29,7 @@ export const DialogSelectProvider: Component<{ scope?: ProviderSettingsScope; on
   const canManage = () => {
     const current = scope()
     if (current.kind === "global") return (account.user()?.roles ?? []).includes("super_admin")
+    if (current.kind === "self") return canUseBuildCapability(account.user())
     return false
   }
 

@@ -10,35 +10,61 @@ import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Flag } from "@/flag/flag"
 import { AccountSystemSettingService } from "@/user/system-setting"
+import { AccountProviderState } from "@/provider/account-provider-state"
+import { UserRbac } from "@/user/rbac"
 
-function requireProviderConfig(c: Context) {
-  if (Flag.TPCODE_ACCOUNT_ENABLED) {
-    return c.json(
-      {
-        error: "forbidden",
-        permission: "provider:config_global",
-      },
-      403,
-    )
-  }
+/** 中文注释：读取当前请求的 provider 配置作用域。 */
+function providerScope(c: Context) {
+  return c.req.query("scope") === "global" ? "global" : "self"
+}
+
+/** 中文注释：判断当前用户是否具备 Build 权限。 */
+function canUseBuild(c: Context) {
+  const roles = c.get("account_roles" as never) as string[] | undefined
   const permissions = c.get("account_permissions" as never) as string[] | undefined
-  if (!permissions) {
+  return UserRbac.canUseBuild({ roles, permissions })
+}
+
+/** 中文注释：校验当前请求是否允许修改 provider 配置。 */
+function requireProviderConfig(c: Context) {
+  if (!Flag.TPCODE_ACCOUNT_ENABLED) return
+  if (Flag.TPCODE_ACCOUNT_ENABLED) {
+    const scope = providerScope(c)
+    const permissions = c.get("account_permissions" as never) as string[] | undefined
+    const roles = c.get("account_roles" as never) as string[] | undefined
+    if (scope === "global" && roles?.includes("super_admin")) return
+    if (scope === "self" && UserRbac.canUseBuild({ roles, permissions })) return
     return c.json(
       {
         error: "forbidden",
-        permission: "provider:config_own",
+        permission: scope === "global" ? "provider:config_global" : "agent:use_build",
       },
       403,
     )
   }
-  if (permissions.includes("provider:config_own")) return
-  return c.json(
-    {
-      error: "forbidden",
-      permission: "provider:config_own",
-    },
-    403,
-  )
+}
+
+/** 中文注释：为 Build 权限用户构建合并后的可见模型目录。 */
+async function managedProviders(user_id: string) {
+  const [state, connected] = await Promise.all([AccountProviderState.load(user_id), Provider.list()])
+  const map = new Map<string, z.infer<typeof Provider.Info>>()
+  for (const item of state.selectable_models) {
+    const provider = connected[item.provider_id]
+    const model = provider?.models[item.model_id]
+    if (!provider || !model) continue
+    const current = map.get(provider.id) ?? {
+      ...provider,
+      models: {},
+    }
+    current.models[model.id] = model
+    map.set(provider.id, current)
+  }
+  const all = [...map.values()]
+  return {
+    all,
+    default: mapValues(Object.fromEntries(all.map((item) => [item.id, item])), (item) => Provider.sort(Object.values(item.models))[0]?.id ?? ""),
+    connected: all.map((item) => item.id),
+  }
 }
 
 export const ProviderRoutes = lazy(() =>
@@ -69,9 +95,14 @@ export const ProviderRoutes = lazy(() =>
       async (c) => {
         const allProviders = await ModelsDev.get()
         const connected = await Provider.list()
+        const user_id = c.get("account_user_id" as never) as string | undefined
 
         const strictAccount = Flag.TPCODE_ACCOUNT_ENABLED
         if (strictAccount) {
+          if (user_id && canUseBuild(c)) {
+            const scoped = await managedProviders(user_id)
+            return c.json(scoped)
+          }
           const current = await Provider.defaultModel().catch(() => undefined)
           if (!current) {
             return c.json({
@@ -173,6 +204,7 @@ export const ProviderRoutes = lazy(() =>
           providerID: z.string().meta({ description: "Provider ID" }),
         }),
       ),
+      validator("query", z.object({ scope: z.enum(["self", "global"]).optional() })),
       validator(
         "json",
         z.object({
@@ -187,6 +219,7 @@ export const ProviderRoutes = lazy(() =>
         const result = await ProviderAuth.authorize({
           providerID,
           method,
+          scope: c.req.valid("query").scope,
         })
         return c.json(result)
       },
@@ -215,6 +248,7 @@ export const ProviderRoutes = lazy(() =>
           providerID: z.string().meta({ description: "Provider ID" }),
         }),
       ),
+      validator("query", z.object({ scope: z.enum(["self", "global"]).optional() })),
       validator(
         "json",
         z.object({
@@ -231,6 +265,7 @@ export const ProviderRoutes = lazy(() =>
           providerID,
           method,
           code,
+          scope: c.req.valid("query").scope,
         })
         return c.json(true)
       },

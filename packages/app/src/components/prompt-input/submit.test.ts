@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
 import type { Prompt } from "@/context/prompt"
+import type { Message, UserMessage } from "@opencode-ai/sdk/v2/client"
 
 let createPromptSubmit: typeof import("./submit").createPromptSubmit
 
@@ -16,6 +17,12 @@ const promptAsyncCalls: Array<{
   model?: { providerID: string; modelID: string }
   variant?: string
 }> = []
+const syncCalls: string[] = []
+const optimisticAdds: Array<{
+  directory: string
+  sessionID: string
+  message: Message
+}> = []
 
 let selected = "/repo/worktree-a"
 let route: { id?: string } = {}
@@ -24,6 +31,13 @@ let commands: { name: string }[] = []
 let promptAsyncError: Error | undefined
 let clearDraftCalls = 0
 let localModel: { id: string; provider: { id: string } } | undefined = { id: "model", provider: { id: "provider" } }
+let syncRuntimeModelCalls: string[] = []
+let syncRuntimeModelPending:
+  | {
+      promise: Promise<void>
+      resolve: () => void
+    }
+  | undefined
 
 const event = { preventDefault: () => undefined } as unknown as Event
 
@@ -138,8 +152,13 @@ beforeAll(async () => {
       data: { command: commands, session_status: {} },
       session: {
         optimistic: {
-          add: () => undefined,
+          add: (input: { directory: string; sessionID: string; message: Message }) => {
+            optimisticAdds.push(input)
+          },
           remove: () => undefined,
+        },
+        sync: async (sessionID: string) => {
+          syncCalls.push(sessionID)
         },
       },
       set: () => undefined,
@@ -186,14 +205,20 @@ beforeEach(() => {
   promptAsyncError = undefined
   clearDraftCalls = 0
   localModel = { id: "model", provider: { id: "provider" } }
+  optimisticAdds.length = 0
+  syncCalls.length = 0
+  syncRuntimeModelCalls.length = 0
+  syncRuntimeModelPending = undefined
 })
 
 function createSubmit(input?: {
   mode?: "normal" | "shell"
   info?: () => { id: string } | undefined
+  currentRuntimeModel?: () => { providerID: string; modelID: string } | undefined
 }) {
   return createPromptSubmit({
     info: input?.info ?? (() => undefined),
+    currentRuntimeModel: input?.currentRuntimeModel ?? (() => undefined),
     imageAttachments: () => [],
     commentCount: () => 0,
     mode: () => input?.mode ?? "normal",
@@ -208,6 +233,11 @@ function createSubmit(input?: {
     },
     setMode: () => undefined,
     setPopover: () => undefined,
+    syncRuntimeModel: async (sessionID: string) => {
+      syncRuntimeModelCalls.push(sessionID)
+      if (!syncRuntimeModelPending) return
+      await syncRuntimeModelPending.promise
+    },
     newSessionWorktree: () => selected,
     onNewSessionWorktreeReset: () => undefined,
     onSubmit: () => undefined,
@@ -310,6 +340,61 @@ describe("prompt submit session resolution", () => {
     expect(toasts).toEqual([])
     expect(promptAsyncCalls).toEqual([
       { directory: "/repo/main", sessionID: "session-route-no-local-model", model: undefined, variant: undefined },
+    ])
+  })
+
+  test("uses session runtime model for optimistic user message", async () => {
+    route = { id: "session-route-runtime-model" }
+    const submit = createSubmit({
+      mode: "normal",
+      currentRuntimeModel: () => ({
+        providerID: "openrouter",
+        modelID: "openai/gpt-4o-mini",
+      }),
+    })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect((optimisticAdds.at(-1)?.message as UserMessage | undefined)?.model).toEqual({
+      providerID: "openrouter",
+      modelID: "openai/gpt-4o-mini",
+    })
+  })
+
+  test("refreshes session messages after async prompt submit", async () => {
+    route = { id: "session-route-refresh" }
+    const submit = createSubmit({ mode: "normal" })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(syncCalls).toContain("session-route-refresh")
+  })
+
+  test("waits for runtime model sync before sending prompt", async () => {
+    route = { id: "session-route-sync-model" }
+    let resolve!: () => void
+    syncRuntimeModelPending = {
+      promise: new Promise<void>((done) => {
+        resolve = done
+      }),
+      resolve,
+    }
+    const submit = createSubmit({ mode: "normal" })
+
+    const task = submit.handleSubmit(event)
+    await flush()
+
+    expect(syncRuntimeModelCalls).toEqual(["session-route-sync-model"])
+    expect(promptAsyncCalls).toEqual([])
+
+    syncRuntimeModelPending.resolve()
+    await task
+    await flush()
+
+    expect(promptAsyncCalls).toEqual([
+      { directory: "/repo/main", sessionID: "session-route-sync-model", model: undefined, variant: undefined },
     ])
   })
 

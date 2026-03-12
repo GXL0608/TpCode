@@ -146,6 +146,19 @@ function parseModel(value?: string) {
   }
 }
 
+/** 中文注释：提取控制项中直接引用到的 provider 列表，用于补齐自动加载 provider 的校验范围。 */
+function controlProviderIDs(input: z.output<typeof ProviderControl>) {
+  const ids = new Set<string>()
+  for (const provider_id of input.enabled_providers ?? []) ids.add(provider_id)
+  for (const provider_id of input.disabled_providers ?? []) ids.add(provider_id)
+  const model = parseModel(input.model)
+  if (model?.provider_id) ids.add(model.provider_id)
+  const small = parseModel(input.small_model)
+  if (small?.provider_id) ids.add(small.provider_id)
+  for (const item of input.session_model_pool ?? []) ids.add(item.provider_id)
+  return ids
+}
+
 function providerModelName(input: {
   model_id: string
   base?: ModelsDev.Model
@@ -316,7 +329,8 @@ export namespace AccountSystemSettingService {
     const config = readProviderConfigs(row) ?? {}
     const control = readProviderControl(row) ?? ({} as z.output<typeof ProviderControl>)
     const models = await ModelsDev.get()
-    const providers = configuredProviderIDs({ auth, config })
+    const ids = [...new Set([...configuredProviderIDs({ auth, config }), ...controlProviderIDs(control)])].sort()
+    const providers = ids
       .map((provider_id) => {
         const base = models[provider_id]
         const patch = config[provider_id]
@@ -356,8 +370,19 @@ export namespace AccountSystemSettingService {
 
   export async function validateProviderControl(input: unknown) {
     const value = ProviderControl.parse(input)
-    const catalog = await providerCatalog()
+    const [catalog, models, configs] = await Promise.all([providerCatalog(), ModelsDev.get(), providerConfigs()])
     const providerMap = new Map(catalog.providers.map((item) => [item.provider_id, new Set(item.models.map((model) => model.model_id))]))
+    for (const provider_id of controlProviderIDs(value)) {
+      if (providerMap.has(provider_id)) continue
+      const provider = models[provider_id]
+      if (!provider) continue
+      const config = configs[provider_id]
+      const items = Object.entries(provider.models)
+        .filter(([model_id, model]) => modelAllowed({ model_id, base: model, config }))
+        .map(([model_id]) => model_id)
+      if (items.length === 0) continue
+      providerMap.set(provider_id, new Set(items))
+    }
     const enabled = value.enabled_providers ? new Set(value.enabled_providers) : undefined
     const disabled = new Set(value.disabled_providers ?? [])
 

@@ -9,6 +9,8 @@ import { Log } from "../../util/log"
 import { lazy } from "../../util/lazy"
 import { Flag } from "@/flag/flag"
 import { AccountSystemSettingService } from "@/user/system-setting"
+import { AccountProviderState } from "@/provider/account-provider-state"
+import { UserRbac } from "@/user/rbac"
 
 const log = Log.create({ service: "server" })
 const ManagedSessionModelPool = z
@@ -149,6 +151,31 @@ export const ConfigRoutes = lazy(() =>
         using _ = log.time("providers")
         const scoped = await Provider.list().then((x) => mapValues(x, (item) => item))
         if (Flag.TPCODE_ACCOUNT_ENABLED) {
+          const user_id = c.get("account_user_id" as never) as string | undefined
+          const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+          const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
+          if (user_id && UserRbac.canUseBuild({ roles, permissions })) {
+            const state = await AccountProviderState.load(user_id)
+            const map = new Map<string, z.infer<typeof Provider.Info>>()
+            for (const item of state.selectable_models) {
+              const provider = scoped[item.provider_id]
+              const model = provider?.models[item.model_id]
+              if (!provider || !model) continue
+              const current = map.get(provider.id) ?? {
+                ...provider,
+                models: {},
+              }
+              current.models[model.id] = model
+              map.set(provider.id, current)
+            }
+            const providers = [...map.values()]
+            return c.json({
+              providers,
+              default: mapValues(Object.fromEntries(providers.map((item) => [item.id, item])), (item) =>
+                Provider.sort(Object.values(item.models))[0]?.id ?? "",
+              ),
+            })
+          }
           const current = await Provider.defaultModel().catch(() => undefined)
           if (!current) {
             return c.json({

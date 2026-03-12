@@ -13,6 +13,7 @@ import { SettingsUsers } from "./settings-users"
 import { SettingsRoles } from "./settings-roles"
 import { SettingsSystem } from "./settings-system"
 import { SettingsProjects } from "./settings-projects"
+import { canUseBuildCapability } from "@/utils/account-build-access"
 
 export const DialogSettings: Component = () => {
   const language = useLanguage()
@@ -23,7 +24,8 @@ export const DialogSettings: Component = () => {
   const canManageRoles = createMemo(() => auth.has("role:manage"))
   const canManageProjects = createMemo(() => auth.has("role:manage"))
   const canManageSystem = createMemo(() => auth.has("role:manage"))
-  const canViewProviders = createMemo(() => isSuperAdmin())
+  const canViewGlobalProviders = createMemo(() => isSuperAdmin())
+  const canViewSelfProviders = createMemo(() => canUseBuildCapability(auth.user()))
 
   return (
     <Dialog size="xx-large" transition>
@@ -49,10 +51,16 @@ export const DialogSettings: Component = () => {
                 <div class="flex flex-col gap-1.5">
                   <Tabs.SectionTitle>{language.t("settings.section.server")}</Tabs.SectionTitle>
                   <div class="flex flex-col gap-1.5 w-full">
-                    <Show when={canViewProviders()}>
+                    <Show when={canViewGlobalProviders()}>
                       <Tabs.Trigger value="providers">
                         <Icon name="providers" />
                         {language.t("settings.providers.title")}
+                      </Tabs.Trigger>
+                    </Show>
+                    <Show when={canViewSelfProviders()}>
+                      <Tabs.Trigger value="self-providers">
+                        <Icon name="providers" />
+                        个人模型配置
                       </Tabs.Trigger>
                     </Show>
                     <Tabs.Trigger value="my">
@@ -99,9 +107,14 @@ export const DialogSettings: Component = () => {
         <Tabs.Content value="shortcuts" class="no-scrollbar">
           <SettingsKeybinds />
         </Tabs.Content>
-        <Show when={canViewProviders()}>
+        <Show when={canViewGlobalProviders()}>
           <Tabs.Content value="providers" class="no-scrollbar">
-            <SettingsProviders />
+            <SettingsProviders scope={{ kind: "global" }} />
+          </Tabs.Content>
+        </Show>
+        <Show when={canViewSelfProviders()}>
+          <Tabs.Content value="self-providers" class="no-scrollbar">
+            <SettingsProviders scope={{ kind: "self" }} />
           </Tabs.Content>
         </Show>
         <Tabs.Content value="my" class="no-scrollbar">

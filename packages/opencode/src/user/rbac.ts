@@ -1,6 +1,12 @@
 import type { MiddlewareHandler } from "hono"
 
 export namespace UserRbac {
+  /** 中文注释：统一判断当前账号是否具备 Build 相关能力，超级管理员默认具备该能力。 */
+  export function canUseBuild(input: { roles?: string[]; permissions?: string[] }) {
+    if (input.roles?.includes("super_admin")) return true
+    return !!input.permissions?.includes("agent:use_build")
+  }
+
   export function has(input: { permissions: string[]; code: string }) {
     return input.permissions.includes(input.code)
   }

@@ -45,8 +45,10 @@ import { GoogleAuth } from "google-auth-library"
 import { ProviderTransform } from "./transform"
 import { Installation } from "../installation"
 import { AccountCurrent } from "@/user/current"
+import { UserRbac } from "@/user/rbac"
 import { State } from "@/project/state"
 import { AccountSystemSettingService } from "@/user/system-setting"
+import { AccountProviderState } from "./account-provider-state"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -114,8 +116,7 @@ export namespace Provider {
   }
 
   async function scopedAuth(providerID: string) {
-    if (!strictAccountScope()) return Auth.get(providerID)
-    return AccountSystemSettingService.providerAuth(providerID)
+    return Auth.get(providerID)
   }
 
   const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
@@ -792,29 +793,84 @@ export namespace Provider {
     return true
   }
 
+  /** 中文注释：收集控制项里显式引用到的 provider，避免自动加载 provider 在严格账号模式下被提前裁剪。 */
+  function controlledProviders(input?: {
+    enabled_providers?: string[]
+    disabled_providers?: string[]
+    model?: string
+    small_model?: string
+    session_model_pool?: Array<{ provider_id: string }>
+  }) {
+    const ids = new Set<string>()
+    for (const providerID of input?.enabled_providers ?? []) ids.add(providerID)
+    for (const providerID of input?.disabled_providers ?? []) ids.add(providerID)
+    if (input?.model) ids.add(parseModel(input.model).providerID)
+    if (input?.small_model) ids.add(parseModel(input.small_model).providerID)
+    for (const item of input?.session_model_pool ?? []) ids.add(item.provider_id)
+    return ids
+  }
+
   const state = State.create(stateKey, async () => {
     using _ = log.time("state")
     const strictAccount = strictAccountScope()
+    const current = strictAccount ? AccountCurrent.optional() : undefined
+    const build = !!current && UserRbac.canUseBuild(current)
     const config = strictAccount ? undefined : await Config.get()
     const modelsDev = await ModelsDev.get()
     const database = mapValues(modelsDev, fromModelsDevProvider)
-    const control = strictAccount ? await AccountSystemSettingService.providerControl() : undefined
-    const sharedAuth = strictAccount ? await AccountSystemSettingService.providerAuths() : await Auth.sharedAll()
-    const configProviders = strictAccount
-      ? (Object.entries(await AccountSystemSettingService.providerConfigs()) as [string, z.output<typeof Config.Provider>][])
-      : (Object.entries(config?.provider ?? {}) as [string, z.output<typeof Config.Provider>][])
-    const configuredProviders = strictAccount
-      ? new Set([...Object.keys(sharedAuth), ...configProviders.map(([providerID]) => providerID)])
+    const account = strictAccount && current?.user_id ? await AccountProviderState.load(current.user_id) : undefined
+    /** 中文注释：严格账号模式下即使没有当前用户上下文，也必须回退到系统级 provider 配置。 */
+    const globalControl = strictAccount ? account?.global_control ?? (await AccountSystemSettingService.providerControl()) : undefined
+    /** 中文注释：无当前用户上下文的后台链路同样依赖系统级认证，不能因为缺少 AccountCurrent 而丢失。 */
+    const globalAuth = strictAccount ? account?.global_auth ?? (await AccountSystemSettingService.providerAuths()) : undefined
+    /** 中文注释：无当前用户上下文的后台链路同样依赖系统级 provider 配置，避免 strict-account 下 provider 目录被裁空。 */
+    const globalConfigs = strictAccount
+      ? account?.global_configs ?? (await AccountSystemSettingService.providerConfigs())
       : undefined
-
-    const disabled = new Set(strictAccount ? (control?.disabled_providers ?? []) : (config?.disabled_providers ?? []))
-    const enabled = strictAccount
-      ? (control?.enabled_providers ? new Set(control.enabled_providers) : null)
+    const auths = strictAccount
+      ? build
+        ? {
+            ...(globalAuth ?? {}),
+            ...(account?.user_auth ?? {}),
+          }
+        : (globalAuth ?? {})
+      : await Auth.sharedAll()
+    const configs = strictAccount
+      ? build
+        ? {
+            ...(globalConfigs ?? {}),
+            ...(account?.user_configs ?? {}),
+          }
+        : (globalConfigs ?? {})
+      : (config?.provider ?? {})
+    const configProviders = Object.entries(configs) as [string, z.output<typeof Config.Provider>][]
+    const configuredProviders = strictAccount
+      ? new Set([
+          ...Object.keys(auths),
+          ...configProviders.map(([providerID]) => providerID),
+          ...controlledProviders(globalControl),
+          ...(build ? [...controlledProviders(account?.user_control)] : []),
+        ])
+      : undefined
+    const globalDisabled = new Set(strictAccount ? (globalControl?.disabled_providers ?? []) : (config?.disabled_providers ?? []))
+    const globalEnabled = strictAccount
+      ? (globalControl?.enabled_providers ? new Set(globalControl.enabled_providers) : null)
       : (config?.enabled_providers ? new Set(config.enabled_providers) : null)
+    const userDisabled = new Set(account?.user_control.disabled_providers ?? [])
+    const userEnabled = account?.user_control.enabled_providers ? new Set(account.user_control.enabled_providers) : null
+    const userConfigured = new Set([
+      ...Object.keys(account?.user_auth ?? {}),
+      ...Object.keys(account?.user_configs ?? {}),
+    ])
 
     function isProviderAllowed(providerID: string): boolean {
-      if (enabled && !enabled.has(providerID)) return false
-      if (disabled.has(providerID)) return false
+      if (strictAccount && build && userConfigured.has(providerID)) {
+        if (userEnabled && !userEnabled.has(providerID)) return false
+        if (userDisabled.has(providerID)) return false
+        return true
+      }
+      if (globalEnabled && !globalEnabled.has(providerID)) return false
+      if (globalDisabled.has(providerID)) return false
       return true
     }
 
@@ -949,7 +1005,7 @@ export namespace Provider {
       // load env
       const env = Env.all()
       for (const [providerID, provider] of Object.entries(database)) {
-        if (disabled.has(providerID)) continue
+        if (!isProviderAllowed(providerID)) continue
         const apiKey = provider.env.map((item) => env[item]).find(Boolean)
         if (!apiKey) continue
         mergeProvider(providerID, {
@@ -960,14 +1016,14 @@ export namespace Provider {
     }
 
     // load shared apikeys
-    for (const [providerID, provider] of Object.entries(sharedAuth)) {
+    for (const [providerID, provider] of Object.entries(auths)) {
       if (!database[providerID]) {
         log.warn("shared auth provider missing from provider catalog", {
           providerID,
         })
         continue
       }
-      if (disabled.has(providerID)) continue
+      if (!isProviderAllowed(providerID)) continue
       if (provider.type === "api") {
         if (providers[providerID]?.key) continue
         mergeProvider(providerID, {
@@ -980,7 +1036,7 @@ export namespace Provider {
     for (const plugin of await Plugin.list()) {
       if (!plugin.auth) continue
       const providerID = plugin.auth.provider
-      if (disabled.has(providerID)) continue
+      if (!isProviderAllowed(providerID)) continue
       if (strictAccount && configuredProviders && !configuredProviders.has(providerID)) continue
 
       // For github-copilot plugin, check if auth exists for either github-copilot or github-copilot-enterprise
@@ -1008,7 +1064,7 @@ export namespace Provider {
       // If this is github-copilot plugin, also register for github-copilot-enterprise if auth exists
       if (providerID === "github-copilot") {
         const enterpriseProviderID = "github-copilot-enterprise"
-        if (!disabled.has(enterpriseProviderID)) {
+        if (isProviderAllowed(enterpriseProviderID)) {
           if (strictAccount && configuredProviders && !configuredProviders.has(enterpriseProviderID)) continue
           const enterpriseAuth = await scopedAuth(enterpriseProviderID)
           if (enterpriseAuth) {
@@ -1027,7 +1083,7 @@ export namespace Provider {
     }
 
     for (const [providerID, fn] of Object.entries(CUSTOM_LOADERS)) {
-      if (disabled.has(providerID)) continue
+      if (!isProviderAllowed(providerID)) continue
       if (strictAccount && configuredProviders && !configuredProviders.has(providerID)) continue
       const data = database[providerID]
       if (!data) {

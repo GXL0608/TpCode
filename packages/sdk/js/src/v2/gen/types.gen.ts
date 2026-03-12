@@ -844,6 +844,11 @@ export type Session = {
     snapshot?: string
     diff?: string
   }
+  runtime_model?: {
+    providerID: string
+    modelID: string
+    source: "single" | "pool" | "manual"
+  }
 }
 
 export type EventSessionCreated = {
@@ -1700,16 +1705,6 @@ export type AccountPlanSaveFailure = {
   permission?: string
 }
 
-export type AccountPlanVhoSyncSuccess = {
-  ok: true
-  scanned: number
-  deduped: number
-  synced: number
-  failed: number
-  skipped: number
-  failed_feedback_ids: Array<string>
-}
-
 export type AccountPlanEvalRetrySuccess = {
   ok: true
   plan_id: string
@@ -1981,6 +1976,11 @@ export type GlobalSession = {
     partID?: string
     snapshot?: string
     diff?: string
+  }
+  runtime_model?: {
+    providerID: string
+    modelID: string
+    source: "single" | "pool" | "manual"
   }
   project: ProjectSummary | null
 }
@@ -2473,7 +2473,9 @@ export type AuthRemoveData = {
   path: {
     providerID: string
   }
-  query?: never
+  query?: {
+    scope?: "self" | "global"
+  }
   url: "/auth/{providerID}"
 }
 
@@ -2500,7 +2502,9 @@ export type AuthSetData = {
   path: {
     providerID: string
   }
-  query?: never
+  query?: {
+    scope?: "self" | "global"
+  }
   url: "/auth/{providerID}"
 }
 
@@ -2881,41 +2885,6 @@ export type AccountPlanSaveResponses = {
 
 export type AccountPlanSaveResponse = AccountPlanSaveResponses[keyof AccountPlanSaveResponses]
 
-export type AccountPlanVhoSyncData = {
-  body?: never
-  path?: never
-  query: {
-    password: string
-  }
-  url: "/account/admin/plan/vho-sync"
-}
-
-export type AccountPlanVhoSyncErrors = {
-  /**
-   * Validation failed
-   */
-  400: {
-    error: string
-  }
-  /**
-   * Forbidden
-   */
-  403: {
-    error: string
-  }
-}
-
-export type AccountPlanVhoSyncError = AccountPlanVhoSyncErrors[keyof AccountPlanVhoSyncErrors]
-
-export type AccountPlanVhoSyncResponses = {
-  /**
-   * Sync finished
-   */
-  200: AccountPlanVhoSyncSuccess
-}
-
-export type AccountPlanVhoSyncResponse = AccountPlanVhoSyncResponses[keyof AccountPlanVhoSyncResponses]
-
 export type AccountPlanEvalRetryData = {
   body?: never
   path: {
@@ -2982,6 +2951,19 @@ export type AccountPlanEvalGetResponses = {
 
 export type AccountPlanEvalGetResponse = AccountPlanEvalGetResponses[keyof AccountPlanEvalGetResponses]
 
+export type DeleteAccountMeProviderProviderIdData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/me/provider/{provider_id}"
+}
+
+export type DeleteAccountMeProviderProviderIdResponses = {
+  200: unknown
+}
+
 export type AccountMeProviderData = {
   body?: never
   path: {
@@ -3013,6 +2995,19 @@ export type AccountMeProviderResponses = {
 }
 
 export type AccountMeProviderResponse = AccountMeProviderResponses[keyof AccountMeProviderResponses]
+
+export type PutAccountMeProviderProviderIdData = {
+  body?: Auth
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/me/provider/{provider_id}"
+}
+
+export type PutAccountMeProviderProviderIdResponses = {
+  200: unknown
+}
 
 export type PutAccountMeProviderControlData = {
   body?: {
@@ -3081,6 +3076,19 @@ export type PatchAccountMeProvidersProviderIdDisabledData = {
 }
 
 export type PatchAccountMeProvidersProviderIdDisabledResponses = {
+  200: unknown
+}
+
+export type DeleteAccountMeProvidersProviderIdData = {
+  body?: never
+  path: {
+    provider_id: string
+  }
+  query?: never
+  url: "/account/me/providers/{provider_id}"
+}
+
+export type DeleteAccountMeProvidersProviderIdResponses = {
   200: unknown
 }
 
@@ -5674,6 +5682,72 @@ export type SessionDiffResponses = {
 
 export type SessionDiffResponse = SessionDiffResponses[keyof SessionDiffResponses]
 
+export type SessionRuntimeModelClearData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/runtime-model"
+}
+
+export type SessionRuntimeModelClearErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionRuntimeModelClearError = SessionRuntimeModelClearErrors[keyof SessionRuntimeModelClearErrors]
+
+export type SessionRuntimeModelClearResponses = {
+  /**
+   * Runtime model cleared
+   */
+  200: boolean
+}
+
+export type SessionRuntimeModelClearResponse =
+  SessionRuntimeModelClearResponses[keyof SessionRuntimeModelClearResponses]
+
+export type SessionRuntimeModelSetData = {
+  body?: {
+    providerID: string
+    modelID: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/runtime-model"
+}
+
+export type SessionRuntimeModelSetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionRuntimeModelSetError = SessionRuntimeModelSetErrors[keyof SessionRuntimeModelSetErrors]
+
+export type SessionRuntimeModelSetResponses = {
+  /**
+   * Runtime model updated
+   */
+  200: boolean
+}
+
+export type SessionRuntimeModelSetResponse = SessionRuntimeModelSetResponses[keyof SessionRuntimeModelSetResponses]
+
 export type SessionSummarizeData = {
   body?: {
     providerID?: string
@@ -7107,6 +7181,7 @@ export type ProviderOauthAuthorizeData = {
   }
   query?: {
     directory?: string
+    scope?: "self" | "global"
   }
   url: "/provider/{providerID}/oauth/authorize"
 }
@@ -7148,6 +7223,7 @@ export type ProviderOauthCallbackData = {
   }
   query?: {
     directory?: string
+    scope?: "self" | "global"
   }
   url: "/provider/{providerID}/oauth/callback"
 }

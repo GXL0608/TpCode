@@ -21,11 +21,15 @@ import { lazy } from "../../util/lazy"
 import { SessionProxyMiddleware } from "../../control-plane/session-proxy-middleware"
 import { UserService } from "@/user/service"
 import { Flag } from "@/flag/flag"
+import { AccountProviderState } from "@/provider/account-provider-state"
+import { UserRbac } from "@/user/rbac"
 
 const log = Log.create({ service: "server" })
 
 function requirePermission(c: Context, code: string) {
+  const roles = c.get("account_roles") as string[] | undefined
   const permissions = c.get("account_permissions") as string[] | undefined
+  if (code === "agent:use_build" && UserRbac.canUseBuild({ roles, permissions })) return
   if (!permissions) return
   if (permissions.includes(code)) return
   return c.json(
@@ -676,6 +680,74 @@ export const SessionRoutes = lazy(() =>
         await Session.unshare(sessionID)
         const session = await Session.get(sessionID)
         return c.json(session)
+      },
+    )
+    .put(
+      "/:sessionID/runtime-model",
+      describeRoute({
+        summary: "Set session runtime model",
+        description: "Set the current session to use a manually selected provider/model.",
+        operationId: "session.runtimeModel.set",
+        responses: {
+          200: {
+            description: "Runtime model updated",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(400, 403, 404),
+        },
+      }),
+      validator("param", z.object({ sessionID: z.string() })),
+      validator(
+        "json",
+        z.object({
+          providerID: z.string(),
+          modelID: z.string(),
+        }),
+      ),
+      async (c) => {
+        const denied = requirePermission(c, "agent:use_build")
+        if (denied) return denied
+        const actor_user_id = c.get("account_user_id" as never) as string | undefined
+        if (!actor_user_id) return c.json({ error: "unauthorized" }, 401)
+        const body = c.req.valid("json")
+        const state = await AccountProviderState.load(actor_user_id)
+        const value = `${body.providerID}/${body.modelID}`
+        if (!state.selectable_models.some((item) => item.value === value)) {
+          return c.json({ error: "model_not_configured", code: "model_not_configured" }, 400)
+        }
+        await Provider.getModel(body.providerID, body.modelID)
+        await Session.setRuntimeModel(c.req.valid("param").sessionID, body)
+        return c.json(true)
+      },
+    )
+    .delete(
+      "/:sessionID/runtime-model",
+      describeRoute({
+        summary: "Clear session runtime model",
+        description: "Clear the current session manual provider/model selection.",
+        operationId: "session.runtimeModel.clear",
+        responses: {
+          200: {
+            description: "Runtime model cleared",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(403, 404),
+        },
+      }),
+      validator("param", z.object({ sessionID: z.string() })),
+      async (c) => {
+        const denied = requirePermission(c, "agent:use_build")
+        if (denied) return denied
+        await Session.clearRuntimeModel(c.req.valid("param").sessionID)
+        return c.json(true)
       },
     )
     .post(

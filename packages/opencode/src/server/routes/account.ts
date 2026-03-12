@@ -5,6 +5,7 @@ import { lazy } from "@/util/lazy"
 import { UserService } from "@/user/service"
 import { UserRbac } from "@/user/rbac"
 import { AccountContextService } from "@/user/context"
+import { UserRbac } from "@/user/rbac"
 import { AccountProjectCatalogService } from "@/user/project-catalog"
 import { AccountProjectStateService } from "@/user/project-state"
 import { AccountSystemSettingService } from "@/user/system-setting"
@@ -19,6 +20,7 @@ import { PlanService } from "@/plan/service"
 import { PlanEvalService } from "@/plan/eval-service"
 import { Config } from "@/config/config"
 import { AccountProviderState } from "@/provider/account-provider-state"
+import { AccountUserProviderSettingService } from "@/user/user-provider-setting"
 
 const LoginResult = z
   .object({
@@ -294,6 +296,21 @@ function requirePlanUse(c: Context) {
     },
     403,
   )
+}
+
+/** 中文注释：校验当前用户是否具备 Build 权限。 */
+function requireBuildUse(c: Context) {
+  const roles = c.get("account_roles" as never) as string[] | undefined
+  const permissions = c.get("account_permissions" as never) as string[] | undefined
+  if (!UserRbac.canUseBuild({ roles, permissions })) {
+    return c.json(
+      {
+        error: "forbidden",
+        permission: "agent:use_build",
+      },
+      403,
+    )
+  }
 }
 
 async function roots() {
@@ -980,12 +997,94 @@ export const AccountRoutes = lazy(() =>
         })
       },
     )
+    .put(
+      "/me/provider/:provider_id",
+      validator("param", z.object({ provider_id: z.string() })),
+      validator("json", Auth.Info),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        await AccountUserProviderSettingService.setProviderAuth(user_id, param.provider_id, body)
+        await UserService.audit({
+          actor_user_id: user_id,
+          action: "account.provider.self.set",
+          target_type: "user",
+          target_id: param.provider_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+            auth_type: body.type,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        await AccountProviderState.invalidate()
+        return c.json(true)
+      },
+    )
+    .delete(
+      "/me/provider/:provider_id",
+      validator("param", z.object({ provider_id: z.string() })),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const param = c.req.valid("param")
+        await AccountUserProviderSettingService.removeProviderAuth(user_id, param.provider_id)
+        await UserService.audit({
+          actor_user_id: user_id,
+          action: "account.provider.self.remove",
+          target_type: "user",
+          target_id: param.provider_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        await AccountProviderState.invalidate()
+        return c.json(true)
+      },
+    )
+    .get(
+      "/me/providers/catalog",
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+        const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
+        const state = await AccountProviderState.load(user_id)
+        const self = UserRbac.canUseBuild({ roles, permissions })
+          ? await AccountUserProviderSettingService.providerCatalog(user_id)
+          : { rows: {}, control: {}, providers: [] }
+        return c.json({
+          rows: self.rows,
+          providers: self.providers,
+          user_control: UserRbac.canUseBuild({ roles, permissions }) ? state.user_control : {},
+          global_control: state.global_control,
+          user_providers: self.providers,
+          selectable_models: UserRbac.canUseBuild({ roles, permissions })
+            ? state.selectable_models
+            : state.selectable_models.filter((item) => item.source !== "user"),
+        })
+      },
+    )
     .get(
       "/me/provider-control",
       async (c) => {
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
-        const control = await AccountSystemSettingService.providerControl()
+        const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+        const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
+        const control = UserRbac.canUseBuild({ roles, permissions })
+          ? await AccountUserProviderSettingService.providerControl(user_id)
+          : await AccountSystemSettingService.providerControl()
         return c.json({
           model: control.model,
           small_model: control.small_model,
@@ -997,29 +1096,150 @@ export const AccountRoutes = lazy(() =>
     .put(
       "/me/provider-control",
       validator("json", UserProviderControlBody),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const body = c.req.valid("json")
+        const valid = await AccountUserProviderSettingService.validateProviderControl(user_id, body)
+        if (!valid.ok) return c.json(valid, 400)
+        await AccountUserProviderSettingService.setProviderControl(user_id, valid.value)
+        await UserService.audit({
+          actor_user_id: user_id,
+          action: "account.provider.self.control.update",
+          target_type: "user",
+          target_id: "provider_control",
+          result: "success",
+          detail_json: valid.value,
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        await AccountProviderState.invalidate()
+        return c.json(true)
+      },
     )
     .get(
       "/me/providers/:provider_id/config",
       validator("param", z.object({ provider_id: z.string() })),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const param = c.req.valid("param")
+        const config = await AccountUserProviderSettingService.providerConfig(user_id, param.provider_id)
+        return c.json({ provider_id: param.provider_id, config: config ?? null })
+      },
     )
     .put(
       "/me/providers/:provider_id/config",
       validator("param", z.object({ provider_id: z.string() })),
       validator("json", Config.Provider),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        await AccountUserProviderSettingService.setProviderConfig(user_id, param.provider_id, body)
+        await UserService.audit({
+          actor_user_id: user_id,
+          action: "account.provider.self.config.update",
+          target_type: "user",
+          target_id: param.provider_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        await AccountProviderState.invalidate()
+        return c.json(true)
+      },
     )
     .delete(
       "/me/providers/:provider_id/config",
       validator("param", z.object({ provider_id: z.string() })),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const param = c.req.valid("param")
+        await AccountUserProviderSettingService.removeProviderConfig(user_id, param.provider_id)
+        await UserService.audit({
+          actor_user_id: user_id,
+          action: "account.provider.self.config.remove",
+          target_type: "user",
+          target_id: param.provider_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        await AccountProviderState.invalidate()
+        return c.json(true)
+      },
     )
     .patch(
       "/me/providers/:provider_id/disabled",
       validator("param", z.object({ provider_id: z.string() })),
       validator("json", z.object({ disabled: z.boolean() })),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        await AccountUserProviderSettingService.setProviderDisabled(user_id, param.provider_id, body.disabled)
+        await UserService.audit({
+          actor_user_id: user_id,
+          action: "account.provider.self.disabled.update",
+          target_type: "user",
+          target_id: param.provider_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+            disabled: body.disabled,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        await AccountProviderState.invalidate()
+        return c.json(true)
+      },
+    )
+    .delete(
+      "/me/providers/:provider_id",
+      validator("param", z.object({ provider_id: z.string() })),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const param = c.req.valid("param")
+        await AccountUserProviderSettingService.removeProvider(user_id, param.provider_id)
+        await UserService.audit({
+          actor_user_id: user_id,
+          action: "account.provider.self.delete",
+          target_type: "user",
+          target_id: param.provider_id,
+          result: "success",
+          detail_json: {
+            provider_id: param.provider_id,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        await AccountProviderState.invalidate()
+        return c.json(true)
+      },
     )
     .get(
       "/me/model-prefs",

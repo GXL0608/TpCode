@@ -2,7 +2,6 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import path from "path"
 import { and, Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
-import { TpUserProviderTable } from "../../src/user/user-provider.sql"
 import { Flag } from "../../src/flag/flag"
 import { AccountSystemSettingService } from "../../src/user/system-setting"
 
@@ -324,7 +323,7 @@ describe("account visibility", () => {
     expect(ok.status).toBe(404)
   })
 
-  test.skipIf(!on)("self-configured provider routes stay forbidden even if a role still carries provider:config_own", async () => {
+  test.skipIf(!on)("没有 build 权限的用户不能写个人 provider，但仍可能看到系统 provider 状态", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const role = uid("self_provider")
@@ -367,17 +366,7 @@ describe("account visibility", () => {
       source?: string
       auth_type?: string
     }
-    expect(ownABody.configured).toBe(false)
-    expect(ownABody.source).toBe("none")
-    expect(ownABody.auth_type).toBeUndefined()
-    const rowA = await Database.use((db) =>
-      db
-        .select()
-        .from(TpUserProviderTable)
-        .where(and(eq(TpUserProviderTable.user_id, ua.id), eq(TpUserProviderTable.provider_id, "openai")))
-        .get(),
-    )
-    expect(rowA).toBeUndefined()
+    expect(ownABody.source).not.toBe("user")
   })
 
   test.skipIf(!on)("personal provider config is ignored while global provider config still applies", async () => {
@@ -484,7 +473,7 @@ describe("account visibility", () => {
     expect((listBody.connected ?? []).includes("openrouter")).toBe(false)
   })
 
-  test.skipIf(!on)("provider:config_user allows delegated user provider management", async () => {
+  test.skipIf(!on)("废弃的 provider:config_user 权限不能再创建出来", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const role = uid("delegate_role")
@@ -495,28 +484,9 @@ describe("account visibility", () => {
       permission_codes: ["provider:config_user"],
       actor_user_id: "user_tp_admin",
     })
-    expect(createRole.ok).toBe(true)
-
-    const username = uid("delegate_user")
-    const password = "TpCode@123A"
-    const created = await svc.createUser({
-      username,
-      password,
-      account_type: "internal",
-      org_id: "org_tp_internal",
-      role_codes: [role],
-      actor_user_id: "user_tp_admin",
-    })
-    expect(created.ok).toBe(true)
-
-    const token = await login(username, password)
-    const allowed = await req({
-      path: "/account/admin/users/user_tp_admin/providers",
-      token,
-    })
-    expect(allowed.status).toBe(200)
-    const body = (await allowed.json()) as unknown[]
-    expect(Array.isArray(body)).toBe(true)
+    expect(createRole.ok).toBe(false)
+    if (!("code" in createRole)) throw new Error("role_result_missing")
+    expect(createRole.code).toBe("permission_missing")
   })
 
   test.skipIf(!on)("provider control requires login", async () => {
@@ -526,7 +496,7 @@ describe("account visibility", () => {
     expect(response.status).toBe(401)
   })
 
-  test.skipIf(!on)("super_admin can manage target user provider and does not use target config for self", async () => {
+  test.skipIf(!on)("super_admin 也不能代管目标用户的个人 provider 配置", async () => {
     const svc = mem.user
     if (!svc) throw new Error("user_service_missing")
     const superName = uid("sa_delegate")
@@ -559,7 +529,7 @@ describe("account visibility", () => {
       token: admin,
       body: { type: "api", key: "sk-target-user-openai" },
     })
-    expect(setTarget.status).toBe(200)
+    expect(setTarget.status).toBe(403)
 
     const targetOwn = await req({
       path: `/account/me/provider/openai`,
@@ -571,9 +541,7 @@ describe("account visibility", () => {
       source?: string
       auth_type?: string
     }
-    expect(targetBody.configured).toBe(true)
-    expect(targetBody.source).toBe("user")
-    expect(targetBody.auth_type).toBe("api")
+    expect(targetBody.source).not.toBe("user")
 
     const adminOwn = await req({
       path: "/account/me/provider/openai",
@@ -585,9 +553,7 @@ describe("account visibility", () => {
       source?: string
       auth_type?: string
     }
-    expect(adminBody.configured).toBe(false)
-    expect(adminBody.source).toBe("none")
-    expect(adminBody.auth_type).toBeUndefined()
+    expect(adminBody.source).not.toBe("user")
   })
 
   test.skipIf(!on)("global provider key and control auto-apply to normal user in strict mode", async () => {

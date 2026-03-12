@@ -15,7 +15,9 @@ import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogCustomProvider } from "./dialog-custom-provider"
 import type { ProviderSettingsScope } from "./provider-settings-scope"
 import { getManagedCatalogState } from "./settings-providers-catalog"
+import { canViewReadonlySystemCandidates } from "./settings-provider-access"
 import { draftPool, normalizePool, type PoolRow, validatePoolControl } from "./settings-provider-pool"
+import { canUseBuildCapability } from "@/utils/account-build-access"
 
 type ManagedRow = {
   provider_id: string
@@ -40,6 +42,10 @@ type ManagedCatalogProvider = ManagedProviderOption & {
     model_id: string
     model_name: string
   }>
+}
+type SelectableModelRow = {
+  value: string
+  source: string
 }
 
 const PROVIDER_NOTES = [
@@ -72,13 +78,14 @@ function note(id: string) {
   return PROVIDER_NOTES.find((item) => item.match(id))?.key
 }
 
-const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind: "global" }> }> = (props) => {
+const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind: "global" | "self" }> }> = (props) => {
   const dialog = useDialog()
   const language = useLanguage()
   const auth = useAccountAuth()
   const accountRequest = useAccountRequest()
   const globalSDK = useGlobalSDK()
   const providers = useProviders()
+  const self = createMemo(() => props.scope.kind === "self")
 
   const catalog = createMemo(() => {
     const map = new Map<string, { id: string; name: string }>()
@@ -98,9 +105,24 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
   })
   const catalogMap = createMemo(() => new Map(catalog().map((item) => [item.id, item])))
-  const canManage = createMemo(() => (auth.user()?.roles ?? []).includes("super_admin"))
-  const title = createMemo(() => "全局提供商配置")
-  const description = createMemo(() => "管理员在这里统一配置供应商、模型和默认项，所有成员直接生效。")
+  const canManage = createMemo(() => {
+    if (self()) return canUseBuildCapability(auth.user())
+    return (auth.user()?.roles ?? []).includes("super_admin")
+  })
+  const canViewSystemReadonly = createMemo(() =>
+    canViewReadonlySystemCandidates({
+      isSelf: self(),
+      roles: auth.user()?.roles ?? [],
+    }),
+  )
+  const title = createMemo(() => (self() ? "个人模型配置" : "全局提供商配置"))
+  const description = createMemo(() =>
+    self()
+      ? canViewSystemReadonly()
+        ? "在这里维护你自己的渠道商、模型和默认项；系统模型池与系统指定模型会在下方只读展示。"
+        : "在这里维护你自己的渠道商、模型和默认项，不会改写系统默认执行路径。"
+      : "管理员在这里统一配置供应商、模型和默认项，所有成员直接生效。",
+  )
   const [state, setState] = createStore({
     loading: false,
     pending: false,
@@ -110,6 +132,10 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     providerConfigText: "{}",
     rows: [] as ManagedRow[],
     managedProviders: [] as ManagedCatalogProvider[],
+    selectableModels: [] as SelectableModelRow[],
+    globalModel: "",
+    globalSmallModel: "",
+    globalSessionModelPool: [] as PoolRow[],
     model: "",
     smallModel: "",
     sessionModelPool: [] as PoolRow[],
@@ -180,6 +206,17 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   const name = (providerID: string) => catalogMap().get(providerID)?.name ?? providerID
 
   const paths = () => {
+    if (self()) {
+      return {
+        rows: "/account/me/providers/catalog",
+        control: "/account/me/provider-control",
+        catalog: "/account/me/providers/catalog",
+        config: (providerID: string) => `/account/me/providers/${encodeURIComponent(providerID)}/config`,
+        key: (providerID: string) => `/account/me/provider/${encodeURIComponent(providerID)}`,
+        provider: (providerID: string) => `/account/me/providers/${encodeURIComponent(providerID)}`,
+        disabled: (providerID: string) => `/account/me/providers/${encodeURIComponent(providerID)}/disabled`,
+      }
+    }
     return {
       rows: "/account/admin/provider/global",
       control: "/account/admin/provider-control/global",
@@ -187,6 +224,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       config: (providerID: string) => `/account/admin/providers/${encodeURIComponent(providerID)}/config/global`,
       key: (providerID: string) => `/account/admin/provider/${encodeURIComponent(providerID)}/global`,
       provider: (providerID: string) => `/account/admin/providers/${encodeURIComponent(providerID)}/global`,
+      disabled: (_providerID: string) => "",
     }
   }
 
@@ -254,16 +292,32 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
             enabled_providers?: unknown
             disabled_providers?: unknown
           }
+          user_control?: {
+            model?: unknown
+            small_model?: unknown
+            enabled_providers?: unknown
+            disabled_providers?: unknown
+          }
+          global_control?: {
+            model?: unknown
+            small_model?: unknown
+            session_model_pool?: unknown
+          }
+          selectable_models?: unknown
           providers?: unknown
         }
       | undefined
-    const control = catalogBody?.control
+    const control = self() ? catalogBody?.user_control : catalogBody?.control
+    const globalControl = self() ? catalogBody?.global_control : catalogBody?.control
     const disabled = new Set(list<string>(control?.disabled_providers))
-    const rows = Object.entries(
-      ((await rowsResponse.json().catch(() => undefined)) as
-        | Record<string, { type?: unknown; has_config?: unknown }>
-        | undefined) ?? {},
-    )
+    const rowsBody = (await rowsResponse.json().catch(() => undefined)) as
+      | Record<string, { type?: unknown; has_config?: unknown }>
+      | {
+          rows?: Record<string, { type?: unknown; has_config?: unknown }>
+        }
+      | undefined
+    const rowMap = (self() ? rowsBody?.rows : rowsBody) as Record<string, { type?: unknown; has_config?: unknown }> | undefined
+    const rows = Object.entries(rowMap ?? {})
       .map(([provider_id, row]) => ({
         provider_id,
         configured: true,
@@ -300,10 +354,17 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
         }))
         .filter((item) => !!item.provider_id),
     )
+    setState(
+      "selectableModels",
+      list<SelectableModelRow>(catalogBody?.selectable_models).filter((item) => !!item?.value && !!item?.source),
+    )
+    setState("globalModel", typeof globalControl?.model === "string" ? globalControl.model : "")
+    setState("globalSmallModel", typeof globalControl?.small_model === "string" ? globalControl.small_model : "")
+    setState("globalSessionModelPool", draftPool(globalControl?.session_model_pool))
     setState("providerID", providerID)
     setState("model", typeof control?.model === "string" ? control.model : "")
     setState("smallModel", typeof control?.small_model === "string" ? control.small_model : "")
-    setState("sessionModelPool", draftPool(control?.session_model_pool))
+    setState("sessionModelPool", self() ? [] : draftPool(catalogBody?.control?.session_model_pool))
     setState("enabledProviders", list<string>(control?.enabled_providers).join(", "))
     setState("disabledProviders", list<string>(control?.disabled_providers).join(", "))
     setState("loading", false)
@@ -312,14 +373,16 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
 
   const saveControl = async () => {
     if (!canManage()) return
-    const valid = validatePoolControl({
-      model: state.model,
-      pool: state.sessionModelPool,
-    })
-    if (!valid.ok) {
-      setState("error", valid.errors.join("；"))
-      setState("message", "")
-      return
+    if (!self()) {
+      const valid = validatePoolControl({
+        model: state.model,
+        pool: state.sessionModelPool,
+      })
+      if (!valid.ok) {
+        setState("error", valid.errors.join("；"))
+        setState("message", "")
+        return
+      }
     }
     setState("pending", true)
     setState("error", "")
@@ -334,7 +397,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       setState("error", await parseAccountError(response))
       return
     }
-    await complete("全局模型控制已更新")
+    await complete(self() ? "个人模型控制已更新" : "全局模型控制已更新")
   }
 
   const addPoolProvider = () => {
@@ -449,6 +512,23 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   }
 
   const toggleDisabled = async (providerID: string, disabled: boolean) => {
+    if (self()) {
+      setState("pending", true)
+      setState("error", "")
+      setState("message", "")
+      const response = await accountRequest({
+        method: "PATCH",
+        path: paths().disabled(providerID),
+        body: { disabled },
+      }).catch(() => undefined)
+      setState("pending", false)
+      if (!response?.ok) {
+        setState("error", await parseAccountError(response))
+        return
+      }
+      await complete(`${name(providerID)} 已${disabled ? "禁用" : "启用"}`)
+      return
+    }
     const next = disabled
       ? [...new Set([...parseList(state.disabledProviders), providerID])]
       : parseList(state.disabledProviders).filter((item) => item !== providerID)
@@ -610,7 +690,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
         </div>
 
         <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-3">
-          <div class="text-14-medium text-text-strong">当前模型（全员生效）</div>
+          <div class="text-14-medium text-text-strong">{self() ? "我的默认模型" : "当前模型（全员生效）"}</div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
             <select
               class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
@@ -661,9 +741,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
             </select>
           </div>
           <div class="text-12-regular text-text-weak">当前设置：{currentModelText()}</div>
-          <div class="text-12-regular text-text-weak">
-            未指定时会自动回退到第一个全局默认模型。
-          </div>
+          <div class="text-12-regular text-text-weak">{self() ? "这里只影响你的个人默认模型，不会改写系统默认执行路径。" : "未指定时会自动回退到第一个全局默认模型。"}</div>
           <div class="flex items-center gap-2">
             <Button type="button" onClick={() => void saveControl()} disabled={state.pending}>
               {state.pending ? "保存中..." : "保存控制项"}
@@ -671,7 +749,29 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
           </div>
         </div>
 
-        <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-4">
+        <Show when={canViewSystemReadonly()}>
+          <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-3">
+            <div class="text-14-medium text-text-strong">系统候选（只读）</div>
+            <div class="text-12-regular text-text-weak">系统指定模型：{state.globalModel || "-"}</div>
+            <div class="text-12-regular text-text-weak">系统小模型：{state.globalSmallModel || "-"}</div>
+            <div class="text-12-regular text-text-weak">
+              系统模型池：
+              {state.globalSessionModelPool.length > 0
+                ? state.globalSessionModelPool
+                    .flatMap((item) => item.models.map((model) => `${item.provider_id}/${model.model_id}`))
+                    .join(", ")
+                : "未配置"}
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <For each={state.selectableModels.filter((item) => item.source !== "user")}>
+                {(item) => <Tag>{item.source === "pool" ? `池:${item.value}` : `系统:${item.value}`}</Tag>}
+              </For>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={!self()}>
+          <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-4">
           <div class="flex items-center justify-between gap-3">
             <div class="flex flex-col gap-1">
               <div class="text-14-medium text-text-strong">Session 模型池</div>
@@ -779,7 +879,8 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
               {state.pending ? "保存中..." : "保存模型池"}
             </Button>
           </div>
-        </div>
+          </div>
+        </Show>
 
         <div class="flex flex-col gap-1">
           <h3 class="text-14-medium text-text-strong pb-2">添加供应商</h3>
@@ -889,6 +990,13 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
 
 // Legacy per-user/local provider configuration has been fully removed by design.
 
-export const SettingsProviders: Component<{ scope?: ProviderSettingsScope }> = () => {
-  return <ManagedProviders scope={{ kind: "global" }} />
+export const SettingsProviders: Component<{ scope?: ProviderSettingsScope }> = (props) => {
+  const auth = useAccountAuth()
+  const scope = createMemo<Extract<ProviderSettingsScope, { kind: "global" | "self" }>>(() => {
+    if (props.scope?.kind === "self" || props.scope?.kind === "global") return props.scope
+    return canUseBuildCapability(auth.user()) && !(auth.user()?.roles ?? []).includes("super_admin")
+      ? { kind: "self" }
+      : { kind: "global" }
+  })
+  return <ManagedProviders scope={scope()} />
 }

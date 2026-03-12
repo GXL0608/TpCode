@@ -12,6 +12,7 @@ import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { useAccountAuth } from "@/context/account-auth"
+import { canUseBuildCapability } from "@/utils/account-build-access"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { DialogSelectProvider } from "./dialog-select-provider"
 import type { ProviderSettingsScope } from "./provider-settings-scope"
@@ -177,6 +178,7 @@ export function DialogCustomProvider(props: Props) {
   const canManage = () => {
     const current = scope()
     if (current.kind === "global") return (auth.user()?.roles ?? []).includes("super_admin")
+    if (current.kind === "self") return canUseBuildCapability(auth.user())
     return false
   }
 
@@ -249,7 +251,7 @@ export function DialogCustomProvider(props: Props) {
 
   async function enableProvider(providerID: string) {
     const current = scope()
-    if (current.kind !== "global") throw new Error("provider_config_forbidden")
+    if (current.kind !== "global") return
     const control = await accountRequest({
       path: "/account/admin/provider-control/global",
     }).catch(() => undefined)
@@ -296,7 +298,10 @@ export function DialogCustomProvider(props: Props) {
     const authWrite = result.key
       ? accountRequest({
           method: "PUT",
-          path: `/account/admin/provider/${encodeURIComponent(result.providerID)}/global`,
+          path:
+            scope().kind === "global"
+              ? `/account/admin/provider/${encodeURIComponent(result.providerID)}/global`
+              : `/account/me/provider/${encodeURIComponent(result.providerID)}`,
           body: {
             type: "api",
             key: result.key,
@@ -309,10 +314,12 @@ export function DialogCustomProvider(props: Props) {
     authWrite
       .then(async () => {
         const current = scope()
-        if (current.kind !== "global") throw new Error("provider_config_forbidden")
         const write = await accountRequest({
           method: "PUT",
-          path: `/account/admin/providers/${encodeURIComponent(result.providerID)}/config/global`,
+          path:
+            current.kind === "global"
+              ? `/account/admin/providers/${encodeURIComponent(result.providerID)}/config/global`
+              : `/account/me/providers/${encodeURIComponent(result.providerID)}/config`,
           body: result.config as unknown as Record<string, unknown>,
         }).catch(() => undefined)
         if (!write?.ok) throw new Error(await parseAccountError(write))

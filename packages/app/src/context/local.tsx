@@ -8,6 +8,7 @@ import { useProviders } from "@/hooks/use-providers"
 import { useModels } from "@/context/models"
 import { cycleModelVariant, getConfiguredAgentVariant, resolveModelVariant } from "./model-variant"
 import { useAccountAuth } from "./account-auth"
+import { canUseBuildCapability } from "@/utils/account-build-access"
 
 export type ModelKey = { providerID: string; modelID: string }
 
@@ -18,7 +19,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sync = useSync()
     const providers = useProviders()
     const account = useAccountAuth()
-    const strictGlobal = createMemo(() => account.authenticated())
+    const strictGlobal = createMemo(() => account.authenticated() && !canUseBuildCapability(account.user()))
     const connected = createMemo(() => new Set(providers.connected().map((provider) => provider.id)))
 
     function parseConfigured(value: string | undefined) {

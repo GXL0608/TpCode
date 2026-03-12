@@ -9,8 +9,12 @@ import { Auth } from "@/auth"
 import { Flag } from "@/flag/flag"
 import { AccountCurrent } from "@/user/current"
 import { State } from "@/project/state"
+import { UserRbac } from "@/user/rbac"
 
 export namespace ProviderAuth {
+  type Scope = "self" | "global"
+
+  /** 中文注释：判断当前用户是否可写全局 provider 认证。 */
   function canWriteGlobal() {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
     const current = AccountCurrent.optional()
@@ -18,11 +22,31 @@ export namespace ProviderAuth {
     return current.roles.includes("super_admin")
   }
 
-  async function save(providerID: string, info: Auth.Info) {
+  /** 中文注释：判断当前用户是否可写个人 provider 认证。 */
+  function canWriteSelf() {
+    if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
+    const current = AccountCurrent.optional()
+    if (!current?.user_id) return false
+    return UserRbac.canUseBuild(current)
+  }
+
+  /** 中文注释：为 OAuth 待处理结果生成带作用域的缓存键。 */
+  function pendingKey(providerID: string, scope: Scope) {
+    return `${scope}:${providerID}`
+  }
+
+  /** 中文注释：按作用域保存 provider 认证。 */
+  async function save(providerID: string, info: Auth.Info, scope: Scope) {
     if (Flag.TPCODE_ACCOUNT_ENABLED) {
       const current = AccountCurrent.optional()
-      if (!current?.user_id || !canWriteGlobal()) throw new Error("provider_config_forbidden")
-      await Auth.setGlobal(providerID, info)
+      if (!current?.user_id) throw new Error("provider_config_forbidden")
+      if (scope === "global") {
+        if (!canWriteGlobal()) throw new Error("provider_config_forbidden")
+        await Auth.setGlobal(providerID, info)
+        return
+      }
+      if (!canWriteSelf()) throw new Error("provider_config_forbidden")
+      await Auth.setUser(current.user_id, providerID, info)
       return
     }
     await Auth.set(providerID, info)
@@ -79,13 +103,14 @@ export namespace ProviderAuth {
     z.object({
       providerID: z.string(),
       method: z.number(),
+      scope: z.enum(["self", "global"]).optional(),
     }),
     async (input): Promise<Authorization | undefined> => {
       const auth = await state().then((s) => s.methods[input.providerID])
       const method = auth.methods[input.method]
       if (method.type === "oauth") {
         const result = await method.authorize()
-        await state().then((s) => (s.pending[input.providerID] = result))
+        await state().then((s) => (s.pending[pendingKey(input.providerID, input.scope ?? "self")] = result))
         return {
           url: result.url,
           method: result.method,
@@ -100,9 +125,10 @@ export namespace ProviderAuth {
       providerID: z.string(),
       method: z.number(),
       code: z.string().optional(),
+      scope: z.enum(["self", "global"]).optional(),
     }),
     async (input) => {
-      const match = await state().then((s) => s.pending[input.providerID])
+      const match = await state().then((s) => s.pending[pendingKey(input.providerID, input.scope ?? "self")])
       if (!match) throw new OauthMissing({ providerID: input.providerID })
       let result
 
@@ -117,10 +143,14 @@ export namespace ProviderAuth {
 
       if (result?.type === "success") {
         if ("key" in result) {
-          await save(input.providerID, {
-            type: "api",
-            key: result.key,
-          })
+          await save(
+            input.providerID,
+            {
+              type: "api",
+              key: result.key,
+            },
+            input.scope ?? "self",
+          )
         }
         if ("refresh" in result) {
           const info: Auth.Info = {
@@ -132,7 +162,7 @@ export namespace ProviderAuth {
           if (result.accountId) {
             info.accountId = result.accountId
           }
-          await save(input.providerID, info)
+          await save(input.providerID, info, input.scope ?? "self")
         }
         return
       }
@@ -145,12 +175,17 @@ export namespace ProviderAuth {
     z.object({
       providerID: z.string(),
       key: z.string(),
+      scope: z.enum(["self", "global"]).optional(),
     }),
     async (input) => {
-      await save(input.providerID, {
-        type: "api",
-        key: input.key,
-      })
+      await save(
+        input.providerID,
+        {
+          type: "api",
+          key: input.key,
+        },
+        input.scope ?? "self",
+      )
     },
   )
 

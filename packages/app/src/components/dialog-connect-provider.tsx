@@ -18,6 +18,7 @@ import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { usePlatform } from "@/context/platform"
 import { useAccountAuth } from "@/context/account-auth"
+import { canUseBuildCapability } from "@/utils/account-build-access"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import { DialogSelectProvider } from "./dialog-select-provider"
 import type { ProviderSettingsScope } from "./provider-settings-scope"
@@ -34,6 +35,7 @@ export function DialogConnectProvider(props: { provider: string; scope?: Provide
   const canManage = () => {
     const current = scope()
     if (current.kind === "global") return (account.user()?.roles ?? []).includes("super_admin")
+    if (current.kind === "self") return canUseBuildCapability(account.user())
     return false
   }
 
@@ -67,8 +69,6 @@ export function DialogConnectProvider(props: { provider: string; scope?: Provide
   })
   const methods = createMemo(
     () => {
-      const current = scope()
-      if (current.kind !== "global") return []
       return [
         {
           type: "api",
@@ -223,7 +223,7 @@ export function DialogConnectProvider(props: { provider: string; scope?: Provide
 
   async function enableProvider() {
     const current = scope()
-    if (current.kind !== "global") throw new Error("provider_config_forbidden")
+    if (current.kind !== "global") return
     const control = await accountRequest({
       path: "/account/admin/provider-control/global",
     }).catch(() => undefined)
@@ -261,10 +261,13 @@ export function DialogConnectProvider(props: { provider: string; scope?: Provide
 
   async function writeAPIKey(apiKey: string) {
     const current = scope()
-    if (current.kind !== "global") throw new Error("provider_config_forbidden")
+    const path =
+      current.kind === "global"
+        ? `/account/admin/provider/${encodeURIComponent(props.provider)}/global`
+        : `/account/me/provider/${encodeURIComponent(props.provider)}`
     const response = await accountRequest({
       method: "PUT",
-      path: `/account/admin/provider/${encodeURIComponent(props.provider)}/global`,
+      path,
       body: {
         type: "api",
         key: apiKey,

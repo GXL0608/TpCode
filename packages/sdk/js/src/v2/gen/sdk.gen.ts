@@ -33,8 +33,6 @@ import type {
   AccountPlanEvalRetryResponses,
   AccountPlanSaveErrors,
   AccountPlanSaveResponses,
-  AccountPlanVhoSyncErrors,
-  AccountPlanVhoSyncResponses,
   AccountRegisterErrors,
   AccountRegisterResponses,
   AccountTokenRefreshErrors,
@@ -87,7 +85,9 @@ import type {
   DeleteAccountAdminRolesRoleCodeResponses,
   DeleteAccountAdminUsersUserIdProvidersProviderIdResponses,
   DeleteAccountAdminUsersUserIdResponses,
+  DeleteAccountMeProviderProviderIdResponses,
   DeleteAccountMeProvidersProviderIdConfigResponses,
+  DeleteAccountMeProvidersProviderIdResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute,
   EventTuiPromptAppend,
@@ -230,6 +230,7 @@ import type {
   PutAccountAdminUsersUserIdProvidersProviderIdResponses,
   PutAccountMeModelPrefsResponses,
   PutAccountMeProviderControlResponses,
+  PutAccountMeProviderProviderIdResponses,
   PutAccountMeProvidersProviderIdConfigResponses,
   QuestionAnswer,
   QuestionListResponses,
@@ -267,6 +268,10 @@ import type {
   SessionPromptResponses,
   SessionRevertErrors,
   SessionRevertResponses,
+  SessionRuntimeModelClearErrors,
+  SessionRuntimeModelClearResponses,
+  SessionRuntimeModelSetErrors,
+  SessionRuntimeModelSetResponses,
   SessionShareErrors,
   SessionShareResponses,
   SessionShellErrors,
@@ -513,10 +518,21 @@ export class Auth extends HeyApiClient {
   public remove<ThrowOnError extends boolean = false>(
     parameters: {
       providerID: string
+      scope?: "self" | "global"
     },
     options?: Options<never, ThrowOnError>,
   ) {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "providerID" }] }])
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "providerID" },
+            { in: "query", key: "scope" },
+          ],
+        },
+      ],
+    )
     return (options?.client ?? this.client).delete<AuthRemoveResponses, AuthRemoveErrors, ThrowOnError>({
       url: "/auth/{providerID}",
       ...options,
@@ -532,6 +548,7 @@ export class Auth extends HeyApiClient {
   public set<ThrowOnError extends boolean = false>(
     parameters: {
       providerID: string
+      scope?: "self" | "global"
       auth?: Auth3
     },
     options?: Options<never, ThrowOnError>,
@@ -542,6 +559,7 @@ export class Auth extends HeyApiClient {
         {
           args: [
             { in: "path", key: "providerID" },
+            { in: "query", key: "scope" },
             { key: "auth", map: "body" },
           ],
         },
@@ -808,25 +826,6 @@ export class Plan extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
-    })
-  }
-
-  /**
-   * Sync pending VHO feedback flags
-   *
-   * Sync all tp_saved_plan rows with pending vho feedback state to the third-party VHO service.
-   */
-  public vhoSync<ThrowOnError extends boolean = false>(
-    parameters: {
-      password: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "password" }] }])
-    return (options?.client ?? this.client).get<AccountPlanVhoSyncResponses, AccountPlanVhoSyncErrors, ThrowOnError>({
-      url: "/account/admin/plan/vho-sync",
-      ...options,
-      ...params,
     })
   }
 
@@ -2107,6 +2106,85 @@ export class Experimental extends HeyApiClient {
   }
 }
 
+export class RuntimeModel extends HeyApiClient {
+  /**
+   * Clear session runtime model
+   *
+   * Clear the current session manual provider/model selection.
+   */
+  public clear<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      SessionRuntimeModelClearResponses,
+      SessionRuntimeModelClearErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/runtime-model",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Set session runtime model
+   *
+   * Set the current session to use a manually selected provider/model.
+   */
+  public set<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      providerID?: string
+      modelID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "modelID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      SessionRuntimeModelSetResponses,
+      SessionRuntimeModelSetErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/runtime-model",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Session2 extends HeyApiClient {
   /**
    * List sessions
@@ -3025,6 +3103,11 @@ export class Session2 extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _runtimeModel?: RuntimeModel
+  get runtimeModel(): RuntimeModel {
+    return (this._runtimeModel ??= new RuntimeModel({ client: this.client }))
   }
 }
 
@@ -3974,6 +4057,7 @@ export class Oauth extends HeyApiClient {
     parameters: {
       providerID: string
       directory?: string
+      scope?: "self" | "global"
       method?: number
     },
     options?: Options<never, ThrowOnError>,
@@ -3985,6 +4069,7 @@ export class Oauth extends HeyApiClient {
           args: [
             { in: "path", key: "providerID" },
             { in: "query", key: "directory" },
+            { in: "query", key: "scope" },
             { in: "body", key: "method" },
           ],
         },
@@ -4015,6 +4100,7 @@ export class Oauth extends HeyApiClient {
     parameters: {
       providerID: string
       directory?: string
+      scope?: "self" | "global"
       method?: number
       code?: string
     },
@@ -4027,6 +4113,7 @@ export class Oauth extends HeyApiClient {
           args: [
             { in: "path", key: "providerID" },
             { in: "query", key: "directory" },
+            { in: "query", key: "scope" },
             { in: "body", key: "method" },
             { in: "body", key: "code" },
           ],
@@ -5165,6 +5252,50 @@ export class OpencodeClient extends HeyApiClient {
     })
   }
 
+  public deleteAccountMeProviderProviderId<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).delete<DeleteAccountMeProviderProviderIdResponses, unknown, ThrowOnError>({
+      url: "/account/me/provider/{provider_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  public putAccountMeProviderProviderId<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+      auth?: Auth3
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "provider_id" },
+            { key: "auth", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<PutAccountMeProviderProviderIdResponses, unknown, ThrowOnError>({
+      url: "/account/me/provider/{provider_id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
   public putAccountMeProviderControl<ThrowOnError extends boolean = false>(
     parameters?: {
       enabled_providers?: Array<string>
@@ -5292,6 +5423,20 @@ export class OpencodeClient extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  public deleteAccountMeProvidersProviderId<ThrowOnError extends boolean = false>(
+    parameters: {
+      provider_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "provider_id" }] }])
+    return (options?.client ?? this.client).delete<DeleteAccountMeProvidersProviderIdResponses, unknown, ThrowOnError>({
+      url: "/account/me/providers/{provider_id}",
+      ...options,
+      ...params,
     })
   }
 

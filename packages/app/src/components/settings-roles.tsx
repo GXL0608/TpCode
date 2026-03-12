@@ -54,9 +54,6 @@ const pageSizes = [10, 20, 50, 100, 500] as const
 const builtinRoleSet = new Set(["super_admin", "dev_lead", "developer", "ops", "pm", "value_ops", "hospital_admin", "dept_director", "hospital_user", "dean"])
 const hiddenPermissionCodes = new Set([
   "provider:config_global",
-  "provider:config_user",
-  "provider:config_own",
-  "provider:use_own",
   "ui:settings.providers:view",
   "ui:settings.models:view",
 ])

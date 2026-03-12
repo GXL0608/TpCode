@@ -48,6 +48,7 @@ function blocked(text: string) {
 
 type PromptSubmitInput = {
   info: Accessor<{ id: string } | undefined>
+  currentRuntimeModel?: Accessor<{ providerID: string; modelID: string } | undefined>
   imageAttachments: Accessor<ImageAttachmentPart[]>
   commentCount: Accessor<number>
   mode: Accessor<"normal" | "shell">
@@ -60,6 +61,7 @@ type PromptSubmitInput = {
   clearDraft?: () => void
   setMode: (mode: "normal" | "shell") => void
   setPopover: (popover: "at" | "slash" | null) => void
+  syncRuntimeModel?: (sessionID: string) => Promise<void>
   newSessionWorktree?: Accessor<string | undefined>
   onNewSessionWorktreeReset?: () => void
   onSubmit?: () => void
@@ -86,6 +88,20 @@ export function createPromptSubmit(input: PromptSubmitInput) {
   const params = useParams()
   const statusCompensationTimers = new Map<string, number>()
 
+  /** 中文注释：账号模式下优先展示当前 session 已锁定的运行模型，避免乐观消息误显示为 managed/managed。 */
+  const optimisticModel = () => {
+    const runtime = input.currentRuntimeModel?.()
+    if (runtime) return runtime
+    const model = local.model.current()
+    if (model) {
+      return {
+        providerID: model.provider.id,
+        modelID: model.id,
+      }
+    }
+    return managedModel
+  }
+
   const errorMessage = (err: unknown) => {
     if (err && typeof err === "object" && "data" in err) {
       const data = (err as { data?: { message?: string } }).data
@@ -93,6 +109,16 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
     if (err instanceof Error) return err.message
     return language.t("common.requestFailed")
+  }
+
+  /** 中文注释：异步发送成功后主动补拉消息，避免仅靠事件流时乐观消息长期停留。 */
+  const refreshSessionMessages = (directory: string, sessionID: string) => {
+    const run = () => sync.session.sync(sessionID).catch(() => undefined)
+    void run()
+    if (typeof window === "undefined") return
+    window.setTimeout(() => {
+      void run()
+    }, 1200)
   }
 
   const abort = async () => {
@@ -240,6 +266,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         sessionID = created.id
         layout.handoff.setTabs(base64Encode(sessionDirectory), created.id)
         navigate(`/${base64Encode(sessionDirectory)}/session/${created.id}`)
+        await input.syncRuntimeModel?.(created.id)
       }
     }
     if (!sessionID) {
@@ -354,7 +381,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       role: "user",
       time: { created: Date.now() },
       agent,
-      model: managedModel,
+      model: optimisticModel(),
     }
 
     const addOptimisticMessage = () =>
@@ -434,12 +461,15 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const send = async () => {
       const ok = await waitForWorktree()
       if (!ok) return
+      /** 中文注释：对可选模型用户，在真正发消息前强制把当前选择同步到 session，避免模型切换与发送请求竞争。 */
+      await input.syncRuntimeModel?.(sessionID)
       await client.session.promptAsync({
         sessionID,
         agent,
         messageID,
         parts: requestParts,
       })
+      refreshSessionMessages(sessionDirectory, sessionID)
       if (sessionDirectory !== projectDirectory) return
       sync.set("session_status", sessionID, { type: "busy" })
       if (typeof document === "undefined") return
