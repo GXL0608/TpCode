@@ -1,13 +1,15 @@
+/** @jsxImportSource solid-js */
 import { Button } from "@opencode-ai/ui/button"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { IconButton } from "@opencode-ai/ui/icon-button"
-import { For, Show, createEffect, createMemo } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useAccountAuth } from "@/context/account-auth"
 import { passwordError, passwordRule, phoneError, phoneRule } from "@/utils/account-rule"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
-import { filterRoles } from "./settings-users-filter"
+import { filterRoles, summarizeRoles } from "./settings-users-filter"
 import { createUserLayout } from "./settings-users-layout"
+import { buildCreateUserBody } from "./settings-users-role-picker"
 import { type AccountRole, type AccountUser, roleZh } from "./settings-rbac-zh"
 
 function list<T>(input: unknown) {
@@ -37,6 +39,7 @@ export const SettingsUsers = () => {
   const auth = useAccountAuth()
   const request = useAccountRequest()
   const layout = createUserLayout()
+  const [createRoleOpen, setCreateRoleOpen] = createSignal(false)
   const canView = createMemo(() => auth.has("user:manage"))
   const canManage = createMemo(() => auth.has("user:manage"))
   const canRole = createMemo(() => auth.has("role:manage"))
@@ -75,9 +78,11 @@ export const SettingsUsers = () => {
   const editUser = createMemo(() => state.users.find((item) => item.id === state.editUserID))
   const roleUser = createMemo(() => state.users.find((item) => item.id === state.roleUserID))
   const roleMap = createMemo(() => new Map(state.roles.map((item) => [item.code, item])))
+  const roleName = (code: string) => roleMap().get(code)?.name?.trim() || roleZh(code)
   const createPasswordIssue = createMemo(() => passwordError(state.createPassword))
   const createPhoneIssue = createMemo(() => phoneError(state.createPhone))
   const filteredCreateRoles = createMemo(() => filterRoles(state.roles, state.createRoleQuery))
+  const createRoleSummary = createMemo(() => summarizeRoles(state.createRoles, state.createRoles.map(roleName)))
   const userPageTotal = createMemo(() => Math.max(1, Math.ceil(state.userTotal / state.userPageSize)))
   const userRangeStart = createMemo(() => {
     if (state.userTotal === 0 || state.users.length === 0) return 0
@@ -88,7 +93,6 @@ export const SettingsUsers = () => {
     if (start === 0) return 0
     return start + state.users.length - 1
   })
-  const roleName = (code: string) => roleMap().get(code)?.name?.trim() || roleZh(code)
   const roleText = (codes: string[]) => (codes.length > 0 ? codes.map(roleName).join("、") : "-")
 
   const toggleCreateRole = (code: string) => {
@@ -108,6 +112,7 @@ export const SettingsUsers = () => {
     setState("createType", "internal")
     setState("createRoleQuery", "")
     setState("createRoles", [])
+    setCreateRoleOpen(false)
   }
 
   const toggleRole = (code: string) => {
@@ -322,16 +327,16 @@ export const SettingsUsers = () => {
     const response = await request({
       method: "POST",
       path: "/account/admin/users",
-      body: {
-        username: state.createUsername.trim(),
+      body: buildCreateUserBody({
+        username: state.createUsername,
         password: state.createPassword,
-        display_name: state.createDisplayName.trim() || undefined,
-        phone: state.createPhone.trim(),
+        display_name: state.createDisplayName,
+        phone: state.createPhone,
         account_type: state.createType,
         org_id: orgID,
-        role_codes: canRole() ? state.createRoles : undefined,
-        force_password_reset: true,
-      },
+        can_role: canRole(),
+        role_codes: state.createRoles,
+      }),
     }).catch(() => undefined)
 
     setState("pending", false)
@@ -600,32 +605,72 @@ export const SettingsUsers = () => {
               </select>
 
               <Show when={canRole()}>
-                <div class={layout.rolePanel}>
-                  <div class="text-12-medium text-text-weak mb-2">初始角色</div>
-                  <input
-                    class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular mb-2"
-                    placeholder="搜索角色名称或编码"
-                    value={state.createRoleQuery}
-                    onInput={(event) => setState("createRoleQuery", event.currentTarget.value)}
-                  />
-                  <div class={layout.roleList}>
-                    <For each={filteredCreateRoles()}>
-                      {(role) => (
-                        <label class={layout.roleItem}>
-                          <input
-                            type="checkbox"
-                            checked={state.createRoles.includes(role.code)}
-                            onChange={() => toggleCreateRole(role.code)}
-                          />
-                          <span>{role.name?.trim() || roleZh(role.code)}</span>
-                        </label>
-                      )}
-                    </For>
-                  </div>
-                  <Show when={filteredCreateRoles().length === 0}>
-                    <div class="py-6 text-center text-12-regular text-text-weak">未找到匹配角色</div>
-                  </Show>
-                </div>
+                <DropdownMenu open={createRoleOpen()} onOpenChange={setCreateRoleOpen} placement="bottom-start" gutter={8}>
+                  <DropdownMenu.Trigger
+                    as={Button}
+                    type="button"
+                    variant="secondary"
+                    class={layout.roleTrigger}
+                    aria-label="选择初始角色"
+                  >
+                    <div class="min-w-0 flex-1 flex flex-col items-start">
+                      <span class="text-12-medium text-text-weak">初始角色</span>
+                      <span class={`w-full truncate text-14-regular ${state.createRoles.length > 0 ? "text-text-strong" : "text-text-weak"}`}>
+                        {createRoleSummary()}
+                      </span>
+                    </div>
+                    <span class="shrink-0 text-12-regular text-text-weak">{state.createRoles.length} 项</span>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content class={layout.rolePanel}>
+                      <div class={layout.roleSearch}>
+                        <div class="text-12-medium text-text-weak">初始角色</div>
+                        <input
+                          class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                          placeholder="搜索角色名称或编码"
+                          value={state.createRoleQuery}
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => event.stopPropagation()}
+                          onInput={(event) => setState("createRoleQuery", event.currentTarget.value)}
+                        />
+                      </div>
+                      <div class={layout.roleList}>
+                        <For each={filteredCreateRoles()}>
+                          {(role) => (
+                            <DropdownMenu.CheckboxItem
+                              checked={state.createRoles.includes(role.code)}
+                              onChange={() => toggleCreateRole(role.code)}
+                              class={layout.roleItem}
+                            >
+                              <div class="min-w-0 flex-1">
+                                <div class="truncate text-12-medium text-text-strong">{role.name?.trim() || roleZh(role.code)}</div>
+                                <div class="truncate text-11-regular text-text-weak">{role.code}</div>
+                              </div>
+                              <Show when={state.createRoles.includes(role.code)}>
+                                <span class="shrink-0 text-11-medium text-text-weak">已选</span>
+                              </Show>
+                            </DropdownMenu.CheckboxItem>
+                          )}
+                        </For>
+                        <Show when={filteredCreateRoles().length === 0}>
+                          <div class="py-6 text-center text-12-regular text-text-weak">未找到匹配角色</div>
+                        </Show>
+                      </div>
+                      <div class={layout.roleFooter}>
+                        <span class="text-12-regular text-text-weak">已选 {state.createRoles.length} 项</span>
+                        <Button
+                          type="button"
+                          size="small"
+                          variant="ghost"
+                          disabled={state.createRoles.length === 0}
+                          onClick={() => setState("createRoles", [])}
+                        >
+                          清空已选
+                        </Button>
+                      </div>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu>
               </Show>
             </div>
 
