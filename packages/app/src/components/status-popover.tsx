@@ -14,10 +14,9 @@ import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { normalizeServerUrl, ServerConnection, useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
+import { HEALTH_POLL_INTERVAL_MS } from "@/utils/health-poll"
 import { checkServerHealth, type ServerHealth } from "@/utils/server-health"
 import { DialogSelectServer } from "./dialog-select-server"
-
-const pollMs = 10_000
 
 const pluginEmptyMessage = (value: string, file: string): JSXElement => {
   const parts = value.split(file)
@@ -85,7 +84,7 @@ const useServerHealth = (
     }
 
     void refresh()
-    const id = setInterval(() => void refresh(), pollMs)
+    const id = setInterval(() => void refresh(), HEALTH_POLL_INTERVAL_MS)
     onCleanup(() => {
       dead = true
       clearInterval(id)

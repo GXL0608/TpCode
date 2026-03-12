@@ -14,6 +14,7 @@ import { ServerHealthIndicator, ServerRow } from "@/components/server/server-row
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { normalizeServerUrl, ServerConnection, useServer } from "@/context/server"
+import { HEALTH_POLL_INTERVAL_MS } from "@/utils/health-poll"
 import { checkServerHealth, type ServerHealth } from "@/utils/server-health"
 
 interface ServerFormProps {
@@ -273,7 +274,7 @@ export function DialogSelectServer() {
   createEffect(() => {
     items()
     refreshHealth()
-    const interval = setInterval(refreshHealth, 10_000)
+    const interval = setInterval(refreshHealth, HEALTH_POLL_INTERVAL_MS)
     onCleanup(() => clearInterval(interval))
   })
 
