@@ -454,6 +454,16 @@ export const dict = {
 
   "toast.model.none.title": "No model selected",
   "toast.model.none.description": "Connect a provider to summarize this session",
+  "toast.model.unavailable.title": "Model unavailable",
+  "toast.model.unavailable.description": "Unable to resolve a usable model. Configure or connect a model first.",
+  "session.header.workspace.main": "Main workspace",
+  "session.header.workspace.isolated": "Isolated workspace",
+  "session.header.workspace.preparing": "Workspace preparing",
+  "session.header.workspace.error": "Workspace error",
+  "session.header.workspace.currentDirectory": "Current directory",
+  "session.header.workspace.projectRoot": "Project root",
+  "session.header.workspace.branch": "Branch",
+  "session.header.workspace.status": "Status",
 
   "toast.file.loadFailed.title": "Failed to load file",
   "toast.file.listFailed.title": "Failed to list files",
@@ -849,6 +859,10 @@ export const dict = {
   "session.delete.title": "Delete session",
   "session.delete.confirm": 'Delete session "{{name}}"?',
   "session.delete.button": "Delete session",
+  "session.archive.confirm.clear.one":
+    "Archiving this session will clear the contents of this workspace. Unsaved, unpushed, or unmerged code changes will be lost. Continue?",
+  "session.archive.confirm.clear.many":
+    "Archiving these sessions will clear the contents of {{count}} workspaces. Unsaved, unpushed, or unmerged code changes will be lost. Continue?",
 
   "workspace.new": "New workspace",
   "workspace.type.local": "local",
@@ -858,6 +872,9 @@ export const dict = {
   "workspace.resetting.title": "Resetting workspace",
   "workspace.resetting.description": "This may take a minute.",
   "workspace.reset.failed.title": "Failed to reset workspace",
+  "workspace.reset.archive.failed.title": "Workspace reset needs attention",
+  "workspace.reset.archive.failed.description":
+    "Workspace reset finished, but {{count}} sessions could not be archived. Review those sessions before continuing.",
   "workspace.reset.success.title": "Workspace reset",
   "workspace.reset.success.description": "Workspace now matches the default branch.",
   "workspace.error.stillPreparing": "Workspace is still preparing",

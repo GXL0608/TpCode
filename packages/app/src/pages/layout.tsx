@@ -42,6 +42,7 @@ import { usePermission } from "@/context/permission"
 import { Binary } from "@opencode-ai/util/binary"
 import { playSound, soundSrc } from "@/utils/sound"
 import { createAim } from "@/utils/aim"
+import { archiveConfirmMessage, archiveDirtyCount, archiveNeedsForce, archiveWithConfirm } from "@/utils/session-archive"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -912,11 +913,29 @@ export default function Layout(props: ParentProps) {
     const index = sessions.findIndex((s) => s.id === session.id)
     const nextSession = sessions[index + 1] ?? sessions[index - 1]
 
-    await globalSDK.client.session.update({
-      directory: session.directory,
-      sessionID: session.id,
-      time: { archived: Date.now() },
+    const ok = await archiveWithConfirm({
+      t: language.t,
+      preview: () =>
+        globalSDK.client.session
+          .archivePreview({
+            directory: session.directory,
+            sessionID: session.id,
+          })
+          .then((x) => x.data)
+          .catch(() => undefined),
+      archive: (force) =>
+        globalSDK.client.session
+          .archive({
+            directory: session.directory,
+            sessionID: session.id,
+            time: Date.now(),
+            force,
+          })
+          .then(() => undefined),
+      confirm: (message) => globalThis.confirm?.(message) ?? true,
     })
+    if (!ok) return
+
     setStore(
       produce((draft) => {
         const match = Binary.search(draft.session, session.id, (s) => s.id)
@@ -1292,12 +1311,16 @@ export default function Layout(props: ParentProps) {
 
     if (!result) return
 
+    const current = currentDir()
+    const project = globalSync.data.project.find((item) => item.worktree === root)
+    const sandboxes = (project?.sandboxes ?? []).filter((sandbox) => sandbox !== directory)
+
     globalSync.set(
       "project",
       produce((draft) => {
         const project = draft.find((item) => item.worktree === root)
         if (!project) return
-        project.sandboxes = (project.sandboxes ?? []).filter((sandbox) => sandbox !== directory)
+        project.sandboxes = sandboxes
       }),
     )
     setWorkspaceOrderFor(
@@ -1305,8 +1328,8 @@ export default function Layout(props: ParentProps) {
       workspaceOrderFor(root).filter((workspace) => workspace !== directory),
     )
 
-    if (params.dir && currentDir() === directory) {
-      void navigateToProject(root)
+    if (current !== root && !sandboxes.includes(current)) {
+      navigateWithSidebarReset(`/${base64Encode(root)}/session`)
     }
   }
 
@@ -1325,6 +1348,64 @@ export default function Layout(props: ParentProps) {
       .list({ directory })
       .then((x) => x.data ?? [])
       .catch(() => [])
+    const active = sessions.filter((session) => session.time.archived === undefined)
+    const previews = await Promise.all(
+      active.map((session) =>
+        globalSDK.client.session
+          .archivePreview({
+            directory: session.directory,
+            sessionID: session.id,
+          })
+          .then((x) => ({ session, preview: x.data }))
+          .catch((err) => ({ session, error: err })),
+      ),
+    )
+    const failedPreview = previews.find((item) => "error" in item)
+    if (failedPreview && "error" in failedPreview) {
+      setBusy(directory, false)
+      dismiss()
+      showToast({
+        title: language.t("workspace.reset.failed.title"),
+        description: errorMessage(failedPreview.error, language.t("common.requestFailed")),
+      })
+      return
+    }
+    const dirty = archiveDirtyCount(previews.flatMap((item) => ("preview" in item ? [item.preview] : [])))
+    if (dirty > 0) {
+      const ok = globalThis.confirm?.(archiveConfirmMessage(language.t, dirty)) ?? true
+      if (!ok) {
+        setBusy(directory, false)
+        dismiss()
+        return
+      }
+    }
+
+    const archived = await Promise.all(
+      previews.flatMap((item) => {
+        if (!("preview" in item)) return []
+        return [
+          globalSDK.client.session
+            .archive({
+              sessionID: item.session.id,
+              directory: item.session.directory,
+              time: Date.now(),
+              force: archiveNeedsForce(item.preview),
+            })
+            .then(() => ({ ok: true as const }))
+            .catch((error) => ({ ok: false as const, error })),
+        ]
+      }),
+    )
+    const failedArchive = archived.find((item) => !item.ok)
+    if (failedArchive && !failedArchive.ok) {
+      setBusy(directory, false)
+      dismiss()
+      showToast({
+        title: language.t("workspace.reset.failed.title"),
+        description: errorMessage(failedArchive.error, language.t("common.requestFailed")),
+      })
+      return
+    }
 
     clearWorkspaceTerminals(
       directory,
@@ -1350,20 +1431,17 @@ export default function Layout(props: ParentProps) {
       return
     }
 
-    const archivedAt = Date.now()
-    await Promise.all(
-      sessions
-        .filter((session) => session.time.archived === undefined)
-        .map((session) =>
-          globalSDK.client.session
-            .update({
-              sessionID: session.id,
-              directory: session.directory,
-              time: { archived: archivedAt },
-            })
-            .catch(() => undefined),
-        ),
+    const removed = new Set(
+      previews.flatMap((item, index) => ("preview" in item && archived[index]?.ok ? [item.session.id] : [])),
     )
+    if (removed.size > 0) {
+      const [, setStore] = globalSync.child(directory)
+      setStore(
+        produce((draft) => {
+          draft.session = draft.session.filter((session) => !removed.has(session.id))
+        }),
+      )
+    }
 
     setBusy(directory, false)
     dismiss()
@@ -1695,6 +1773,16 @@ export default function Layout(props: ParentProps) {
     })
     setWorkspaceOrderFor(project.worktree, [local, created.directory, ...nextOrder])
 
+    globalSync.set(
+      "project",
+      produce((draft) => {
+        const current = draft.find((item) => item.worktree === project.worktree)
+        if (!current) return
+        const sandboxes = current.sandboxes ?? []
+        if (sandboxes.includes(created.directory)) return
+        current.sandboxes = [...sandboxes, created.directory]
+      }),
+    )
     globalSync.child(created.directory)
     navigateWithSidebarReset(`/${base64Encode(created.directory)}/session`)
   }

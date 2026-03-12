@@ -561,6 +561,7 @@ export namespace UserService {
               permission_id: id("perm_" + perm),
             })),
           )
+          .onConflictDoNothing()
           .run()
       }
     })

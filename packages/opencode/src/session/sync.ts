@@ -1,6 +1,6 @@
 import { Bus } from "@/bus"
 import { Config } from "@/config/config"
-import { Database, eq, and, lte, lt, desc } from "@/storage/db"
+import { Database, eq, and, lte, lt, desc, NotFoundError } from "@/storage/db"
 import { SyncQueueTable, SyncStateTable, SessionTable } from "./session.sql"
 import { Session } from "./index"
 import { MessageV2 } from "./message-v2"
@@ -28,6 +28,8 @@ export namespace SessionSync {
     retryWorkerRunning: false,
     replayingSessions: new Set<string>(),
     replayRequestedSessions: new Set<string>(),
+    cancelledSessions: new Set<string>(),
+    cancelledSessionTimerByID: new Map<string, ReturnType<typeof setTimeout>>(),
     sessionSyncTimerByID: new Map<string, ReturnType<typeof setTimeout>>(),
     lastPayloadHashByEntity: new Map<string, string>(),
     sessionAccountByID: new Map<string, SessionAccountSnapshot>(),
@@ -65,6 +67,46 @@ export namespace SessionSync {
 
   function circuitOpenError(error: unknown): error is InstanceType<typeof SyncCircuitError> {
     return error instanceof SyncCircuitError
+  }
+
+  function missing(error: unknown) {
+    if (error instanceof NotFoundError) return true
+    if (!(error instanceof Error)) return false
+    return error.message.startsWith("Message not found:")
+  }
+
+  function cancelled(sessionID: string) {
+    return state().cancelledSessions.has(sessionID)
+  }
+
+  export async function cancel(sessionID: string) {
+    const instanceState = state()
+    instanceState.cancelledSessions.add(sessionID)
+    const cleanup = instanceState.cancelledSessionTimerByID.get(sessionID)
+    if (cleanup) clearTimeout(cleanup)
+    instanceState.cancelledSessionTimerByID.set(
+      sessionID,
+      setTimeout(() => {
+        const current = state()
+        current.cancelledSessions.delete(sessionID)
+        current.cancelledSessionTimerByID.delete(sessionID)
+      }, 60_000),
+    )
+    instanceState.sessionAccountByID.delete(sessionID)
+    instanceState.lastPayloadHashByEntity.delete(sessionEntityKey(sessionID))
+    for (const key of instanceState.lastPayloadHashByEntity.keys()) {
+      if (key.startsWith(`message:${sessionID}:`)) {
+        instanceState.lastPayloadHashByEntity.delete(key)
+      }
+    }
+    instanceState.replayingSessions.delete(sessionID)
+    instanceState.replayRequestedSessions.delete(sessionID)
+    const timer = instanceState.sessionSyncTimerByID.get(sessionID)
+    if (timer) {
+      clearTimeout(timer)
+      instanceState.sessionSyncTimerByID.delete(sessionID)
+    }
+    await Database.use((db) => db.delete(SyncQueueTable).where(eq(SyncQueueTable.session_id, sessionID)).run())
   }
 
   /**
@@ -184,6 +226,7 @@ export namespace SessionSync {
     sessionInfo: Session.Info,
     options?: { forceRefresh?: boolean },
   ): Promise<void> {
+    if (cancelled(sessionInfo.id)) return
     try {
       await sendToServer(await toSessionPayload(sessionInfo, options))
       log.debug("session synced successfully", { sessionID: sessionInfo.id, eventType })
@@ -204,6 +247,7 @@ export namespace SessionSync {
    * 处理消息事件
    */
   async function handleMessageEvent(sessionID: string, messageID: string, eventType: string): Promise<void> {
+    if (cancelled(sessionID)) return
     if (!Flag.TPCODE_SYNC_INCREMENTAL) {
       try {
         await replaySessionHistory(sessionID, `message-event:${messageID}`)
@@ -220,6 +264,7 @@ export namespace SessionSync {
   }
 
   async function syncMessageIncremental(sessionID: string, messageID: string, eventType: string): Promise<void> {
+    if (cancelled(sessionID)) return
     try {
       const message = await MessageV2.get({
         sessionID,
@@ -228,6 +273,10 @@ export namespace SessionSync {
       await sendToServer(toMessagePayload(sessionID, message))
       log.debug("message synced incrementally", { sessionID, messageID, eventType })
     } catch (error) {
+      if (cancelled(sessionID) || missing(error)) {
+        log.debug("skip incremental message sync for missing session", { sessionID, messageID, eventType })
+        return
+      }
       if (circuitOpenError(error)) {
         log.warn("defer message sync while circuit is open", { sessionID, messageID, eventType, error })
         await enqueueRetry(`message.${eventType}`, sessionID, { type: "message", sessionID, messageID }, error, {
@@ -242,6 +291,7 @@ export namespace SessionSync {
 
   function scheduleSessionIncrementalSync(sessionID: string, reason: string) {
     if (!Flag.TPCODE_SYNC_INCREMENTAL) return
+    if (cancelled(sessionID)) return
     const instanceState = state()
     if (instanceState.sessionSyncTimerByID.has(sessionID)) return
     const timer = setTimeout(() => {
@@ -252,10 +302,15 @@ export namespace SessionSync {
   }
 
   async function syncSessionIncremental(sessionID: string, reason: string): Promise<void> {
+    if (cancelled(sessionID)) return
     try {
       await sendToServer(await buildSessionPayload(sessionID))
       log.debug("session synced incrementally", { sessionID, reason })
     } catch (error) {
+      if (cancelled(sessionID) || missing(error)) {
+        log.debug("skip incremental session sync for missing session", { sessionID, reason })
+        return
+      }
       if (circuitOpenError(error)) {
         log.warn("defer session incremental sync while circuit is open", { sessionID, reason, error })
         await enqueueRetry("session.incremental", sessionID, { type: "session", sessionID }, error, {
@@ -270,6 +325,7 @@ export namespace SessionSync {
 
   async function replaySessionHistory(sessionID: string, reason: string): Promise<void> {
     const instanceState = state()
+    if (cancelled(sessionID)) return
     if (instanceState.replayingSessions.has(sessionID)) {
       instanceState.replayRequestedSessions.add(sessionID)
       log.debug("session replay already running, queued one more pass", { sessionID, reason })
@@ -289,8 +345,13 @@ export namespace SessionSync {
   }
 
   async function runSessionHistoryReplay(sessionID: string, reason: string): Promise<void> {
+    if (cancelled(sessionID)) return
     let messageCount = 0
-    const sessionInfo = await Session.get(sessionID)
+    const sessionInfo = await Session.get(sessionID).catch((error) => {
+      if (cancelled(sessionID) || missing(error)) return
+      throw error
+    })
+    if (!sessionInfo) return
 
     try {
       await sendToServer(await toSessionPayload(sessionInfo))
@@ -306,10 +367,15 @@ export namespace SessionSync {
     }
 
     for await (const message of MessageV2.stream(sessionID)) {
+      if (cancelled(sessionID)) return
       try {
         await sendToServer(toMessagePayload(sessionID, message))
         messageCount += 1
       } catch (error) {
+        if (cancelled(sessionID) || missing(error)) {
+          log.debug("stop replay for missing session", { sessionID, reason })
+          return
+        }
         if (circuitOpenError(error)) {
           log.warn("defer replay message loop while circuit is open", { sessionID, reason, error })
           await enqueueRetry("session.replay", sessionID, { type: "session-replay", sessionID }, error, {
@@ -856,6 +922,10 @@ export namespace SessionSync {
 
     for (const task of tasks) {
       try {
+        if (cancelled(task.session_id)) {
+          await Database.use((db) => db.delete(SyncQueueTable).where(eq(SyncQueueTable.id, task.id)).run())
+          continue
+        }
         const payload = decodeRetryPayload(task.payload)
 
         // 根据类型重新构建完整的同步数据
@@ -889,6 +959,10 @@ export namespace SessionSync {
 
         log.debug("retry task succeeded", { taskID: task.id, attempts: task.attempts + 1 })
       } catch (error) {
+        if (cancelled(task.session_id) || missing(error)) {
+          await Database.use((db) => db.delete(SyncQueueTable).where(eq(SyncQueueTable.id, task.id)).run())
+          continue
+        }
         if (circuitOpenError(error)) {
           const nextRetry = error.until
           await Database.use(async (db) => {
@@ -953,6 +1027,11 @@ export namespace SessionSync {
     instanceState.retryWorkerRunning = false
     instanceState.replayingSessions.clear()
     instanceState.replayRequestedSessions.clear()
+    instanceState.cancelledSessions.clear()
+    for (const timer of instanceState.cancelledSessionTimerByID.values()) {
+      clearTimeout(timer)
+    }
+    instanceState.cancelledSessionTimerByID.clear()
     for (const timer of instanceState.sessionSyncTimerByID.values()) {
       clearTimeout(timer)
     }

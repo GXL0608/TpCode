@@ -2,6 +2,8 @@ import { batch, createMemo, onCleanup } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { Binary } from "@opencode-ai/util/binary"
 import { createSimpleContext } from "@opencode-ai/ui/context"
+import { archiveWithConfirm } from "@/utils/session-archive"
+import { useLanguage } from "./language"
 import { useGlobalSync } from "./global-sync"
 import { useGlobalSDK } from "./global-sdk"
 import { resolveProjectByDirectory } from "./project-resolver"
@@ -188,6 +190,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const globalSync = useGlobalSync()
     const globalSDK = useGlobalSDK()
     const sdk = useSDK()
+    const language = useLanguage()
 
     type Child = ReturnType<(typeof globalSync)["child"]>
     type Setter = Child[1]
@@ -564,7 +567,17 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const directory = sdk.directory
           const client = sdk.client
           const [, setStore] = globalSync.child(directory)
-          await client.session.update({ sessionID, time: { archived: Date.now() } })
+          const ok = await archiveWithConfirm({
+            t: language.t,
+            preview: () =>
+              client.session
+                .archivePreview({ sessionID })
+                .then((x) => x.data)
+                .catch(() => undefined),
+            archive: (force) => client.session.archive({ sessionID, time: Date.now(), force }).then(() => undefined),
+            confirm: (message) => globalThis.confirm?.(message) ?? true,
+          })
+          if (!ok) return
           setStore(
             produce((draft) => {
               const match = Binary.search(draft.session, sessionID, (s) => s.id)

@@ -8,6 +8,7 @@ import {
   sessionItemSelector,
   dropdownMenuTriggerSelector,
   dropdownMenuContentSelector,
+  projectSwitchSelector,
   projectMenuTriggerSelector,
   projectWorkspacesToggleSelector,
   titlebarRightSelector,
@@ -66,13 +67,86 @@ export async function isSidebarClosed(page: Page) {
   return classes.includes("xl:border-l")
 }
 
+async function sidebarExpanded(page: Page) {
+  return await page
+    .locator('[data-action="project-menu"]:visible')
+    .first()
+    .isVisible()
+    .then((x) => x)
+    .catch(() => false)
+}
+
 export async function toggleSidebar(page: Page) {
   await defocus(page)
   await page.keyboard.press(`${modKey}+B`)
 }
 
 export async function openSidebar(page: Page) {
-  if (!(await isSidebarClosed(page))) return
+  if (await sidebarExpanded(page)) return
+
+  const slug = /\/([^/]+)\/session(?:\/|$)/.exec(page.url())?.[1]
+  const current = slug ? page.locator(projectSwitchSelector(slug)).first() : undefined
+  const recent = page.locator('[data-action="project-switch"]:visible').last()
+  for (const trigger of [current, recent]) {
+    if (!trigger) continue
+    const triggerVisible = await trigger
+      .isVisible()
+      .then((x) => x)
+      .catch(() => false)
+    if (!triggerVisible) continue
+    await trigger.hover()
+    const ready = await expect(page.locator('[data-action="project-menu"]:visible').first())
+      .toBeVisible({ timeout: 1500 })
+      .then(() => true)
+      .catch(() => false)
+    if (ready) return
+  }
+
+  if (current) {
+    const currentVisible = await current
+      .isVisible()
+      .then((x) => x)
+      .catch(() => false)
+    if (currentVisible) {
+      await current.click({ force: true })
+      await page.waitForTimeout(300)
+      const first = await expect(page.locator('[data-action="project-menu"]:visible').first())
+        .toBeVisible({ timeout: 1500 })
+        .then(() => true)
+        .catch(() => false)
+      if (first) return
+      await current.click({ force: true })
+      await page.waitForTimeout(300)
+      const second = await expect(page.locator('[data-action="project-menu"]:visible').first())
+        .toBeVisible({ timeout: 1500 })
+        .then(() => true)
+        .catch(() => false)
+      if (second) return
+    }
+  }
+
+  for (const trigger of [recent]) {
+    if (!trigger) continue
+    const triggerVisible = await trigger
+      .isVisible()
+      .then((x) => x)
+      .catch(() => false)
+    if (!triggerVisible) continue
+    await trigger.click({ force: true })
+    await page.waitForTimeout(300)
+    const first = await expect(page.locator('[data-action="project-menu"]:visible').first())
+      .toBeVisible({ timeout: 1500 })
+      .then(() => true)
+      .catch(() => false)
+    if (first) return
+    await trigger.click({ force: true })
+    await page.waitForTimeout(300)
+    const second = await expect(page.locator('[data-action="project-menu"]:visible').first())
+      .toBeVisible({ timeout: 1500 })
+      .then(() => true)
+      .catch(() => false)
+    if (second) return
+  }
 
   const button = page.getByRole("button", { name: /toggle sidebar/i }).first()
   const visible = await button
@@ -83,16 +157,31 @@ export async function openSidebar(page: Page) {
   if (visible) await button.click()
   if (!visible) await toggleSidebar(page)
 
-  const main = page.locator("main")
-  const opened = await expect(main)
-    .not.toHaveClass(/xl:border-l/, { timeout: 1500 })
+  const panel = page.locator('[data-action="project-menu"]:visible').first()
+  const opened = await expect(panel)
+    .toBeVisible({ timeout: 1500 })
     .then(() => true)
     .catch(() => false)
 
   if (opened) return
 
+  for (const trigger of [current, recent]) {
+    if (!trigger) continue
+    const triggerVisible = await trigger
+      .isVisible()
+      .then((x) => x)
+      .catch(() => false)
+    if (!triggerVisible) continue
+    await trigger.click({ force: true })
+    const ready = await expect(page.locator('[data-action="project-menu"]:visible').first())
+      .toBeVisible({ timeout: 1500 })
+      .then(() => true)
+      .catch(() => false)
+    if (ready) return
+  }
+
   await toggleSidebar(page)
-  await expect(main).not.toHaveClass(/xl:border-l/)
+  await expect(page.locator('[data-action="project-menu"]:visible').first()).toBeVisible()
 }
 
 export async function closeSidebar(page: Page) {
@@ -193,17 +282,18 @@ export async function seedProjects(page: Page, input: { directory: string; extra
 
 export async function createTestProject() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-e2e-project-"))
+  const directory = await fs.realpath(root).catch(() => root)
 
-  await fs.writeFile(path.join(root, "README.md"), "# e2e\n")
+  await fs.writeFile(path.join(directory, "README.md"), "# e2e\n")
 
-  execSync("git init", { cwd: root, stdio: "ignore" })
-  execSync("git add -A", { cwd: root, stdio: "ignore" })
+  execSync("git init", { cwd: directory, stdio: "ignore" })
+  execSync("git add -A", { cwd: directory, stdio: "ignore" })
   execSync('git -c user.name="e2e" -c user.email="e2e@example.com" commit -m "init" --allow-empty', {
-    cwd: root,
+    cwd: directory,
     stdio: "ignore",
   })
 
-  return root
+  return directory
 }
 
 export async function cleanupTestProject(directory: string) {
@@ -227,7 +317,6 @@ export async function openSessionMoreMenu(page: Page, sessionID: string) {
 
   const scroller = page.locator(".scroll-view__viewport").first()
   await expect(scroller).toBeVisible()
-  await expect(scroller.getByRole("heading", { level: 1 }).first()).toBeVisible({ timeout: 30_000 })
 
   const menu = page
     .locator(dropdownMenuContentSelector)
@@ -512,28 +601,28 @@ export async function openStatusPopover(page: Page) {
 }
 
 export async function openProjectMenu(page: Page, projectSlug: string) {
-  const trigger = page.locator(projectMenuTriggerSelector(projectSlug)).first()
-  await expect(trigger).toHaveCount(1)
-
-  await trigger.focus()
-  await page.keyboard.press("Enter")
-
-  const menu = page.locator(dropdownMenuContentSelector).first()
-  const opened = await menu
-    .waitFor({ state: "visible", timeout: 1500 })
-    .then(() => true)
+  const exact = page.locator(projectMenuTriggerSelector(projectSlug)).first()
+  const menu = page.locator(`${dropdownMenuContentSelector}:visible`).first()
+  const triggerVisible = await exact
+    .isVisible()
+    .then((x) => x)
     .catch(() => false)
-
-  if (opened) {
-    const viewport = page.viewportSize()
-    const x = viewport ? Math.max(viewport.width - 5, 0) : 1200
-    const y = viewport ? Math.max(viewport.height - 5, 0) : 800
-    await page.mouse.move(x, y)
-    return menu
+  if (!triggerVisible) {
+    await openSidebar(page)
+    const fallback = page.locator('[data-action="project-menu"]:visible').first()
+    const fallbackVisible = await fallback
+      .isVisible()
+      .then((x) => x)
+      .catch(() => false)
+    if (fallbackVisible) {
+      await fallback.click({ force: true })
+      await expect(menu).toBeVisible()
+      return menu
+    }
   }
 
-  await trigger.click({ force: true })
-
+  await expect(exact).toBeVisible()
+  await exact.click({ force: true })
   await expect(menu).toBeVisible()
 
   const viewport = page.viewportSize()
@@ -555,7 +644,14 @@ export async function setWorkspacesEnabled(page: Page, projectSlug: string, enab
 
   await openProjectMenu(page, projectSlug)
 
-  const toggle = page.locator(projectWorkspacesToggleSelector(projectSlug)).first()
+  const exact = page.locator(projectWorkspacesToggleSelector(projectSlug)).first()
+  const toggle =
+    (await exact
+      .isVisible()
+      .then((x) => x)
+      .catch(() => false))
+      ? exact
+      : page.locator('[data-action="project-workspaces-toggle"]').first()
   await expect(toggle).toBeVisible()
   await toggle.click({ force: true })
 

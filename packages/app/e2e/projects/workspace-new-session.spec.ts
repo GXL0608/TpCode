@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test"
 import { test, expect } from "../fixtures"
 import { cleanupTestProject, openSidebar, sessionIDFromUrl, setWorkspacesEnabled } from "../actions"
 import { promptSelector, workspaceItemSelector, workspaceNewSessionSelector } from "../selectors"
-import { createSdk } from "../utils"
+import { createSdk, projectSession } from "../utils"
 
 function slugFromUrl(url: string) {
   return /\/([^/]+)\/session(?:\/|$)/.exec(url)?.[1] ?? ""
@@ -86,6 +86,7 @@ async function createSessionFromWorkspace(page: Page, slug: string, text: string
 }
 
 async function sessionDirectory(directory: string, sessionID: string) {
+  await projectSession(directory)
   const info = await createSdk(directory)
     .session.get({ sessionID })
     .then((x) => x.data)

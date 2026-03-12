@@ -23,10 +23,6 @@ type PendingPrompt = {
 }
 
 const pending = new Map<string, PendingPrompt>()
-const managedModel = {
-  providerID: "managed",
-  modelID: "managed",
-}
 
 const forbidden = [
   { term: "rm -rf", pattern: /(?:^|\s)rm\s+-rf(?:\s|$)/i },
@@ -44,6 +40,22 @@ const forbidden = [
 
 function blocked(text: string) {
   return [...new Set(forbidden.filter((item) => item.pattern.test(text)).map((item) => item.term))]
+}
+
+function decode(value: string | undefined) {
+  if (!value) return
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=")
+    return decodeURIComponent(escape(atob(padded)))
+  } catch {
+    return
+  }
+}
+
+function routeDirectory() {
+  if (typeof window === "undefined") return
+  const [, dir] = window.location.pathname.split("/")
+  return decode(dir)
 }
 
 type PromptSubmitInput = {
@@ -93,13 +105,11 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const runtime = input.currentRuntimeModel?.()
     if (runtime) return runtime
     const model = local.model.current()
-    if (model) {
-      return {
-        providerID: model.provider.id,
-        modelID: model.id,
-      }
+    if (!model) return
+    return {
+      providerID: model.provider.id,
+      modelID: model.id,
     }
-    return managedModel
   }
 
   const errorMessage = (err: unknown) => {
@@ -199,19 +209,46 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     const currentAgent = local.agent.current()
+    const currentModel = local.model.current()
+    const model =
+      currentModel &&
+      currentModel.provider.id &&
+      currentModel.id &&
+      !(currentModel.provider.id === "managed" && currentModel.id === "managed")
+        ? {
+            providerID: currentModel.provider.id,
+            modelID: currentModel.id,
+          }
+        : undefined
+    const variant = local.model.variant.current()
+
+    if (!model) {
+      showToast({
+        title: language.t("toast.model.unavailable.title"),
+        description: language.t("toast.model.unavailable.description"),
+      })
+      return
+    }
 
     input.addToHistory(currentPrompt, mode)
     input.resetHistoryNavigation()
 
-    const projectDirectory = sdk.directory
+    const agent = currentAgent?.name ?? "build"
+    const projectDirectory = routeDirectory() ?? decode(params.dir) ?? sdk.directory
     const routeID = params.id
     const isNewSession = !routeID
     const worktreeSelection = input.newSessionWorktree?.() || "main"
 
     let sessionDirectory = projectDirectory
-    let client = sdk.client
+    let client =
+      projectDirectory === sdk.directory
+        ? sdk.client
+        : sdk.createClient({
+            directory: projectDirectory,
+            throwOnError: true,
+          })
 
-    if (isNewSession) {
+    if (isNewSession && agent !== "build") {
       if (worktreeSelection === "create") {
         const createdWorktree = await client.worktree
           .create({ directory: projectDirectory })
@@ -279,7 +316,44 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     input.onSubmit?.()
 
-    const agent = currentAgent?.name ?? "build"
+    const switchDirectory = (directory: string) => {
+      sessionDirectory = directory
+      client =
+        directory === projectDirectory
+          ? sdk.client
+          : sdk.createClient({
+              directory,
+              throwOnError: true,
+            })
+      globalSync.child(directory)
+      layout.handoff.setTabs(base64Encode(directory), sessionID)
+      navigate(`/${base64Encode(directory)}/session/${sessionID}`)
+    }
+
+    const prepareBuild = async () => {
+      if (agent !== "build") return true
+      const prepared = await sdk.client.session
+        .prepareBuild({ sessionID })
+        .then((x) => x.data)
+        .catch((err) => {
+          showToast({
+            title: language.t("prompt.toast.worktreeCreateFailed.title"),
+            description: errorMessage(err),
+          })
+          return undefined
+        })
+      const nextDirectory = prepared?.directory
+      if (!nextDirectory) return false
+      if (nextDirectory !== sessionDirectory) {
+        switchDirectory(nextDirectory)
+      }
+      if (isNewSession) input.onNewSessionWorktreeReset?.()
+      return true
+    }
+
+    if (mode === "normal" && !(await prepareBuild())) {
+      return
+    }
 
     const clearInput = () => {
       input.clearDraft?.()
@@ -302,11 +376,13 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     if (mode === "shell") {
+      if (!(await prepareBuild())) return
       clearInput()
       client.session
         .shell({
           sessionID,
           agent,
+          model,
           command: text,
         })
         .catch((err) => {
@@ -320,6 +396,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     if (text.startsWith("/")) {
+      if (!(await prepareBuild())) return
       const [cmdName, ...args] = text.split(" ")
       const commandName = cmdName.slice(1)
       const customCommand = sync.data.command.find((c) => c.name === commandName)
@@ -331,6 +408,8 @@ export function createPromptSubmit(input: PromptSubmitInput) {
             command: commandName,
             arguments: args.join(" "),
             agent,
+            model: `${model.providerID}/${model.modelID}`,
+            variant,
             parts: [
               ...images.map((attachment) => ({
                 id: Identifier.ascending("part"),
@@ -381,7 +460,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       role: "user",
       time: { created: Date.now() },
       agent,
-      model: optimisticModel(),
+      model: optimisticModel() ?? model,
     }
 
     const addOptimisticMessage = () =>
@@ -467,6 +546,8 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         sessionID,
         agent,
         messageID,
+        model,
+        variant,
         parts: requestParts,
       })
       refreshSessionMessages(sessionDirectory, sessionID)
@@ -489,7 +570,11 @@ export function createPromptSubmit(input: PromptSubmitInput) {
             setStore("session_status", reconcile(x.data ?? {}))
           })
           .catch((error) => {
-            console.error("[prompt-submit] failed to compensate session status", { directory: sessionDirectory, sessionID, error })
+            console.error("[prompt-submit] failed to compensate session status", {
+              directory: sessionDirectory,
+              sessionID,
+              error,
+            })
           })
       }, 20_000)
       statusCompensationTimers.set(key, timer)

@@ -18,6 +18,7 @@ import { getManagedCatalogState } from "./settings-providers-catalog"
 import { canViewReadonlySystemCandidates } from "./settings-provider-access"
 import { draftPool, normalizePool, type PoolRow, validatePoolControl } from "./settings-provider-pool"
 import { canUseBuildCapability } from "@/utils/account-build-access"
+import { buildProviderControl, parseProviderList } from "./settings-provider-control"
 
 type ManagedRow = {
   provider_id: string
@@ -60,13 +61,6 @@ const PROVIDER_NOTES = [
 
 function list<T>(input: unknown) {
   return Array.isArray(input) ? (input as T[]) : []
-}
-
-function parseList(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean)
 }
 
 function icon(id: string): IconName {
@@ -146,7 +140,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   let configInputRef: HTMLInputElement | undefined
 
   const configuredIDs = createMemo(() => new Set(state.rows.map((item) => item.provider_id)))
-  const disabledSet = createMemo(() => new Set(parseList(state.disabledProviders)))
+  const disabledSet = createMemo(() => new Set(parseProviderList(state.disabledProviders)))
   const modelOptions = createMemo(() => {
     const list = state.managedProviders
       .filter((provider) => !disabledSet().has(provider.provider_id))
@@ -229,15 +223,14 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   }
 
   const controlBody = (disabledProviders = state.disabledProviders) => {
-    const enabled = parseList(state.enabledProviders)
-    const disabled = parseList(disabledProviders)
-    return {
-      model: state.model.trim() || undefined,
-      small_model: state.smallModel.trim() || undefined,
-      session_model_pool: state.sessionModelPool.length > 0 ? normalizePool(state.sessionModelPool) : undefined,
-      enabled_providers: enabled.length > 0 ? enabled : undefined,
-      disabled_providers: disabled.length > 0 ? disabled : undefined,
-    }
+    return buildProviderControl({
+      model: state.model,
+      smallModel: state.smallModel,
+      sessionModelPool: state.sessionModelPool,
+      enabledProviders: state.enabledProviders,
+      disabledProviders,
+      configuredProviders: state.managedProviders.map((item) => item.provider_id),
+    })
   }
 
   const complete = async (message: string) => {
@@ -530,9 +523,9 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       return
     }
     const next = disabled
-      ? [...new Set([...parseList(state.disabledProviders), providerID])]
-      : parseList(state.disabledProviders).filter((item) => item !== providerID)
-    const enabled = parseList(state.enabledProviders)
+      ? [...new Set([...parseProviderList(state.disabledProviders), providerID])]
+      : parseProviderList(state.disabledProviders).filter((item) => item !== providerID)
+    const enabled = parseProviderList(state.enabledProviders)
     const nextEnabled =
       !disabled && enabled.length > 0 && !enabled.includes(providerID) ? [...enabled, providerID] : enabled
     setState("pending", true)

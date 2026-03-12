@@ -1,7 +1,7 @@
 import { test as base, expect, type Page } from "@playwright/test"
 import { cleanupTestProject, createTestProject, seedProjects } from "./actions"
 import { promptSelector } from "./selectors"
-import { createSdk, dirSlug, getWorktree, sessionPath } from "./utils"
+import { accountSession, createSdk, dirSlug, getWorktree, projectSession, sessionPath } from "./utils"
 
 export const settingsKey = "settings.v3"
 
@@ -38,6 +38,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     { scope: "worker" },
   ],
   sdk: async ({ directory }, use) => {
+    await projectSession(directory)
     await use(createSdk(directory))
   },
   gotoSession: async ({ page, directory }, use) => {
@@ -71,8 +72,46 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 })
 
 async function seedStorage(page: Page, input: { directory: string; extra?: string[] }) {
+  const auth = (await projectSession(input.directory)) ?? (await accountSession())
   await seedProjects(page, input)
-  await page.addInitScript(() => {
+  await page.addInitScript((value) => {
+    const decodeAccountID = (token?: string) => {
+      if (!token) return "anonymous"
+      const part = token.split(".")[1]
+      if (!part) return "anonymous"
+      const normalized = part.replace(/-/g, "+").replace(/_/g, "/")
+      const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4)
+      try {
+        const payload = JSON.parse(atob(padded)) as { sub?: unknown }
+        return typeof payload.sub === "string" ? payload.sub : "anonymous"
+      } catch {
+        return "anonymous"
+      }
+    }
+
+    if (value) {
+      localStorage.setItem("tpcode.account.access_token", value.access_token)
+      localStorage.setItem("tpcode.account.refresh_token", value.refresh_token)
+      if (typeof value.access_expires_at === "number") {
+        localStorage.setItem("tpcode.account.access_expires_at", String(value.access_expires_at))
+      }
+      if (typeof value.refresh_expires_at === "number") {
+        localStorage.setItem("tpcode.account.refresh_expires_at", String(value.refresh_expires_at))
+      }
+    }
+    const layout = JSON.stringify({
+      sidebar: { opened: true, width: 344 },
+      terminal: { height: 280, opened: false },
+      review: { diffStyle: "split", panelOpened: false },
+      fileTree: { opened: false, width: 344, tab: "changes" },
+      session: { width: 600 },
+      mobileSidebar: { opened: false },
+      sessionTabs: {},
+      sessionView: {},
+      handoff: { tabs: undefined },
+    })
+    localStorage.setItem("opencode.global.dat:acct:anonymous:layout", layout)
+    localStorage.setItem(`opencode.global.dat:acct:${decodeAccountID(value?.access_token)}:layout`, layout)
     localStorage.setItem(
       "opencode.global.dat:model",
       JSON.stringify({
@@ -81,7 +120,7 @@ async function seedStorage(page: Page, input: { directory: string; extra?: strin
         variant: {},
       }),
     )
-  })
+  }, auth ?? null)
 }
 
 export { expect }

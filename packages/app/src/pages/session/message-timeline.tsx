@@ -22,6 +22,7 @@ import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
+import { archiveWithConfirm } from "@/utils/session-archive"
 import { setReasoningManual, type ReasoningState } from "@opencode-ai/util/reasoning-state"
 
 type MessageComment = {
@@ -228,23 +229,31 @@ export function MessageTimeline(props: {
     const index = sessions.findIndex((s) => s.id === sessionID)
     const nextSession = index === -1 ? undefined : (sessions[index + 1] ?? sessions[index - 1])
 
-    await sdk.client.session
-      .update({ sessionID, time: { archived: Date.now() } })
-      .then(() => {
-        sync.set(
-          produce((draft) => {
-            const index = draft.session.findIndex((s) => s.id === sessionID)
-            if (index !== -1) draft.session.splice(index, 1)
-          }),
-        )
-        navigateAfterSessionRemoval(sessionID, session.parentID, nextSession?.id)
+    const ok = await archiveWithConfirm({
+      t: language.t,
+      preview: () =>
+        sdk.client.session
+          .archivePreview({ sessionID })
+          .then((x) => x.data)
+          .catch(() => undefined),
+      archive: (force) => sdk.client.session.archive({ sessionID, time: Date.now(), force }).then(() => undefined),
+      confirm: (message) => globalThis.confirm?.(message) ?? true,
+    }).catch((err) => {
+      showToast({
+        title: language.t("common.requestFailed"),
+        description: errorMessage(err),
       })
-      .catch((err) => {
-        showToast({
-          title: language.t("common.requestFailed"),
-          description: errorMessage(err),
-        })
-      })
+      return false
+    })
+    if (!ok) return
+
+    sync.set(
+      produce((draft) => {
+        const index = draft.session.findIndex((s) => s.id === sessionID)
+        if (index !== -1) draft.session.splice(index, 1)
+      }),
+    )
+    navigateAfterSessionRemoval(sessionID, session.parentID, nextSession?.id)
   }
 
   const deleteSession = async (sessionID: string) => {

@@ -8,8 +8,15 @@ import { Snapshot } from "@/snapshot"
 
 import { Storage } from "@/storage/storage"
 import { Bus } from "@/bus"
+import { NotFoundError } from "@/storage/db"
 
 export namespace SessionSummary {
+  function missing(error: unknown) {
+    if (error instanceof NotFoundError) return true
+    if (!(error instanceof Error)) return false
+    return error.message.startsWith("Session not found:") || error.message.startsWith("Message not found:")
+  }
+
   function unquoteGitPath(input: string) {
     if (!input.startsWith('"')) return input
     if (!input.endsWith('"')) return input
@@ -72,11 +79,18 @@ export namespace SessionSummary {
       messageID: z.string(),
     }),
     async (input) => {
-      const all = await Session.messages({ sessionID: input.sessionID })
+      const all = await Session.messages({ sessionID: input.sessionID }).catch((error) => {
+        if (missing(error)) return
+        throw error
+      })
+      if (!all) return
       await Promise.all([
         summarizeSession({ sessionID: input.sessionID, messages: all }),
         summarizeMessage({ messageID: input.messageID, messages: all }),
-      ])
+      ]).catch((error) => {
+        if (missing(error)) return
+        throw error
+      })
     },
   )
 
@@ -89,6 +103,9 @@ export namespace SessionSummary {
         deletions: diffs.reduce((sum, x) => sum + x.deletions, 0),
         files: diffs.length,
       },
+    }).catch((error) => {
+      if (missing(error)) return
+      throw error
     })
     await Storage.write(["session_diff", input.sessionID], diffs)
     Bus.publish(Session.Event.Diff, {
@@ -101,14 +118,19 @@ export namespace SessionSummary {
     const messages = input.messages.filter(
       (m) => m.info.id === input.messageID || (m.info.role === "assistant" && m.info.parentID === input.messageID),
     )
-    const msgWithParts = messages.find((m) => m.info.id === input.messageID)!
+    const msgWithParts = messages.find((m) => m.info.id === input.messageID)
+    if (!msgWithParts) return
+    if (msgWithParts.info.role !== "user") return
     const userMsg = msgWithParts.info as MessageV2.User
     const diffs = await computeDiff({ messages })
     userMsg.summary = {
       ...userMsg.summary,
       diffs,
     }
-    await Session.updateMessage(userMsg)
+    await Session.updateMessage(userMsg).catch((error) => {
+      if (missing(error)) return
+      throw error
+    })
   }
 
   export const diff = fn(

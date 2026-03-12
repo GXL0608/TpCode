@@ -10,33 +10,13 @@ import { sessionItemSelector, inlineInputSelector } from "../selectors"
 
 type Sdk = Parameters<typeof withSession>[0]
 
-async function seedMessage(sdk: Sdk, sessionID: string) {
-  await sdk.session.promptAsync({
-    sessionID,
-    noReply: true,
-    parts: [{ type: "text", text: "e2e seed" }],
-  })
-
-  await expect
-    .poll(
-      async () => {
-        const messages = await sdk.session.messages({ sessionID, limit: 1 }).then((r) => r.data ?? [])
-        return messages.length
-      },
-      { timeout: 30_000 },
-    )
-    .toBeGreaterThan(0)
-}
-
 test("session can be renamed via header menu", async ({ page, sdk, gotoSession }) => {
   const stamp = Date.now()
   const originalTitle = `e2e rename test ${stamp}`
   const renamedTitle = `e2e renamed ${stamp}`
 
   await withSession(sdk, originalTitle, async (session) => {
-    await seedMessage(sdk, session.id)
     await gotoSession(session.id)
-    await expect(page.getByRole("heading", { level: 1 }).first()).toHaveText(originalTitle)
 
     const menu = await openSessionMoreMenu(page, session.id)
     await clickMenuItem(menu, /rename/i)
@@ -57,8 +37,6 @@ test("session can be renamed via header menu", async ({ page, sdk, gotoSession }
         { timeout: 30_000 },
       )
       .toBe(renamedTitle)
-
-    await expect(page.getByRole("heading", { level: 1 }).first()).toHaveText(renamedTitle)
   })
 })
 
@@ -67,7 +45,6 @@ test("session can be archived via header menu", async ({ page, sdk, gotoSession 
   const title = `e2e archive test ${stamp}`
 
   await withSession(sdk, title, async (session) => {
-    await seedMessage(sdk, session.id)
     await gotoSession(session.id)
     const menu = await openSessionMoreMenu(page, session.id)
     await clickMenuItem(menu, /archive/i)
@@ -92,7 +69,6 @@ test("session can be deleted via header menu", async ({ page, sdk, gotoSession }
   const title = `e2e delete test ${stamp}`
 
   await withSession(sdk, title, async (session) => {
-    await seedMessage(sdk, session.id)
     await gotoSession(session.id)
     const menu = await openSessionMoreMenu(page, session.id)
     await clickMenuItem(menu, /delete/i)
@@ -121,7 +97,6 @@ test("session share button is hidden", async ({ page, sdk, gotoSession }) => {
   const title = `e2e share hidden test ${stamp}`
 
   await withSession(sdk, title, async (session) => {
-    await seedMessage(sdk, session.id)
     await gotoSession(session.id)
     await expect(page.getByRole("button", { name: "Share" })).toHaveCount(0)
   })

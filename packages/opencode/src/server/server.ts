@@ -666,7 +666,18 @@ export namespace Server {
             const context_project_id = c.get("account_context_project_id" as never) as string | undefined
             if (context_project_id) {
               const context = await contextProject(context_project_id)
-              if (context.project) directory = context.project.worktree
+              if (context.project) {
+                const hintedPath = Filesystem.windowsPath(path.resolve(directory)).toLowerCase()
+                const scoped = [context.project.worktree, ...(context.project.sandboxes ?? [])].find((item) => {
+                  return Filesystem.windowsPath(path.resolve(item)).toLowerCase() === hintedPath
+                })
+                if (scoped) {
+                  directory = scoped
+                } else {
+                  const hinted = await Project.fromDirectory(directory).catch(() => undefined)
+                  directory = hinted?.project.id === context_project_id ? hinted.sandbox : context.project.worktree
+                }
+              }
             }
           }
           return Instance.provide({

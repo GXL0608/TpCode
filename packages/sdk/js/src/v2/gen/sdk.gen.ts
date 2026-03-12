@@ -241,6 +241,10 @@ import type {
   ServerConfig,
   SessionAbortErrors,
   SessionAbortResponses,
+  SessionArchiveErrors,
+  SessionArchivePreviewErrors,
+  SessionArchivePreviewResponses,
+  SessionArchiveResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
@@ -262,6 +266,8 @@ import type {
   SessionMessageResponses,
   SessionMessagesErrors,
   SessionMessagesResponses,
+  SessionPrepareBuildErrors,
+  SessionPrepareBuildResponses,
   SessionPromptAsyncErrors,
   SessionPromptAsyncResponses,
   SessionPromptErrors,
@@ -2385,6 +2391,7 @@ export class Session2 extends HeyApiClient {
       directory?: string
       title?: string
       visibility?: "private" | "department" | "org" | "public"
+      force?: boolean
       time?: {
         archived?: number
       }
@@ -2400,6 +2407,7 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "body", key: "title" },
             { in: "body", key: "visibility" },
+            { in: "body", key: "force" },
             { in: "body", key: "time" },
           ],
         },
@@ -2474,6 +2482,111 @@ export class Session2 extends HeyApiClient {
       url: "/session/{sessionID}/todo",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Prepare build workspace
+   *
+   * Create or reuse an isolated build workspace for this session and move the session there.
+   */
+  public prepareBuild<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionPrepareBuildResponses, SessionPrepareBuildErrors, ThrowOnError>(
+      {
+        url: "/session/{sessionID}/prepare_build",
+        ...options,
+        ...params,
+      },
+    )
+  }
+
+  /**
+   * Preview session archive
+   *
+   * Check whether archiving this session will delete a dirty isolated workspace.
+   */
+  public archivePreview<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionArchivePreviewResponses,
+      SessionArchivePreviewErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/archive_preview",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Archive session
+   *
+   * Archive a session and remove its isolated workspace when present.
+   */
+  public archive<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      time?: number
+      force?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "time" },
+            { in: "body", key: "force" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionArchiveResponses, SessionArchiveErrors, ThrowOnError>({
+      url: "/session/{sessionID}/archive",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 

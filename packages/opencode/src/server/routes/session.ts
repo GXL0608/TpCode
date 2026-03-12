@@ -23,8 +23,21 @@ import { UserService } from "@/user/service"
 import { Flag } from "@/flag/flag"
 import { AccountProviderState } from "@/provider/account-provider-state"
 import { UserRbac } from "@/user/rbac"
+import { NotFoundError } from "@/storage/db"
+import { AccountProviderState } from "@/provider/account-provider-state"
+import { UserRbac } from "@/user/rbac"
 
 const log = Log.create({ service: "server" })
+
+function missingPrompt(error: unknown) {
+  if (error instanceof NotFoundError) return true
+  if (!(error instanceof Error)) return false
+  return (
+    error.message.startsWith("Session not found:") ||
+    error.message.startsWith("Message not found:") ||
+    error.message.includes('violates foreign key constraint "fk_message_session_id_session_id_fk"')
+  )
+}
 
 function requirePermission(c: Context, code: string) {
   const roles = c.get("account_roles") as string[] | undefined
@@ -433,6 +446,7 @@ export const SessionRoutes = lazy(() =>
         z.object({
           title: z.string().optional(),
           visibility: z.enum(["private", "department", "org", "public"]).optional(),
+          force: z.boolean().optional(),
           time: z
             .object({
               archived: z.number().optional(),
@@ -479,10 +493,109 @@ export const SessionRoutes = lazy(() =>
           }
         }
         if (updates.time?.archived !== undefined) {
-          session = await Session.setArchived({ sessionID, time: updates.time.archived })
+          session = await Session.archive({
+            sessionID,
+            time: updates.time.archived,
+            force: updates.force,
+          })
         }
 
         return c.json(session)
+      },
+    )
+    .post(
+      "/:sessionID/prepare_build",
+      describeRoute({
+        summary: "Prepare build workspace",
+        description: "Create or reuse an isolated build workspace for this session and move the session there.",
+        operationId: "session.prepareBuild",
+        responses: {
+          200: {
+            description: "Prepared session",
+            content: {
+              "application/json": {
+                schema: resolver(Session.Info),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string(),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        return c.json(await Session.prepareBuild({ sessionID }))
+      },
+    )
+    .get(
+      "/:sessionID/archive_preview",
+      describeRoute({
+        summary: "Preview session archive",
+        description: "Check whether archiving this session will delete a dirty isolated workspace.",
+        operationId: "session.archivePreview",
+        responses: {
+          200: {
+            description: "Archive preview",
+            content: {
+              "application/json": {
+                schema: resolver(Session.BuildWorkspacePreview),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string(),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        return c.json(await Session.archivePreview(sessionID))
+      },
+    )
+    .post(
+      "/:sessionID/archive",
+      describeRoute({
+        summary: "Archive session",
+        description: "Archive a session and remove its isolated workspace when present.",
+        operationId: "session.archive",
+        responses: {
+          200: {
+            description: "Archived session",
+            content: {
+              "application/json": {
+                schema: resolver(Session.Info),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string(),
+        }),
+      ),
+      validator(
+        "json",
+        z.object({
+          time: z.number().optional(),
+          force: z.boolean().optional(),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        return c.json(await Session.archive({ sessionID, time: body.time, force: body.force }))
       },
     )
     .post(
@@ -1084,7 +1197,18 @@ export const SessionRoutes = lazy(() =>
         c.status(204)
         c.header("Content-Type", "application/json")
         return stream(c, async () => {
-          SessionPrompt.prompt({ ...body, sessionID })
+          void SessionPrompt.prompt({ ...body, sessionID }).catch((error) => {
+            const extra = {
+              event: "session.prompt_async",
+              session_id: sessionID,
+              error,
+            }
+            if (missingPrompt(error)) {
+              log.warn("async prompt dropped after session disappeared", extra)
+              return
+            }
+            log.error("async prompt failed", extra)
+          })
         })
       },
     )

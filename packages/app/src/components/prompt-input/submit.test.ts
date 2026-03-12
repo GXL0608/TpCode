@@ -11,6 +11,7 @@ const toasts: { title?: string; description?: string }[] = []
 const shellCalls: { directory: string; sessionID: string }[] = []
 const commandCalls: Array<{ directory: string; sessionID: string; command: string; model?: string; variant?: string }> =
   []
+const prepareBuildCalls: Array<{ directory: string; sessionID: string }> = []
 const promptAsyncCalls: Array<{
   directory: string
   sessionID: string
@@ -23,6 +24,7 @@ const optimisticAdds: Array<{
   sessionID: string
   message: Message
 }> = []
+const navigations: string[] = []
 
 let selected = "/repo/worktree-a"
 let route: { id?: string } = {}
@@ -38,6 +40,7 @@ let syncRuntimeModelPending:
       resolve: () => void
     }
   | undefined
+let currentAgentName = "agent"
 
 const event = { preventDefault: () => undefined } as unknown as Event
 
@@ -78,6 +81,15 @@ const clientFor = (directory: string) => {
         })
         return { data: undefined }
       },
+      prepareBuild: async (input: { sessionID: string }) => {
+        prepareBuildCalls.push({ directory, sessionID: input.sessionID })
+        return {
+          data: {
+            id: input.sessionID,
+            directory: `${directory}/prepared/${input.sessionID}`,
+          },
+        }
+      },
       abort: async () => ({ data: undefined }),
     },
     worktree: {
@@ -90,7 +102,9 @@ beforeAll(async () => {
   const rootClient = clientFor("/repo/main")
 
   mock.module("@solidjs/router", () => ({
-    useNavigate: () => () => undefined,
+    useNavigate: () => (value: string) => {
+      navigations.push(value)
+    },
     useParams: () => route,
   }))
 
@@ -112,7 +126,7 @@ beforeAll(async () => {
         variant: { current: () => undefined },
       },
       agent: {
-        current: () => ({ name: "agent" }),
+        current: () => ({ name: currentAgentName }),
       },
     }),
   }))
@@ -197,7 +211,9 @@ beforeEach(() => {
   toasts.length = 0
   shellCalls.length = 0
   commandCalls.length = 0
+  prepareBuildCalls.length = 0
   promptAsyncCalls.length = 0
+  navigations.length = 0
   selected = "/repo/worktree-a"
   route = {}
   promptValue = [{ type: "text", content: "ls", start: 0, end: 2 }]
@@ -209,6 +225,7 @@ beforeEach(() => {
   syncCalls.length = 0
   syncRuntimeModelCalls.length = 0
   syncRuntimeModelPending = undefined
+  currentAgentName = "agent"
 })
 
 function createSubmit(input?: {
@@ -295,7 +312,12 @@ describe("prompt submit session resolution", () => {
     expect(createdSessions).toEqual([])
     expect(clearDraftCalls).toBe(1)
     expect(promptAsyncCalls).toEqual([
-      { directory: "/repo/main", sessionID: "session-route-normal", model: undefined, variant: undefined },
+      {
+        directory: "/repo/main",
+        sessionID: "session-route-normal",
+        model: { providerID: "provider", modelID: "model" },
+        variant: undefined,
+      },
     ])
   })
 
@@ -307,6 +329,21 @@ describe("prompt submit session resolution", () => {
 
     expect(createdSessions).toEqual([])
     expect(shellCalls).toEqual([{ directory: "/repo/main", sessionID: "session-route-shell" }])
+  })
+
+  test("prepares a build workspace before sending a shell command", async () => {
+    route = { id: "session-route-build-shell" }
+    currentAgentName = "build"
+    const submit = createSubmit({ mode: "shell", info: () => undefined })
+
+    await submit.handleSubmit(event)
+
+    expect(createdSessions).toEqual([])
+    expect(prepareBuildCalls).toEqual([{ directory: "/repo/main", sessionID: "session-route-build-shell" }])
+    expect(shellCalls).toEqual([
+      { directory: "/repo/main/prepared/session-route-build-shell", sessionID: "session-route-build-shell" },
+    ])
+    expect(navigations).toContain("//repo/main/prepared/session-route-build-shell/session/session-route-build-shell")
   })
 
   test("uses route session id for slash command mode without creating a session", async () => {
@@ -323,13 +360,13 @@ describe("prompt submit session resolution", () => {
         directory: "/repo/main",
         sessionID: "session-route-command",
         command: "deploy",
-        model: undefined,
+        model: "provider/model",
         variant: undefined,
       },
     ])
   })
 
-  test("does not require a local model to send a prompt", async () => {
+  test("blocks normal prompt when no local model is available", async () => {
     route = { id: "session-route-no-local-model" }
     localModel = undefined
     const submit = createSubmit({ mode: "normal", info: () => undefined })
@@ -337,9 +374,52 @@ describe("prompt submit session resolution", () => {
     await submit.handleSubmit(event)
     await flush()
 
-    expect(toasts).toEqual([])
-    expect(promptAsyncCalls).toEqual([
-      { directory: "/repo/main", sessionID: "session-route-no-local-model", model: undefined, variant: undefined },
+    expect(createdSessions).toEqual([])
+    expect(prepareBuildCalls).toEqual([])
+    expect(promptAsyncCalls).toEqual([])
+    expect(toasts).toEqual([
+      {
+        title: "toast.model.unavailable.title",
+        description: "toast.model.unavailable.description",
+      },
+    ])
+  })
+
+  test("blocks shell command when no local model is available", async () => {
+    route = { id: "session-route-no-local-model-shell" }
+    localModel = undefined
+    const submit = createSubmit({ mode: "shell", info: () => undefined })
+
+    await submit.handleSubmit(event)
+
+    expect(createdSessions).toEqual([])
+    expect(prepareBuildCalls).toEqual([])
+    expect(shellCalls).toEqual([])
+    expect(toasts).toEqual([
+      {
+        title: "toast.model.unavailable.title",
+        description: "toast.model.unavailable.description",
+      },
+    ])
+  })
+
+  test("blocks slash command when no local model is available", async () => {
+    route = { id: "session-route-no-local-model-command" }
+    localModel = undefined
+    promptValue = [{ type: "text", content: "/deploy --fast", start: 0, end: 14 }]
+    commands = [{ name: "deploy" }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+
+    expect(createdSessions).toEqual([])
+    expect(prepareBuildCalls).toEqual([])
+    expect(commandCalls).toEqual([])
+    expect(toasts).toEqual([
+      {
+        title: "toast.model.unavailable.title",
+        description: "toast.model.unavailable.description",
+      },
     ])
   })
 
@@ -394,7 +474,12 @@ describe("prompt submit session resolution", () => {
     await flush()
 
     expect(promptAsyncCalls).toEqual([
-      { directory: "/repo/main", sessionID: "session-route-sync-model", model: undefined, variant: undefined },
+      {
+        directory: "/repo/main",
+        sessionID: "session-route-sync-model",
+        model: { providerID: "provider", modelID: "model" },
+        variant: undefined,
+      },
     ])
   })
 
@@ -411,5 +496,47 @@ describe("prompt submit session resolution", () => {
     expect(toasts[0]?.title).toBe("prompt.toast.promptSendFailed.title")
     expect(toasts[0]?.description).toBe("Session not found: session-route-missing")
     expect(toasts[0]?.description).not.toBe("prompt.toast.promptSendFailed.description")
+  })
+
+  test("prepares a build workspace lazily for an existing session before sending the first prompt", async () => {
+    route = { id: "session-route-build" }
+    currentAgentName = "build"
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual([])
+    expect(prepareBuildCalls).toEqual([{ directory: "/repo/main", sessionID: "session-route-build" }])
+    expect(createdClients).toContain("/repo/main/prepared/session-route-build")
+    expect(syncedDirectories).toContain("/repo/main/prepared/session-route-build")
+    expect(promptAsyncCalls).toEqual([
+      {
+        directory: "/repo/main/prepared/session-route-build",
+        sessionID: "session-route-build",
+        model: { providerID: "provider", modelID: "model" },
+        variant: undefined,
+      },
+    ])
+    expect(navigations).toContain("//repo/main/prepared/session-route-build/session/session-route-build")
+  })
+
+  test("does not prepare a workspace for non-build prompts", async () => {
+    route = { id: "session-route-no-build-prepare" }
+    currentAgentName = "plan"
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(prepareBuildCalls).toEqual([])
+    expect(promptAsyncCalls).toEqual([
+      {
+        directory: "/repo/main",
+        sessionID: "session-route-no-build-prepare",
+        model: { providerID: "provider", modelID: "model" },
+        variant: undefined,
+      },
+    ])
   })
 })

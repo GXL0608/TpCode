@@ -803,6 +803,21 @@ export type EventCommandExecuted = {
   }
 }
 
+export type EventWorktreeReady = {
+  type: "worktree.ready"
+  properties: {
+    name: string
+    branch: string
+  }
+}
+
+export type EventWorktreeFailed = {
+  type: "worktree.failed"
+  properties: {
+    message: string
+  }
+}
+
 export type PermissionAction = "allow" | "deny" | "ask"
 
 export type PermissionRule = {
@@ -818,6 +833,10 @@ export type Session = {
   slug: string
   projectID: string
   directory: string
+  workspaceDirectory?: string
+  workspaceBranch?: string
+  workspaceStatus?: "pending" | "ready" | "failed" | "removed"
+  workspaceCleanupStatus?: "none" | "pending" | "failed" | "deleted"
   parentID?: string
   summary?: {
     additions: number
@@ -899,21 +918,6 @@ export type EventVcsBranchUpdated = {
   type: "vcs.branch.updated"
   properties: {
     branch?: string
-  }
-}
-
-export type EventWorktreeReady = {
-  type: "worktree.ready"
-  properties: {
-    name: string
-    branch: string
-  }
-}
-
-export type EventWorktreeFailed = {
-  type: "worktree.failed"
-  properties: {
-    message: string
   }
 }
 
@@ -1013,14 +1017,14 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
+  | EventWorktreeReady
+  | EventWorktreeFailed
   | EventSessionCreated
   | EventSessionUpdated
   | EventSessionDeleted
   | EventSessionDiff
   | EventSessionError
   | EventVcsBranchUpdated
-  | EventWorktreeReady
-  | EventWorktreeFailed
   | EventWorkspaceReady
   | EventWorkspaceFailed
   | EventServerDegraded
@@ -1951,6 +1955,10 @@ export type GlobalSession = {
   slug: string
   projectID: string
   directory: string
+  workspaceDirectory?: string
+  workspaceBranch?: string
+  workspaceStatus?: "pending" | "ready" | "failed" | "removed"
+  workspaceCleanupStatus?: "none" | "pending" | "failed" | "deleted"
   parentID?: string
   summary?: {
     additions: number
@@ -5396,6 +5404,7 @@ export type SessionUpdateData = {
   body?: {
     title?: string
     visibility?: "private" | "department" | "org" | "public"
+    force?: boolean
     time?: {
       archived?: number
     }
@@ -5499,6 +5508,112 @@ export type SessionTodoResponses = {
 }
 
 export type SessionTodoResponse = SessionTodoResponses[keyof SessionTodoResponses]
+
+export type SessionPrepareBuildData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/prepare_build"
+}
+
+export type SessionPrepareBuildErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionPrepareBuildError = SessionPrepareBuildErrors[keyof SessionPrepareBuildErrors]
+
+export type SessionPrepareBuildResponses = {
+  /**
+   * Prepared session
+   */
+  200: Session
+}
+
+export type SessionPrepareBuildResponse = SessionPrepareBuildResponses[keyof SessionPrepareBuildResponses]
+
+export type SessionArchivePreviewData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/archive_preview"
+}
+
+export type SessionArchivePreviewErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionArchivePreviewError = SessionArchivePreviewErrors[keyof SessionArchivePreviewErrors]
+
+export type SessionArchivePreviewResponses = {
+  /**
+   * Archive preview
+   */
+  200: {
+    has_workspace: boolean
+    dirty: boolean
+    directory?: string
+  }
+}
+
+export type SessionArchivePreviewResponse = SessionArchivePreviewResponses[keyof SessionArchivePreviewResponses]
+
+export type SessionArchiveData = {
+  body?: {
+    time?: number
+    force?: boolean
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/archive"
+}
+
+export type SessionArchiveErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionArchiveError = SessionArchiveErrors[keyof SessionArchiveErrors]
+
+export type SessionArchiveResponses = {
+  /**
+   * Archived session
+   */
+  200: Session
+}
+
+export type SessionArchiveResponse = SessionArchiveResponses[keyof SessionArchiveResponses]
 
 export type SessionInitData = {
   body?: {

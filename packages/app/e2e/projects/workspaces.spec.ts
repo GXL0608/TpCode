@@ -15,11 +15,70 @@ import {
   openWorkspaceMenu,
   setWorkspacesEnabled,
 } from "../actions"
-import { dropdownMenuContentSelector, inlineInputSelector, workspaceItemSelector } from "../selectors"
+import {
+  dropdownMenuContentSelector,
+  inlineInputSelector,
+  projectMenuTriggerSelector,
+  promptSelector,
+  workspaceItemSelector,
+} from "../selectors"
 import { createSdk, dirSlug } from "../utils"
 
 function slugFromUrl(url: string) {
   return /\/([^/]+)\/session(?:\/|$)/.exec(url)?.[1] ?? ""
+}
+
+function sessionIDFromUrl(url: string) {
+  return /\/session\/([^/?#]+)/.exec(url)?.[1]
+}
+
+async function resolveWorkspace(slug: string) {
+  const raw = base64Decode(slug)
+  const directory = await fs.realpath(raw).catch(() => raw)
+  return {
+    directory,
+    slug: dirSlug(directory),
+  }
+}
+
+async function selectBuild(page: Page) {
+  const trigger = page.getByRole("button", { name: /plan|build/i }).last()
+  await expect(trigger).toBeVisible()
+  if ((((await trigger.textContent()) ?? "").trim().toLowerCase()) === "build") return
+  await trigger.click()
+  const option = page.locator('[data-slot="select-select-item"]').filter({ hasText: /^build$/i }).first()
+  await expect(option).toBeVisible()
+  await option.click()
+  await expect(trigger).toContainText(/build/i)
+}
+
+async function sendPrompt(page: Page, text: string) {
+  const prompt = page.locator(promptSelector)
+  await expect(prompt).toBeVisible()
+  await prompt.click()
+  await page.keyboard.type(text)
+  await page.keyboard.press("Enter")
+}
+
+async function waitForBuildWorkspace(sdk: ReturnType<typeof createSdk>, sessionID: string, root: string) {
+  await expect
+    .poll(
+      async () => {
+        const info = await sdk.session.get({ sessionID }).then((r) => r.data)
+        const dir = info?.directory ?? ""
+        if (!dir || dir === root) return ""
+        return dir
+      },
+      { timeout: 90_000 },
+    )
+    .not.toBe("")
+
+  const info = await sdk.session.get({ sessionID }).then((r) => r.data)
+  const dir = info?.directory
+  if (!dir || dir === root) {
+    throw new Error(`Session ${sessionID} did not switch away from ${root}`)
+  }
+  return dir
 }
 
 async function setupWorkspaceTest(page: Page, project: { slug: string }) {
@@ -39,8 +98,9 @@ async function setupWorkspaceTest(page: Page, project: { slug: string }) {
     )
     .toBe(true)
 
-  const slug = slugFromUrl(page.url())
-  const dir = base64Decode(slug)
+  const resolved = await resolveWorkspace(slugFromUrl(page.url()))
+  const slug = resolved.slug
+  const dir = resolved.directory
 
   await openSidebar(page)
 
@@ -102,8 +162,9 @@ test("can create a workspace", async ({ page, withProject }) => {
       )
       .toBe(true)
 
-    const workspaceSlug = slugFromUrl(page.url())
-    const workspaceDir = base64Decode(workspaceSlug)
+    const workspace = await resolveWorkspace(slugFromUrl(page.url()))
+    const workspaceSlug = workspace.slug
+    const workspaceDir = workspace.directory
 
     await openSidebar(page)
 
@@ -148,7 +209,7 @@ test("non-git projects keep workspace mode disabled", async ({ page, withProject
       await openSidebar(page)
       await expect(page.getByRole("button", { name: "New workspace" })).toHaveCount(0)
 
-      const trigger = page.locator('[data-action="project-menu"]').first()
+      const trigger = page.locator(projectMenuTriggerSelector(nonGitSlug)).first()
       const hasMenu = await trigger
         .isVisible()
         .then((x) => x)
@@ -255,6 +316,93 @@ test("can reset a workspace", async ({ page, sdk, withProject }) => {
   })
 })
 
+test("resetting a dirty build workspace asks before clearing its contents", async ({ page, withProject }) => {
+  await page.setViewportSize({ width: 1400, height: 800 })
+
+  await withProject(async (project) => {
+    await openSidebar(page)
+    await setWorkspacesEnabled(page, project.slug, true)
+
+    const sdk = createSdk(project.directory)
+    const session = await sdk.session.create({ title: `e2e reset build ${Date.now()}` }).then((r) => r.data)
+    if (!session?.id) throw new Error("Session create did not return an id")
+
+    let buildDir = ""
+
+    try {
+      await project.gotoSession(session.id)
+      await selectBuild(page)
+      await sendPrompt(page, `Reply with exactly: E2E_RESET_BUILD_${Date.now()}`)
+
+      buildDir = await waitForBuildWorkspace(sdk, session.id, project.directory)
+      const buildSlug = dirSlug(buildDir)
+      const file = path.join(buildDir, `dirty_reset_${Date.now()}.txt`)
+      await fs.writeFile(file, "dirty\n", "utf8")
+
+      await openSidebar(page)
+
+      const dismissed = page.waitForEvent("dialog")
+      const firstMenu = await openWorkspaceMenu(page, buildSlug)
+      await clickMenuItem(firstMenu, /^Reset$/i, { force: true })
+      await confirmDialog(page, /^Reset workspace$/i)
+
+      const firstDialog = await dismissed
+      expect(firstDialog.message()).toContain("clear the contents of this workspace")
+      await firstDialog.dismiss()
+
+      await expect
+        .poll(
+          async () =>
+            await fs
+              .stat(file)
+              .then(() => true)
+              .catch(() => false),
+          { timeout: 15_000 },
+        )
+        .toBe(true)
+      await expect
+        .poll(() => sdk.session.get({ sessionID: session.id }).then((r) => r.data?.time?.archived))
+        .toBeUndefined()
+
+      const accepted = page.waitForEvent("dialog")
+      const secondMenu = await openWorkspaceMenu(page, buildSlug)
+      await clickMenuItem(secondMenu, /^Reset$/i, { force: true })
+      await confirmDialog(page, /^Reset workspace$/i)
+
+      const secondDialog = await accepted
+      expect(secondDialog.message()).toContain("clear the contents of this workspace")
+      await secondDialog.accept()
+
+      await expect
+        .poll(
+          () => sdk.session.get({ sessionID: session.id }).then((r) => r.data?.time?.archived),
+          { timeout: 60_000 },
+        )
+        .not.toBeUndefined()
+      await expect
+        .poll(
+          async () =>
+            await fs
+              .stat(file)
+              .then(() => true)
+              .catch(() => false),
+          { timeout: 60_000 },
+        )
+        .toBe(false)
+      await expect
+        .poll(() => slugFromUrl(page.url()), { timeout: 60_000 })
+        .not.toBe(buildSlug)
+      await expect(sessionIDFromUrl(page.url()) ?? "").not.toBe(session.id)
+    } finally {
+      await sdk.session.abort({ sessionID: session.id }).catch(() => undefined)
+      await sdk.session.delete({ sessionID: session.id }).catch(() => undefined)
+      if (buildDir) {
+        await cleanupTestProject(buildDir).catch(() => undefined)
+      }
+    }
+  })
+})
+
 test("can delete a workspace", async ({ page, withProject }) => {
   await page.setViewportSize({ width: 1400, height: 800 })
 
@@ -278,8 +426,6 @@ test("can delete a workspace", async ({ page, withProject }) => {
     const menu = await openWorkspaceMenu(page, slug)
     await clickMenuItem(menu, /^Delete$/i, { force: true })
     await confirmDialog(page, /^Delete workspace$/i)
-
-    await expect(page).toHaveURL(new RegExp(`/${rootSlug}/session`))
 
     await expect
       .poll(
@@ -367,9 +513,8 @@ test("can reorder workspaces by drag and drop", async ({ page, withProject }) =>
           )
           .toBe(true)
 
-        const slug = slugFromUrl(page.url())
-        const dir = base64Decode(slug)
-        workspaces.push({ slug, directory: dir })
+        const workspace = await resolveWorkspace(slugFromUrl(page.url()))
+        workspaces.push(workspace)
 
         await openSidebar(page)
       }

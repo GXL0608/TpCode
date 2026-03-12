@@ -6458,6 +6458,9 @@
                       "public"
                     ]
                   },
+                  "force": {
+                    "type": "boolean"
+                  },
                   "time": {
                     "type": "object",
                     "properties": {
@@ -6610,6 +6613,224 @@
           {
             "lang": "js",
             "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.todo({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/session/{sessionID}/prepare_build": {
+      "post": {
+        "operationId": "session.prepareBuild",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "summary": "Prepare build workspace",
+        "description": "Create or reuse an isolated build workspace for this session and move the session there.",
+        "responses": {
+          "200": {
+            "description": "Prepared session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.prepareBuild({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/session/{sessionID}/archive_preview": {
+      "get": {
+        "operationId": "session.archivePreview",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "summary": "Preview session archive",
+        "description": "Check whether archiving this session will delete a dirty isolated workspace.",
+        "responses": {
+          "200": {
+            "description": "Archive preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "has_workspace": {
+                      "type": "boolean"
+                    },
+                    "dirty": {
+                      "type": "boolean"
+                    },
+                    "directory": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "has_workspace",
+                    "dirty"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.archivePreview({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/session/{sessionID}/archive": {
+      "post": {
+        "operationId": "session.archive",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "summary": "Archive session",
+        "description": "Archive a session and remove its isolated workspace when present.",
+        "responses": {
+          "200": {
+            "description": "Archived session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "time": {
+                    "type": "number"
+                  },
+                  "force": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.archive({\n  ...\n})"
           }
         ]
       }
@@ -15065,6 +15286,58 @@
           "properties"
         ]
       },
+      "Event.worktree.ready": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "worktree.ready"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "branch"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "properties"
+        ]
+      },
+      "Event.worktree.failed": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "worktree.failed"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "properties"
+        ]
+      },
       "PermissionAction": {
         "type": "string",
         "enum": [
@@ -15113,6 +15386,30 @@
           },
           "directory": {
             "type": "string"
+          },
+          "workspaceDirectory": {
+            "type": "string"
+          },
+          "workspaceBranch": {
+            "type": "string"
+          },
+          "workspaceStatus": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ready",
+              "failed",
+              "removed"
+            ]
+          },
+          "workspaceCleanupStatus": {
+            "type": "string",
+            "enum": [
+              "none",
+              "pending",
+              "failed",
+              "deleted"
+            ]
           },
           "parentID": {
             "type": "string",
@@ -15412,58 +15709,6 @@
                 "type": "string"
               }
             }
-          }
-        },
-        "required": [
-          "type",
-          "properties"
-        ]
-      },
-      "Event.worktree.ready": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "const": "worktree.ready"
-          },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "branch": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
-              "branch"
-            ]
-          }
-        },
-        "required": [
-          "type",
-          "properties"
-        ]
-      },
-      "Event.worktree.failed": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "const": "worktree.failed"
-          },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "message"
-            ]
           }
         },
         "required": [
@@ -15798,6 +16043,12 @@
             "$ref": "#/components/schemas/Event.command.executed"
           },
           {
+            "$ref": "#/components/schemas/Event.worktree.ready"
+          },
+          {
+            "$ref": "#/components/schemas/Event.worktree.failed"
+          },
+          {
             "$ref": "#/components/schemas/Event.session.created"
           },
           {
@@ -15814,12 +16065,6 @@
           },
           {
             "$ref": "#/components/schemas/Event.vcs.branch.updated"
-          },
-          {
-            "$ref": "#/components/schemas/Event.worktree.ready"
-          },
-          {
-            "$ref": "#/components/schemas/Event.worktree.failed"
           },
           {
             "$ref": "#/components/schemas/Event.workspace.ready"
@@ -18327,6 +18572,30 @@
           },
           "directory": {
             "type": "string"
+          },
+          "workspaceDirectory": {
+            "type": "string"
+          },
+          "workspaceBranch": {
+            "type": "string"
+          },
+          "workspaceStatus": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ready",
+              "failed",
+              "removed"
+            ]
+          },
+          "workspaceCleanupStatus": {
+            "type": "string",
+            "enum": [
+              "none",
+              "pending",
+              "failed",
+              "deleted"
+            ]
           },
           "parentID": {
             "type": "string",

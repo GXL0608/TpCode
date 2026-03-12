@@ -6,6 +6,7 @@ import { Session } from "../../src/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionSummary } from "../../src/session/summary"
 import { SessionVoiceTable } from "../../src/session/session.sql"
 import { SessionStatus } from "../../src/session/status"
 import { Database, eq } from "../../src/storage/db"
@@ -521,6 +522,107 @@ describe("session.prompt finish reason", () => {
           stream.mockRestore()
           await Session.remove(session.id)
         }
+      },
+    })
+  })
+
+  test("does not leak missing-session rejections when a prompt is deleted mid-stream", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    const errors: unknown[] = []
+    const onError = (error: unknown) => {
+      errors.push(error)
+    }
+    process.on("unhandledRejection", onError)
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "delete-mid-stream" })
+        const stream = spyOn(LLM, "stream").mockImplementation(async () => {
+          return {
+            fullStream: (async function* () {
+              yield { type: "start" }
+              yield { type: "text-start" }
+              await Bun.sleep(100)
+              yield { type: "text-delta", text: "working" }
+              yield { type: "text-end" }
+              yield {
+                type: "finish-step",
+                finishReason: "stop",
+                usage: {
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  totalTokens: 2,
+                },
+              }
+              yield { type: "finish" }
+            })(),
+            text: Promise.resolve("working"),
+            totalUsage: Promise.resolve(undefined),
+            providerMetadata: Promise.resolve(undefined),
+          } as unknown as Awaited<ReturnType<typeof LLM.stream>>
+        })
+
+        try {
+          const prompt = SessionPrompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "hello" }],
+          }).catch(() => undefined)
+
+          await Bun.sleep(20)
+          await Session.remove(session.id)
+          await prompt
+          await Bun.sleep(50)
+        } finally {
+          stream.mockRestore()
+        }
+      },
+    })
+
+    process.off("unhandledRejection", onError)
+    expect(
+      errors.some((error) => (error instanceof Error ? error.message : String(error)).includes("Session not found")),
+    ).toBe(false)
+  })
+
+  test("ignores removed sessions when background summary work runs late", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "summary-delete-race" })
+        const message = await SessionPrompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+
+        await Session.remove(session.id)
+        await expect(SessionSummary.summarize({ sessionID: session.id, messageID: message.info.id })).resolves.toBe(
+          undefined,
+        )
       },
     })
   })

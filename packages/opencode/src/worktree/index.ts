@@ -350,18 +350,24 @@ export namespace Worktree {
       throw new CreateFailedError({ message: errorText(created) || "Failed to create git worktree" })
     }
 
-    await Project.addSandbox(Instance.project.id, info.directory).catch(() => undefined)
+    const directory = await canonical(info.directory)
+    const result = {
+      ...info,
+      directory,
+    }
+
+    await Project.addSandbox(Instance.project.id, directory).catch(() => undefined)
 
     const projectID = Instance.project.id
     const extra = input?.startCommand?.trim()
     setTimeout(() => {
       const start = async () => {
-        const populated = await $`git reset --hard`.quiet().nothrow().cwd(info.directory)
+        const populated = await $`git reset --hard`.quiet().nothrow().cwd(directory)
         if (populated.exitCode !== 0) {
           const message = errorText(populated) || "Failed to populate worktree"
-          log.error("worktree checkout failed", { directory: info.directory, message })
+          log.error("worktree checkout failed", { directory, message })
           GlobalBus.emit("event", {
-            directory: info.directory,
+            directory,
             payload: {
               type: Event.Failed.type,
               properties: {
@@ -373,16 +379,16 @@ export namespace Worktree {
         }
 
         const booted = await Instance.provide({
-          directory: info.directory,
+          directory,
           init: InstanceBootstrap,
           fn: () => undefined,
         })
           .then(() => true)
           .catch((error) => {
             const message = error instanceof Error ? error.message : String(error)
-            log.error("worktree bootstrap failed", { directory: info.directory, message })
+            log.error("worktree bootstrap failed", { directory, message })
             GlobalBus.emit("event", {
-              directory: info.directory,
+              directory,
               payload: {
                 type: Event.Failed.type,
                 properties: {
@@ -395,7 +401,7 @@ export namespace Worktree {
         if (!booted) return
 
         GlobalBus.emit("event", {
-          directory: info.directory,
+          directory,
           payload: {
             type: Event.Ready.type,
             properties: {
@@ -405,15 +411,15 @@ export namespace Worktree {
           },
         })
 
-        await runStartScripts(info.directory, { projectID, extra })
+        await runStartScripts(directory, { projectID, extra })
       }
 
       void start().catch((error) => {
-        log.error("worktree start task failed", { directory: info.directory, error })
+        log.error("worktree start task failed", { directory, error })
       })
     }, 0)
 
-    return info
+    return result
   })
 
   export const remove = fn(RemoveInput, async (input) => {

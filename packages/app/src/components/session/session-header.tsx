@@ -24,6 +24,7 @@ import { useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
 import { decode64 } from "@/utils/base64"
 import { Persist, persisted } from "@/utils/persist"
+import { workspaceLines, workspaceState } from "./session-header-workspace"
 import { StatusPopover } from "../status-popover"
 
 const OPEN_APPS = [
@@ -249,6 +250,23 @@ export function SessionHeader() {
   const showShare = createMemo(() => false)
   const canBrowse = createMemo(() => auth.has("file:browse"))
   const os = createMemo(() => detectOS(platform))
+  const workspace = createMemo(() =>
+    workspaceState({
+      session: currentSession(),
+      directory: projectDirectory(),
+      projectRoot: project()?.worktree,
+    }),
+  )
+  const workspaceInfo = createMemo(() => {
+    const session = currentSession()
+    const directory = projectDirectory()
+    if (!session || !directory) return
+    return workspaceLines({
+      session,
+      directory,
+      projectRoot: project()?.worktree,
+    })
+  })
 
   const [exists, setExists] = createStore<Partial<Record<OpenApp, boolean>>>({
     finder: true,
@@ -398,6 +416,47 @@ export function SessionHeader() {
           <Portal mount={mount()}>
             <div class="flex items-center gap-2">
               <StatusPopover />
+              <Show when={workspace()}>
+                {(state) => (
+                  <Tooltip
+                    placement="bottom"
+                    gutter={8}
+                    value={
+                      <div class="flex min-w-[240px] flex-col gap-1 text-12-regular">
+                        <div class="text-text-invert">{language.t(state().label)}</div>
+                        <div class="text-text-invert-weak break-all">
+                          {language.t("session.header.workspace.currentDirectory")}: {workspaceInfo()?.directory}
+                        </div>
+                        <div class="text-text-invert-weak break-all">
+                          {language.t("session.header.workspace.projectRoot")}: {workspaceInfo()?.projectRoot}
+                        </div>
+                        <Show when={workspaceInfo()?.branch}>
+                          <div class="text-text-invert-weak break-all">
+                            {language.t("session.header.workspace.branch")}: {workspaceInfo()?.branch}
+                          </div>
+                        </Show>
+                        <Show when={workspaceInfo()?.status}>
+                          <div class="text-text-invert-weak break-all">
+                            {language.t("session.header.workspace.status")}: {workspaceInfo()?.status}
+                          </div>
+                        </Show>
+                      </div>
+                    }
+                  >
+                    <div
+                      class="hidden xl:flex h-[24px] items-center rounded-md border px-2 text-12-medium"
+                      classList={{
+                        "border-border-weak-base bg-surface-panel text-text-weak": state().tone === "neutral",
+                        "border-success/30 bg-success/10 text-text-success": state().tone === "success",
+                        "border-warning/30 bg-warning/10 text-text-warning": state().tone === "warning",
+                        "border-critical/30 bg-critical/10 text-text-danger": state().tone === "error",
+                      }}
+                    >
+                      {language.t(state().label)}
+                    </div>
+                  </Tooltip>
+                )}
+              </Show>
               <Show when={projectDirectory()}>
                 <div class="hidden xl:flex items-center">
                   <Show

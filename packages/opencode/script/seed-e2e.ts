@@ -47,4 +47,12 @@ const seed = async () => {
   })
 }
 
-await seed()
+const { Instance } = await import("../src/project/instance")
+
+try {
+  await seed()
+} finally {
+  await Instance.disposeAll()
+}
+
+process.exit(0)
