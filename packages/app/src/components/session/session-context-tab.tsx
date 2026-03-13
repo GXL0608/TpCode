@@ -1,6 +1,7 @@
 import { createMemo, createEffect, on, onCleanup, For, Show } from "solid-js"
 import type { JSX } from "solid-js"
 import { useParams } from "@solidjs/router"
+import { useAccountAuth } from "@/context/account-auth"
 import { useSync } from "@/context/sync"
 import { useLayout } from "@/context/layout"
 import { checksum } from "@opencode-ai/util/encode"
@@ -14,6 +15,7 @@ import { Markdown } from "@opencode-ai/ui/markdown"
 import { ScrollView } from "@opencode-ai/ui/scroll-view"
 import type { Message, Part, UserMessage } from "@opencode-ai/sdk/v2/client"
 import { useLanguage } from "@/context/language"
+import { canViewSessionRawMessages } from "./session-context-tab-access"
 import { getSessionContextMetrics } from "./session-context-metrics"
 import { estimateSessionContextBreakdown, type SessionContextBreakdownKey } from "./session-context-breakdown"
 import { createSessionContextFormatter } from "./session-context-format"
@@ -92,6 +94,7 @@ const emptyUserMessages: UserMessage[] = []
 
 export function SessionContextTab() {
   const params = useParams()
+  const auth = useAccountAuth()
   const sync = useSync()
   const layout = useLayout()
   const language = useLanguage()
@@ -137,6 +140,7 @@ export function SessionContextTab() {
   const metrics = createMemo(() => getSessionContextMetrics(messages(), sync.data.provider.all))
   const ctx = createMemo(() => metrics().context)
   const formatter = createMemo(() => createSessionContextFormatter(language.locale()))
+  const canViewRawMessages = createMemo(() => canViewSessionRawMessages(auth.user()?.roles))
 
   const cost = createMemo(() => {
     return usd().format(metrics().totalCost)
@@ -313,16 +317,18 @@ export function SessionContextTab() {
           )}
         </Show>
 
-        <div class="flex flex-col gap-2">
-          <div class="text-12-regular text-text-weak">{language.t("context.rawMessages.title")}</div>
-          <Accordion multiple>
-            <For each={messages()}>
-              {(message) => (
-                <RawMessage message={message} getParts={getParts} onRendered={restoreScroll} time={formatter().time} />
-              )}
-            </For>
-          </Accordion>
-        </div>
+        <Show when={canViewRawMessages()}>
+          <div class="flex flex-col gap-2">
+            <div class="text-12-regular text-text-weak">{language.t("context.rawMessages.title")}</div>
+            <Accordion multiple>
+              <For each={messages()}>
+                {(message) => (
+                  <RawMessage message={message} getParts={getParts} onRendered={restoreScroll} time={formatter().time} />
+                )}
+              </For>
+            </Accordion>
+          </div>
+        </Show>
       </div>
     </ScrollView>
   )
