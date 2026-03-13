@@ -4,6 +4,16 @@ import { workspaceLines, workspaceState } from "./session-header-workspace"
 const base = {} as const
 
 describe("workspaceState", () => {
+  test("returns nothing before session metadata is loaded", () => {
+    expect(
+      workspaceState({
+        session: undefined,
+        directory: "/repo",
+        projectRoot: "/repo",
+      }),
+    ).toBeUndefined()
+  })
+
   test("shows main workspace when session has no isolated workspace", () => {
     expect(
       workspaceState({

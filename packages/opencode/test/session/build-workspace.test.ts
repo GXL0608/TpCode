@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test"
 import { Instance } from "../../src/project/instance"
 import { Project } from "../../src/project/project"
 import { Session } from "../../src/session"
+import { SessionTable } from "../../src/session/session.sql"
 import { SessionPrompt } from "../../src/session/prompt"
+import { Database, eq } from "../../src/storage/db"
 import { Filesystem } from "../../src/util/filesystem"
 import { Worktree } from "../../src/worktree"
 import { tmpdir } from "../fixture/fixture"
@@ -112,6 +114,72 @@ describe("session build workspace", () => {
       fn: async () => {
         const session = await Session.create({ title: "remove-build" })
         const prepared = await Session.prepareBuild({ sessionID: session.id })
+
+        await Session.remove(session.id)
+
+        expect(await Filesystem.exists(prepared.directory)).toBe(false)
+        expect(await Project.sandboxes(Instance.project.id)).not.toContain(prepared.directory)
+      },
+    })
+  })
+
+  test("archives a pending build workspace and removes its directory", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "archive-pending-build" })
+        const prepared = await Session.prepareBuild({ sessionID: session.id })
+
+        await Database.use((db) =>
+          db
+            .update(SessionTable)
+            .set({
+              workspace_status: "pending",
+            })
+            .where(eq(SessionTable.id, session.id))
+            .run(),
+        )
+
+        const preview = await Session.archivePreview(session.id)
+        expect(preview.has_workspace).toBe(true)
+        expect(preview.directory).toBe(prepared.directory)
+
+        const archived = await Session.archive({
+          sessionID: session.id,
+          time: Date.now(),
+        })
+        const current = await Session.get(session.id)
+
+        expect(archived.time.archived).toBeDefined()
+        expect(archived.workspaceStatus).toBe("removed")
+        expect(archived.workspaceCleanupStatus).toBe("deleted")
+        expect(await Filesystem.exists(prepared.directory)).toBe(false)
+        expect(current.workspaceStatus).toBe("removed")
+        expect(current.workspaceCleanupStatus).toBe("deleted")
+      },
+    })
+  })
+
+  test("deletes a failed build workspace and removes its directory", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "remove-failed-build" })
+        const prepared = await Session.prepareBuild({ sessionID: session.id })
+
+        await Database.use((db) =>
+          db
+            .update(SessionTable)
+            .set({
+              workspace_status: "failed",
+            })
+            .where(eq(SessionTable.id, session.id))
+            .run(),
+        )
 
         await Session.remove(session.id)
 

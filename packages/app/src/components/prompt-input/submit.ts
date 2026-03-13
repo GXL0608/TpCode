@@ -3,12 +3,13 @@ import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate, useParams } from "@solidjs/router"
 import type { Accessor } from "solid-js"
-import { reconcile } from "solid-js/store"
+import { produce, reconcile } from "solid-js/store"
 import type { FileSelection } from "@/context/file"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { useLocal } from "@/context/local"
+import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { type ImageAttachmentPart, type Prompt, type VoiceAttachmentPart, usePrompt } from "@/context/prompt"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
@@ -316,7 +317,30 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     input.onSubmit?.()
 
-    const switchDirectory = (directory: string) => {
+    /** 中文注释：首次 build 切到新的 session worktree 后，立即把目录补进当前项目 sandboxes，并等待会话列表预加载完成，确保左侧工作区展开后立刻能看到 session。 */
+    const registerWorkspace = async (directory: string) => {
+      const project =
+        resolveProjectByDirectory(globalSync.data.project, sessionDirectory) ??
+        resolveProjectByDirectory(globalSync.data.project, projectDirectory)
+      if (!project) return
+      layout.sidebar.setWorkspaces(project.worktree, true)
+      layout.sidebar.setWorkspaceExpanded(directory, true)
+      globalSync.child(directory)
+      await globalSync.project.loadSessions(directory)
+      if (project.worktree === directory) return
+      if ((project.sandboxes ?? []).includes(directory)) return
+      globalSync.set(
+        "project",
+        produce((draft) => {
+          const item = draft.find((entry) => entry.id === project.id)
+          if (!item) return
+          item.sandboxes = [...new Set([...(item.sandboxes ?? []), directory])]
+        }),
+      )
+    }
+
+    const switchDirectory = async (directory: string) => {
+      await registerWorkspace(directory)
       sessionDirectory = directory
       client =
         directory === projectDirectory
@@ -325,7 +349,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
               directory,
               throwOnError: true,
             })
-      globalSync.child(directory)
       layout.handoff.setTabs(base64Encode(directory), sessionID)
       navigate(`/${base64Encode(directory)}/session/${sessionID}`)
     }
@@ -345,7 +368,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       const nextDirectory = prepared?.directory
       if (!nextDirectory) return false
       if (nextDirectory !== sessionDirectory) {
-        switchDirectory(nextDirectory)
+        await switchDirectory(nextDirectory)
       }
       if (isNewSession) input.onNewSessionWorktreeReset?.()
       return true

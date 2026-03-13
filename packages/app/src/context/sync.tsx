@@ -2,7 +2,7 @@ import { batch, createMemo, onCleanup } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { Binary } from "@opencode-ai/util/binary"
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import { archiveWithConfirm } from "@/utils/session-archive"
+import { archiveCleanupFailed, archiveWithConfirm } from "@/utils/session-archive"
 import { useLanguage } from "./language"
 import { useGlobalSync } from "./global-sync"
 import { useGlobalSDK } from "./global-sdk"
@@ -574,7 +574,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 .archivePreview({ sessionID })
                 .then((x) => x.data)
                 .catch(() => undefined),
-            archive: (force) => client.session.archive({ sessionID, time: Date.now(), force }).then(() => undefined),
+            archive: (force) =>
+              client.session.archive({ sessionID, time: Date.now(), force }).then((x) => {
+                if (archiveCleanupFailed(x.data)) throw new Error(language.t("session.archive.cleanup.failed"))
+              }),
             confirm: (message) => globalThis.confirm?.(message) ?? true,
           })
           if (!ok) return

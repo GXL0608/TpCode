@@ -185,13 +185,22 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       })
     }
 
-    const setWorkspaceMode = async (project_id: string, value: boolean) =>
-      patch({
+    /** 中文注释：工作区模式切换先做本地乐观更新，确保侧边栏能立刻反映当前项目的 workspace 视图。 */
+    const setWorkspaceMode = async (project_id: string, value: boolean) => {
+      apply({
+        ...store.data,
         workspace_mode_by_project: {
           ...store.data.workspace_mode_by_project,
           [project_id]: value,
         },
       })
+      return patch({
+        workspace_mode_by_project: {
+          ...store.data.workspace_mode_by_project,
+          [project_id]: value,
+        },
+      })
+    }
 
     const setWorkspaceOrder = async (project_id: string, order: string[]) => {
       const project = projects().find((item) => item.id === project_id)
@@ -204,13 +213,22 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       })
     }
 
-    const setWorkspaceExpanded = async (directory: string, value: boolean) =>
-      patch({
+    /** 中文注释：工作区展开状态先做本地乐观更新，确保新 worktree 加入侧边栏后能立即展开显示 session。 */
+    const setWorkspaceExpanded = async (directory: string, value: boolean) => {
+      apply({
+        ...store.data,
         workspace_expanded_by_directory: {
           ...store.data.workspace_expanded_by_directory,
           [directory]: value,
         },
       })
+      return patch({
+        workspace_expanded_by_directory: {
+          ...store.data.workspace_expanded_by_directory,
+          [directory]: value,
+        },
+      })
+    }
 
     const setWorkspaceAlias = async (project_id: string, branch: string, value?: string) => {
       const current = {

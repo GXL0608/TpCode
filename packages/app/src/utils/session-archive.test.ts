@@ -1,6 +1,13 @@
 import { describe, expect, mock, test } from "bun:test"
 import { dict as en } from "@/i18n/en"
-import { archiveConfirmMessage, archiveDirtyCount, archiveNeedsForce, archiveWithConfirm } from "./session-archive"
+import {
+  archiveCleanupFailed,
+  archiveConfirmMessage,
+  archiveDirtyCount,
+  archiveNeedsForce,
+  archiveSequentially,
+  archiveWithConfirm,
+} from "./session-archive"
 
 const t = (key: keyof typeof en, args?: Record<string, string | number>) => {
   const value = en[key]
@@ -33,6 +40,12 @@ describe("session archive helpers", () => {
         { has_workspace: true, dirty: true },
       ]),
     ).toBe(2)
+  })
+
+  test("detects when workspace cleanup failed after archive", () => {
+    expect(archiveCleanupFailed(undefined)).toBe(false)
+    expect(archiveCleanupFailed({ workspaceCleanupStatus: "deleted" })).toBe(false)
+    expect(archiveCleanupFailed({ workspaceCleanupStatus: "failed" })).toBe(true)
   })
 
   test("archives immediately when no confirmation is needed", async () => {
@@ -75,5 +88,21 @@ describe("session archive helpers", () => {
     expect(result).toBe(true)
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(archive).toHaveBeenCalledWith(true)
+  })
+
+  test("archives workspaces sequentially and stops on the first failure", async () => {
+    const calls: string[] = []
+    const result = await archiveSequentially({
+      items: [{ id: "a" }, { id: "b" }, { id: "c" }],
+      archive: async (item) => {
+        calls.push(item.id)
+        if (item.id === "b") throw new Error("boom")
+      },
+    })
+
+    expect(calls).toEqual(["a", "b"])
+    expect(result.completed.map((item) => item.id)).toEqual(["a"])
+    expect(result.failed?.item.id).toBe("b")
+    expect(result.failed?.error).toBeInstanceOf(Error)
   })
 })

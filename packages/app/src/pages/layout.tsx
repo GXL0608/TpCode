@@ -42,7 +42,14 @@ import { usePermission } from "@/context/permission"
 import { Binary } from "@opencode-ai/util/binary"
 import { playSound, soundSrc } from "@/utils/sound"
 import { createAim } from "@/utils/aim"
-import { archiveConfirmMessage, archiveDirtyCount, archiveNeedsForce, archiveWithConfirm } from "@/utils/session-archive"
+import {
+  archiveCleanupFailed,
+  archiveConfirmMessage,
+  archiveDirtyCount,
+  archiveNeedsForce,
+  archiveSequentially,
+  archiveWithConfirm,
+} from "@/utils/session-archive"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -931,7 +938,9 @@ export default function Layout(props: ParentProps) {
             time: Date.now(),
             force,
           })
-          .then(() => undefined),
+          .then((x) => {
+            if (archiveCleanupFailed(x.data)) throw new Error(language.t("session.archive.cleanup.failed"))
+          }),
       confirm: (message) => globalThis.confirm?.(message) ?? true,
     })
     if (!ok) return
@@ -1315,6 +1324,14 @@ export default function Layout(props: ParentProps) {
     const project = globalSync.data.project.find((item) => item.worktree === root)
     const sandboxes = (project?.sandboxes ?? []).filter((sandbox) => sandbox !== directory)
 
+    if (current !== root && !sandboxes.includes(current)) {
+      navigateWithSidebarReset(`/${base64Encode(root)}/session`)
+    }
+
+    /** 中文注释：工作区删除成功后立即清理本地 child store，避免已删除目录继续触发 reload 错误。 */
+    globalSync.disposeDirectory(directory)
+    void accountProject.setWorkspaceExpanded(directory, false)
+
     globalSync.set(
       "project",
       produce((draft) => {
@@ -1327,10 +1344,6 @@ export default function Layout(props: ParentProps) {
       root,
       workspaceOrderFor(root).filter((workspace) => workspace !== directory),
     )
-
-    if (current !== root && !sandboxes.includes(current)) {
-      navigateWithSidebarReset(`/${base64Encode(root)}/session`)
-    }
   }
 
   const resetWorkspace = async (root: string, directory: string) => {
@@ -1380,39 +1393,44 @@ export default function Layout(props: ParentProps) {
       }
     }
 
-    const archived = await Promise.all(
-      previews.flatMap((item) => {
-        if (!("preview" in item)) return []
-        return [
-          globalSDK.client.session
-            .archive({
-              sessionID: item.session.id,
-              directory: item.session.directory,
-              time: Date.now(),
-              force: archiveNeedsForce(item.preview),
-            })
-            .then(() => ({ ok: true as const }))
-            .catch((error) => ({ ok: false as const, error })),
-        ]
-      }),
-    )
-    const failedArchive = archived.find((item) => !item.ok)
-    if (failedArchive && !failedArchive.ok) {
-      setBusy(directory, false)
-      dismiss()
-      showToast({
-        title: language.t("workspace.reset.failed.title"),
-        description: errorMessage(failedArchive.error, language.t("common.requestFailed")),
-      })
-      return
+    /** 中文注释：在归档会删除该 worktree 前，先切离当前目录并释放终端/实例占用，避免 git worktree remove 因目录仍在使用而失败。 */
+    if (currentDir() === directory) {
+      navigateWithSidebarReset(`/${base64Encode(root)}/session`)
     }
-
     clearWorkspaceTerminals(
       directory,
       sessions.map((s) => s.id),
       platform,
     )
     await globalSDK.client.instance.dispose({ directory }).catch(() => undefined)
+
+    const archivable = previews.flatMap((item) => ("preview" in item ? [item] : []))
+    const archived = await archiveSequentially({
+      items: archivable,
+      archive: async (item) => {
+        const archived = await globalSDK.client.session.archive({
+          sessionID: item.session.id,
+          directory: item.session.directory,
+          time: Date.now(),
+          force: archiveNeedsForce(item.preview),
+        })
+        if (archiveCleanupFailed(archived.data)) {
+          throw new Error(language.t("session.archive.cleanup.failed"))
+        }
+      },
+    })
+    if (archived.failed) {
+      setBusy(directory, false)
+      dismiss()
+      showToast({
+        title: language.t("workspace.reset.failed.title"),
+        description: language.t("workspace.reset.archive.failed.session", {
+          name: archived.failed.item.session.title || archived.failed.item.session.id,
+          message: errorMessage(archived.failed.error, language.t("common.requestFailed")),
+        }),
+      })
+      return
+    }
 
     const result = await globalSDK.client.worktree
       .reset({ directory: root, worktreeResetInput: { directory } })
@@ -1431,9 +1449,7 @@ export default function Layout(props: ParentProps) {
       return
     }
 
-    const removed = new Set(
-      previews.flatMap((item, index) => ("preview" in item && archived[index]?.ok ? [item.session.id] : [])),
-    )
+    const removed = new Set(archived.completed.map((item) => item.session.id))
     if (removed.size > 0) {
       const [, setStore] = globalSync.child(directory)
       setStore(

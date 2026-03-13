@@ -1,4 +1,5 @@
 import { dict as en } from "@/i18n/en"
+import type { Session } from "@opencode-ai/sdk/v2/client"
 
 type Translate = (key: keyof typeof en, args?: Record<string, string | number>) => string
 
@@ -7,7 +8,11 @@ export type ArchivePreview = {
   has_workspace?: boolean
 } | undefined
 
+type ArchiveSession = Pick<Session, "workspaceCleanupStatus">
+
 export const archiveNeedsForce = (preview: ArchivePreview) => !!preview?.has_workspace && !!preview.dirty
+
+export const archiveCleanupFailed = (session?: ArchiveSession) => session?.workspaceCleanupStatus === "failed"
 
 export const archiveDirtyCount = (previews: ArchivePreview[]) => previews.filter(archiveNeedsForce).length
 
@@ -30,4 +35,26 @@ export async function archiveWithConfirm(input: {
   }
   await input.archive(force)
   return true
+}
+
+export async function archiveSequentially<T>(input: {
+  items: T[]
+  archive: (item: T) => Promise<void>
+}) {
+  const completed: T[] = []
+  for (const item of input.items) {
+    try {
+      await input.archive(item)
+      completed.push(item)
+    } catch (error) {
+      return {
+        completed,
+        failed: {
+          item,
+          error,
+        },
+      }
+    }
+  }
+  return { completed }
 }

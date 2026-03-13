@@ -22,7 +22,7 @@ import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
-import { archiveWithConfirm } from "@/utils/session-archive"
+import { archiveCleanupFailed, archiveWithConfirm } from "@/utils/session-archive"
 import { setReasoningManual, type ReasoningState } from "@opencode-ai/util/reasoning-state"
 
 type MessageComment = {
@@ -236,7 +236,10 @@ export function MessageTimeline(props: {
           .archivePreview({ sessionID })
           .then((x) => x.data)
           .catch(() => undefined),
-      archive: (force) => sdk.client.session.archive({ sessionID, time: Date.now(), force }).then(() => undefined),
+      archive: (force) =>
+        sdk.client.session.archive({ sessionID, time: Date.now(), force }).then((x) => {
+          if (archiveCleanupFailed(x.data)) throw new Error(language.t("session.archive.cleanup.failed"))
+        }),
       confirm: (message) => globalThis.confirm?.(message) ?? true,
     }).catch((err) => {
       showToast({

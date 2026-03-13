@@ -25,6 +25,10 @@ const optimisticAdds: Array<{
   message: Message
 }> = []
 const navigations: string[] = []
+const setCalls: Array<{ path: string }> = []
+const workspaceModeCalls: Array<{ directory: string; value: boolean }> = []
+const workspaceExpandedCalls: Array<{ directory: string; value: boolean }> = []
+const workspaceSessionLoads: string[] = []
 
 let selected = "/repo/worktree-a"
 let route: { id?: string } = {}
@@ -41,6 +45,7 @@ let syncRuntimeModelPending:
     }
   | undefined
 let currentAgentName = "agent"
+let projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] as string[] }]
 
 const event = { preventDefault: () => undefined } as unknown as Event
 
@@ -149,6 +154,14 @@ beforeAll(async () => {
       handoff: {
         setTabs: () => undefined,
       },
+      sidebar: {
+        setWorkspaces: (directory: string, value: boolean) => {
+          workspaceModeCalls.push({ directory, value })
+        },
+        setWorkspaceExpanded: (directory: string, value: boolean) => {
+          workspaceExpandedCalls.push({ directory, value })
+        },
+      },
     }),
   }))
 
@@ -181,6 +194,23 @@ beforeAll(async () => {
 
   mock.module("@/context/global-sync", () => ({
     useGlobalSync: () => ({
+      data: {
+        get project() {
+          return projects
+        },
+      },
+      project: {
+        loadSessions: async (directory: string) => {
+          workspaceSessionLoads.push(directory)
+        },
+      },
+      set: (...args: unknown[]) => {
+        if (args[0] !== "project") return
+        setCalls.push({ path: "project" })
+        const next = args[1]
+        if (typeof next !== "function") return
+        projects = next(projects)
+      },
       child: (directory: string) => {
         syncedDirectories.push(directory)
         return [{}, () => undefined]
@@ -226,6 +256,11 @@ beforeEach(() => {
   syncRuntimeModelCalls.length = 0
   syncRuntimeModelPending = undefined
   currentAgentName = "agent"
+  projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] }]
+  setCalls.length = 0
+  workspaceModeCalls.length = 0
+  workspaceExpandedCalls.length = 0
+  workspaceSessionLoads.length = 0
 })
 
 function createSubmit(input?: {
@@ -518,6 +553,13 @@ describe("prompt submit session resolution", () => {
         variant: undefined,
       },
     ])
+    expect(projects[0]?.sandboxes).toContain("/repo/main/prepared/session-route-build")
+    expect(setCalls).toEqual([{ path: "project" }])
+    expect(workspaceModeCalls).toEqual([{ directory: "/repo/main", value: true }])
+    expect(workspaceExpandedCalls).toEqual([
+      { directory: "/repo/main/prepared/session-route-build", value: true },
+    ])
+    expect(workspaceSessionLoads).toEqual(["/repo/main/prepared/session-route-build"])
     expect(navigations).toContain("//repo/main/prepared/session-route-build/session/session-route-build")
   })
 

@@ -335,12 +335,16 @@ export namespace File {
     let cache: Entry = { files: [], dirs: [] }
     let fetching = false
 
+    const missing = (error: unknown) => {
+      if (!(error instanceof Error)) return false
+      return "code" in error ? error.code === "ENOENT" : error.message.includes("No such file or directory")
+    }
+
     const isGlobalHome = Instance.directory === Global.Path.home && Instance.project.id === "global"
 
     const fn = async (result: Entry) => {
       // Disable scanning if in root of file system
       if (Instance.directory === path.parse(Instance.directory).root) return
-      fetching = true
 
       if (isGlobalHome) {
         const dirs = new Set<string>()
@@ -373,7 +377,6 @@ export namespace File {
 
         result.dirs = Array.from(dirs).toSorted()
         cache = result
-        fetching = false
         return
       }
 
@@ -392,14 +395,28 @@ export namespace File {
         }
       }
       cache = result
-      fetching = false
     }
-    fn(cache)
+
+    const run = (result: Entry) => {
+      fetching = true
+      void fn(result)
+        .catch((error) => {
+          if (missing(error)) return
+          log.error("failed to scan files", {
+            directory: Instance.directory,
+            error,
+          })
+        })
+        .finally(() => {
+          fetching = false
+        })
+    }
+    run(cache)
 
     return {
       async files() {
         if (!fetching) {
-          fn({
+          run({
             files: [],
             dirs: [],
           })

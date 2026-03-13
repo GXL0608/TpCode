@@ -2,8 +2,8 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import type { Page } from "@playwright/test"
 import { expect, test } from "../fixtures"
-import { clickMenuItem, openSessionMoreMenu, seedProjects, sessionIDFromUrl } from "../actions"
-import { promptSelector } from "../selectors"
+import { clickMenuItem, openSessionMoreMenu, openSidebar, seedProjects, sessionIDFromUrl } from "../actions"
+import { promptSelector, sessionComposerDockSelector, sessionItemSelector, workspaceItemSelector } from "../selectors"
 import { createSdk, dirSlug, projectSession, sessionPath } from "../utils"
 
 async function waitForWorkspace(input: { sdk: ReturnType<typeof createSdk>; sessionID: string; root: string }) {
@@ -106,10 +106,20 @@ async function openProject(page: Page, directory: string, sessionID?: string) {
     )
   }, auth ?? null)
   await page.goto(sessionPath(directory, sessionID))
-  await expect(page.locator(promptSelector)).toBeVisible()
+  await expect(page.locator(sessionComposerDockSelector)).toBeVisible()
 }
 
 test.describe.configure({ mode: "serial" })
+
+test("build new session page shows the main workspace before the first prompt", async ({ page, withProject }) => {
+  await withProject(async ({ directory }) => {
+    await openProject(page, directory)
+    await selectBuild(page)
+    await expect(page.getByText("Current workspace")).toBeVisible()
+    await expect(page.getByText("Main workspace")).toBeVisible()
+    await expect(page.getByText("The first build message will create an isolated workspace for this session.")).toBeVisible()
+  })
+})
 
 test("build workspace is created lazily on the first submitted prompt", async ({ page, directory }) => {
   test.setTimeout(120_000)
@@ -138,6 +148,9 @@ test("build workspace is created lazily on the first submitted prompt", async ({
 
     await expect.poll(() => sessionIDFromUrl(page.url()) ?? "").toBe(session.id)
     await expect(page).toHaveURL(new RegExp(`/${dirSlug(workspace)}/session/${session.id}(?:[/?#]|$)`))
+    await openSidebar(page)
+    await expect(page.locator(workspaceItemSelector(dirSlug(workspace))).first()).toBeVisible()
+    await expect(page.locator(sessionItemSelector(session.id)).first()).toBeVisible()
   } finally {
     await sdk.session.abort({ sessionID: session.id }).catch(() => undefined)
     await sdk.session.delete({ sessionID: session.id }).catch(() => undefined)
@@ -232,6 +245,9 @@ test("build sessions started from an existing workspace still migrate to a fresh
     await page.goto(sessionPath(workspace.directory))
     await expect(page.locator(promptSelector)).toBeVisible()
     await selectBuild(page)
+    await expect(page.getByText("Current workspace")).toBeVisible()
+    await expect(page.getByText("Shared workspace", { exact: true })).toBeVisible()
+    await expect(page.getByText("You are currently in a shared workspace. The first build message will switch this session to an isolated workspace.")).toBeVisible()
     await sendFirstPrompt(page, `Reply with exactly: E2E_BUILD_SHARED_${Date.now()}`)
 
     await expect.poll(() => sessionIDFromUrl(page.url()) ?? "", { timeout: 30_000 }).not.toBe("")

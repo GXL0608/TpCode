@@ -1,9 +1,10 @@
+import fs from "node:fs/promises"
 import { base64Decode } from "@opencode-ai/util/encode"
 import type { Page } from "@playwright/test"
 import { test, expect } from "../fixtures"
 import { cleanupTestProject, openSidebar, sessionIDFromUrl, setWorkspacesEnabled } from "../actions"
 import { promptSelector, workspaceItemSelector, workspaceNewSessionSelector } from "../selectors"
-import { createSdk, projectSession } from "../utils"
+import { createSdk, dirSlug, projectSession } from "../utils"
 
 function slugFromUrl(url: string) {
   return /\/([^/]+)\/session(?:\/|$)/.exec(url)?.[1] ?? ""
@@ -11,20 +12,8 @@ function slugFromUrl(url: string) {
 
 async function waitWorkspaceReady(page: Page, slug: string) {
   await openSidebar(page)
-  await expect
-    .poll(
-      async () => {
-        const item = page.locator(workspaceItemSelector(slug)).first()
-        try {
-          await item.hover({ timeout: 500 })
-          return true
-        } catch {
-          return false
-        }
-      },
-      { timeout: 60_000 },
-    )
-    .toBe(true)
+  const item = page.locator(workspaceItemSelector(slug)).first()
+  await expect(item).toBeVisible({ timeout: 60_000 })
 }
 
 async function createWorkspace(page: Page, root: string, seen: string[]) {
@@ -47,7 +36,11 @@ async function createWorkspace(page: Page, root: string, seen: string[]) {
   const slug = slugFromUrl(page.url())
   const directory = base64Decode(slug)
   if (!directory) throw new Error(`Failed to decode workspace slug: ${slug}`)
-  return { slug, directory }
+  const resolved = await fs.realpath(directory).catch(() => directory)
+  return {
+    slug: dirSlug(resolved),
+    directory: resolved,
+  }
 }
 
 async function openWorkspaceNewSession(page: Page, slug: string) {
@@ -66,6 +59,8 @@ async function openWorkspaceNewSession(page: Page, slug: string) {
 
 async function createSessionFromWorkspace(page: Page, slug: string, text: string) {
   await openWorkspaceNewSession(page, slug)
+  await expect(page.getByText("Current workspace")).toBeVisible()
+  await expect(page.getByText("Shared workspace")).toBeVisible()
 
   const prompt = page.locator(promptSelector)
   await expect(prompt).toBeVisible()

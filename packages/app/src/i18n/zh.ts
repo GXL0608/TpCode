@@ -550,6 +550,12 @@ export const dict = {
   "session.new.worktree.main": "主分支",
   "session.new.worktree.mainWithBranch": "主分支（{{branch}}）",
   "session.new.worktree.create": "创建新的 worktree",
+  "session.new.workspace.label": "当前工作区",
+  "session.new.workspace.main": "主工作区",
+  "session.new.workspace.shared": "共享工作区",
+  "session.new.workspace.path": "当前目录：",
+  "session.new.workspace.build.main": "首次发送后将为这个会话创建独立工作区。",
+  "session.new.workspace.build.shared": "当前位于共享工作区，首次发送后会切换到独立工作区。",
   "session.new.lastModified": "最后修改",
   "session.header.search.placeholder": "搜索 {{project}}",
   "session.header.searchFiles": "搜索文件",
@@ -824,6 +830,7 @@ export const dict = {
     "归档这个会话会清空这个工作空间的内容。未保存、未推送或未合并的代码改动将会丢失。是否继续？",
   "session.archive.confirm.clear.many":
     "归档这些会话会清空 {{count}} 个工作空间的内容。未保存、未推送或未合并的代码改动将会丢失。是否继续？",
+  "session.archive.cleanup.failed": "会话已归档，但清理其工作空间失败。",
 
   "workspace.new": "新建工作区",
   "workspace.type.local": "本地",
@@ -833,6 +840,7 @@ export const dict = {
   "workspace.resetting.title": "正在重置工作区",
   "workspace.resetting.description": "这可能需要一点时间。",
   "workspace.reset.failed.title": "重置工作区失败",
+  "workspace.reset.archive.failed.session": '归档会话 "{{name}}" 失败：{{message}}',
   "workspace.reset.archive.failed.title": "工作区已重置，但仍需处理",
   "workspace.reset.archive.failed.description": "工作区已重置，但有 {{count}} 个会话归档失败。请先处理这些会话后再继续。",
   "workspace.reset.success.title": "工作区已重置",

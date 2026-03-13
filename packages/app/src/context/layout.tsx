@@ -9,6 +9,7 @@ import { usePlatform } from "./platform"
 import { Project } from "@opencode-ai/sdk/v2"
 import { Persist, persisted, removePersisted } from "@/utils/persist"
 import { same } from "@/utils/same"
+import { workspaceModeEnabled } from "@/pages/layout/helpers"
 import { createScrollPersistence, type SessionScroll } from "./layout-scroll"
 import { resolveProjectByDirectory } from "./project-resolver"
 
@@ -420,7 +421,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           return () => {
             const project = resolveProjectByDirectory(globalSync.data.project, directory)
             if (!project?.id) return false
-            return accountProject.data().workspace_mode_by_project[project.id] ?? false
+            return workspaceModeEnabled(accountProject.data().workspace_mode_by_project[project.id], project.vcs)
           }
         },
         setWorkspaces(directory: string, value: boolean) {
@@ -428,10 +429,14 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           if (!project?.id) return
           void accountProject.setWorkspaceMode(project.id, value)
         },
+        /** 中文注释：对外暴露工作区展开控制，便于 build 首次切换到新 worktree 时立即展开。 */
+        setWorkspaceExpanded(directory: string, value: boolean) {
+          void accountProject.setWorkspaceExpanded(directory, value)
+        },
         toggleWorkspaces(directory: string) {
           const project = resolveProjectByDirectory(globalSync.data.project, directory)
           if (!project?.id) return
-          const current = accountProject.data().workspace_mode_by_project[project.id] ?? false
+          const current = workspaceModeEnabled(accountProject.data().workspace_mode_by_project[project.id], project.vcs)
           void accountProject.setWorkspaceMode(project.id, !current)
         },
       },

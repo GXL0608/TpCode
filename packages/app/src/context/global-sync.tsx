@@ -535,6 +535,10 @@ function createGlobalSync() {
       return globalStore.error
     },
     child: children.child,
+    /** 中文注释：删除工作区后主动清理本地 child store，避免已删除目录继续 reload。 */
+    disposeDirectory(directory: string) {
+      return children.disposeDirectory(directory)
+    },
     bootstrap,
     loadProvider,
     updateConfig,

@@ -1,6 +1,6 @@
 import { test as base, expect, type Page } from "@playwright/test"
 import { cleanupTestProject, createTestProject, seedProjects } from "./actions"
-import { promptSelector } from "./selectors"
+import { sessionComposerDockSelector } from "./selectors"
 import { accountSession, createSdk, dirSlug, getWorktree, projectSession, sessionPath } from "./utils"
 
 export const settingsKey = "settings.v3"
@@ -46,7 +46,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
     const gotoSession = async (sessionID?: string) => {
       await page.goto(sessionPath(directory, sessionID))
-      await expect(page.locator(promptSelector)).toBeVisible()
+      await expect(page.locator(sessionComposerDockSelector)).toBeVisible()
     }
     await use(gotoSession)
   },
@@ -58,7 +58,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
       const gotoSession = async (sessionID?: string) => {
         await page.goto(sessionPath(directory, sessionID))
-        await expect(page.locator(promptSelector)).toBeVisible()
+        await expect(page.locator(sessionComposerDockSelector)).toBeVisible()
       }
 
       try {

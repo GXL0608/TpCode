@@ -39,6 +39,21 @@ function flag(key: string, fallback = true) {
   return fallback
 }
 
+/** 中文注释：目录已被删除或对应资源不存在时，不再提示误导性的 reload 失败 toast。 */
+function missingDirectory(err: unknown) {
+  const data =
+    err && typeof err === "object" && "data" in err
+      ? (err as { data?: { message?: unknown } }).data
+      : undefined
+  const message: string =
+    err instanceof Error
+      ? err.message
+      : typeof data?.message === "string"
+        ? data.message
+        : ""
+  return message.includes("No such file or directory") || message.includes("NotFoundError")
+}
+
 export async function bootstrapGlobal(input: {
   globalSDK: OpencodeClient
   connectErrorTitle: string
@@ -170,6 +185,10 @@ export async function bootstrapDirectory(input: {
     await Promise.all(Object.values(blockingRequests).map((p) => p()))
   } catch (err) {
     console.error("Failed to bootstrap instance", err)
+    if (missingDirectory(err)) {
+      input.setStore("status", "partial")
+      return
+    }
     const project = getFilename(input.directory)
     showToast({
       variant: "error",

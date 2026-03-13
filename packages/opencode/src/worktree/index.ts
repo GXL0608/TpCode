@@ -5,7 +5,6 @@ import z from "zod"
 import { NamedError } from "@opencode-ai/util/error"
 import { Global } from "../global"
 import { Instance } from "../project/instance"
-import { InstanceBootstrap } from "../project/bootstrap"
 import { Project } from "../project/project"
 import { Database, eq } from "../storage/db"
 import { ProjectTable } from "../project/project.sql"
@@ -220,6 +219,10 @@ export namespace Worktree {
     return [outputText(result.stderr), outputText(result.stdout)].filter(Boolean).join("\n")
   }
 
+  function lock(message: string) {
+    return message.includes("index.lock") && message.includes("File exists")
+  }
+
   function failed(result: { stdout?: Uint8Array; stderr?: Uint8Array }) {
     return [outputText(result.stderr), outputText(result.stdout)].filter(Boolean).flatMap((chunk) =>
       chunk
@@ -295,6 +298,7 @@ export namespace Worktree {
   async function runStartScript(directory: string, cmd: string, kind: StartKind) {
     const text = cmd.trim()
     if (!text) return true
+    if (!(await exists(directory))) return false
 
     const ran = await runStartCommand(directory, text)
     if (ran.exitCode === 0) return true
@@ -305,6 +309,41 @@ export namespace Worktree {
       message: errorText(ran),
     })
     return false
+  }
+
+  async function populate(directory: string) {
+    let message = ""
+    for (const _ of Array.from({ length: 20 })) {
+      if (!(await exists(directory))) {
+        return {
+          ok: false as const,
+          missing: true as const,
+          message: "",
+        }
+      }
+      const populated = await $`git reset --hard`.quiet().nothrow().cwd(directory)
+      if (populated.exitCode === 0) {
+        return {
+          ok: true as const,
+          missing: false as const,
+          message: "",
+        }
+      }
+      message = errorText(populated) || "Failed to populate worktree"
+      if (!lock(message)) {
+        return {
+          ok: false as const,
+          missing: false as const,
+          message,
+        }
+      }
+      await Bun.sleep(250)
+    }
+    return {
+      ok: false as const,
+      missing: false as const,
+      message: message || "Failed to populate worktree",
+    }
   }
 
   async function runStartScripts(directory: string, input: { projectID: string; extra?: string }) {
@@ -356,68 +395,29 @@ export namespace Worktree {
       directory,
     }
 
+    const populated = await populate(directory)
+    if (!populated.ok) {
+      await remove({ directory }).catch(() => undefined)
+      throw new CreateFailedError({
+        message: populated.message || "Failed to populate git worktree",
+      })
+    }
+
     await Project.addSandbox(Instance.project.id, directory).catch(() => undefined)
 
     const projectID = Instance.project.id
     const extra = input?.startCommand?.trim()
-    setTimeout(() => {
-      const start = async () => {
-        const populated = await $`git reset --hard`.quiet().nothrow().cwd(directory)
-        if (populated.exitCode !== 0) {
-          const message = errorText(populated) || "Failed to populate worktree"
-          log.error("worktree checkout failed", { directory, message })
-          GlobalBus.emit("event", {
-            directory,
-            payload: {
-              type: Event.Failed.type,
-              properties: {
-                message,
-              },
-            },
-          })
-          return
-        }
-
-        const booted = await Instance.provide({
-          directory,
-          init: InstanceBootstrap,
-          fn: () => undefined,
-        })
-          .then(() => true)
-          .catch((error) => {
-            const message = error instanceof Error ? error.message : String(error)
-            log.error("worktree bootstrap failed", { directory, message })
-            GlobalBus.emit("event", {
-              directory,
-              payload: {
-                type: Event.Failed.type,
-                properties: {
-                  message,
-                },
-              },
-            })
-            return false
-          })
-        if (!booted) return
-
-        GlobalBus.emit("event", {
-          directory,
-          payload: {
-            type: Event.Ready.type,
-            properties: {
-              name: info.name,
-              branch: info.branch,
-            },
-          },
-        })
-
-        await runStartScripts(directory, { projectID, extra })
-      }
-
-      void start().catch((error) => {
-        log.error("worktree start task failed", { directory, error })
-      })
-    }, 0)
+    GlobalBus.emit("event", {
+      directory,
+      payload: {
+        type: Event.Ready.type,
+        properties: {
+          name: info.name,
+          branch: info.branch,
+        },
+      },
+    })
+    queueStartScripts(directory, { projectID, extra })
 
     return result
   })
@@ -428,6 +428,10 @@ export namespace Worktree {
     }
 
     const directory = await canonical(input.directory)
+    await Instance.provide({
+      directory,
+      fn: () => Instance.dispose(),
+    }).catch(() => undefined)
     const locate = async (stdout: Uint8Array | undefined) => {
       const lines = outputText(stdout)
         .split("\n")
@@ -616,19 +620,22 @@ export namespace Worktree {
       throw new ResetFailedError({ message: errorText(clean) || "Failed to clean worktree" })
     }
 
-    const update = await $`git submodule update --init --recursive --force`.quiet().nothrow().cwd(worktreePath)
-    if (update.exitCode !== 0) {
-      throw new ResetFailedError({ message: errorText(update) || "Failed to update submodules" })
-    }
+    const submodules = await $`git submodule status --recursive`.quiet().nothrow().cwd(worktreePath)
+    if (submodules.exitCode === 0 && outputText(submodules.stdout)) {
+      const update = await $`git submodule update --init --recursive --force`.quiet().nothrow().cwd(worktreePath)
+      if (update.exitCode !== 0) {
+        throw new ResetFailedError({ message: errorText(update) || "Failed to update submodules" })
+      }
 
-    const subReset = await $`git submodule foreach --recursive git reset --hard`.quiet().nothrow().cwd(worktreePath)
-    if (subReset.exitCode !== 0) {
-      throw new ResetFailedError({ message: errorText(subReset) || "Failed to reset submodules" })
-    }
+      const subReset = await $`git submodule foreach --recursive git reset --hard`.quiet().nothrow().cwd(worktreePath)
+      if (subReset.exitCode !== 0) {
+        throw new ResetFailedError({ message: errorText(subReset) || "Failed to reset submodules" })
+      }
 
-    const subClean = await $`git submodule foreach --recursive git clean -fdx`.quiet().nothrow().cwd(worktreePath)
-    if (subClean.exitCode !== 0) {
-      throw new ResetFailedError({ message: errorText(subClean) || "Failed to clean submodules" })
+      const subClean = await $`git submodule foreach --recursive git clean -fdx`.quiet().nothrow().cwd(worktreePath)
+      if (subClean.exitCode !== 0) {
+        throw new ResetFailedError({ message: errorText(subClean) || "Failed to clean submodules" })
+      }
     }
 
     const status = await $`git status --porcelain=v1`.quiet().nothrow().cwd(worktreePath)

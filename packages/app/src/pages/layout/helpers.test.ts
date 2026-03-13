@@ -8,6 +8,7 @@ import {
   hasProjectPermissions,
   latestRootSession,
   syncWorkspaceOrder,
+  workspaceModeEnabled,
   workspaceKey,
 } from "./helpers"
 
@@ -180,6 +181,14 @@ describe("layout workspace helpers", () => {
   test("formats fallback project display name", () => {
     expect(displayName({ worktree: "/tmp/app" })).toBe("app")
     expect(displayName({ worktree: "/tmp/app", name: "My App" })).toBe("My App")
+  })
+
+  test("enables workspaces by default for git projects only when not explicitly configured", () => {
+    expect(workspaceModeEnabled(undefined, "git")).toBe(true)
+    expect(workspaceModeEnabled(false, "git")).toBe(false)
+    expect(workspaceModeEnabled(true, "git")).toBe(true)
+    expect(workspaceModeEnabled(undefined, "none")).toBe(false)
+    expect(workspaceModeEnabled(undefined, undefined)).toBe(false)
   })
 
   test("extracts api error message and fallback", () => {

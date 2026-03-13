@@ -74,6 +74,12 @@ export const errorMessage = (err: unknown, fallback: string) => {
   return fallback
 }
 
+/** 中文注释：Git 项目在没有用户显式配置时默认开启工作区模式，非 Git 项目默认关闭。 */
+export const workspaceModeEnabled = (value: boolean | undefined, vcs?: string) => {
+  if (vcs !== "git") return false
+  return value ?? true
+}
+
 export const syncWorkspaceOrder = (local: string, dirs: string[], existing?: string[]) => {
   if (!existing) return dirs
   const keep = existing.filter((d) => d !== local && dirs.includes(d))

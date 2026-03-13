@@ -15,7 +15,6 @@ import type { SQL } from "../storage/db"
 import { SessionTable, MessageTable, PartTable } from "./session.sql"
 import { ProjectTable } from "../project/project.sql"
 import { Project } from "../project/project"
-import { InstanceBootstrap } from "../project/bootstrap"
 import { Storage } from "@/storage/storage"
 import { Log } from "../util/log"
 import { MessageV2 } from "./message-v2"
@@ -115,6 +114,10 @@ export namespace Session {
     return true
   }
 
+  function workspaceDirectory(row: SessionRow) {
+    return row.workspace_directory ?? undefined
+  }
+
   async function projectRow(projectID: string) {
     const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get())
     if (!row) throw new NotFoundError({ message: `Project not found: ${projectID}` })
@@ -128,7 +131,9 @@ export namespace Session {
   }
 
   async function removeWorkspace(input: { projectID: string; directory: string }) {
-    await Worktree.remove({ directory: input.directory })
+    await Worktree.remove({ directory: input.directory }).catch(async (error) => {
+      if (await Filesystem.exists(input.directory)) throw error
+    })
     await Project.removeSandbox(input.projectID, input.directory)
   }
 
@@ -754,29 +759,24 @@ export namespace Session {
       using _ = await Lock.write(`session-build:${input.sessionID}`)
       const row = await assertWritable(input.sessionID)
       const project = await projectRow(row.project_id)
+      const status = WorkspaceStatus.safeParse(row.workspace_status).data
+      const cleanup = WorkspaceCleanupStatus.safeParse(row.workspace_cleanup_status).data ?? "none"
 
       if (project.vcs !== "git") return fromRow(row)
-      if (workspaceReady(row) && row.workspace_directory && (await Filesystem.isDir(row.workspace_directory))) {
+      if (workspaceDirectory(row) && status !== "failed" && status !== "removed" && (await Filesystem.isDir(row.workspace_directory))) {
         if (row.directory === row.workspace_directory) return fromRow(row)
         return setWorkspaceMeta({
           sessionID: input.sessionID,
           workspaceDirectory: row.workspace_directory,
           activeDirectory: row.workspace_directory,
           branch: row.workspace_branch,
-          status: "ready",
-          cleanup: WorkspaceCleanupStatus.safeParse(row.workspace_cleanup_status).data ?? "none",
+          status: status ?? "ready",
+          cleanup,
         })
       }
 
       const created = await Worktree.create({
         name: [row.slug, row.id].join("-"),
-      })
-      await setWorkspaceMeta({
-        sessionID: input.sessionID,
-        workspaceDirectory: created.directory,
-        branch: created.branch,
-        status: "pending",
-        cleanup: "none",
       })
 
       const start = Date.now()
@@ -786,33 +786,6 @@ export namespace Session {
           if (status.exitCode === 0) break
         }
         await Bun.sleep(250)
-      }
-
-      try {
-        await Instance.provide({
-          directory: created.directory,
-          init: InstanceBootstrap,
-          fn: () => true,
-        })
-      } catch (error) {
-        await removeWorkspace({
-          projectID: row.project_id,
-          directory: created.directory,
-        }).catch((cleanupError) => {
-          log.error("prepare build cleanup failed", {
-            sessionID: input.sessionID,
-            directory: created.directory,
-            error: cleanupError,
-          })
-        })
-        await setWorkspaceMeta({
-          sessionID: input.sessionID,
-          workspaceDirectory: created.directory,
-          branch: created.branch,
-          status: "failed",
-          cleanup: "none",
-        })
-        throw error
       }
 
       return setWorkspaceMeta({
@@ -828,24 +801,25 @@ export namespace Session {
 
   export const archivePreview = fn(Identifier.schema("session"), async (sessionID) => {
     const row = await assertWritable(sessionID)
-    if (!workspaceReady(row) || !row.workspace_directory) {
+    const directory = workspaceDirectory(row)
+    if (!directory) {
       return {
         has_workspace: false,
         dirty: false,
       } satisfies BuildWorkspacePreview
     }
-    const exists = await Filesystem.isDir(row.workspace_directory)
+    const exists = await Filesystem.isDir(directory)
     if (!exists) {
       return {
         has_workspace: true,
         dirty: false,
-        directory: row.workspace_directory,
+        directory,
       } satisfies BuildWorkspacePreview
     }
     return {
       has_workspace: true,
-      dirty: await dirty(row.workspace_directory),
-      directory: row.workspace_directory,
+      dirty: await dirty(directory),
+      directory,
     } satisfies BuildWorkspacePreview
   })
 
@@ -870,7 +844,8 @@ export namespace Session {
         time: input.time,
       })
 
-      if (!preview.has_workspace || !row.workspace_directory) return session
+      const directory = workspaceDirectory(row)
+      if (!preview.has_workspace || !directory) return session
 
       await Database.use((db) =>
         db
@@ -886,7 +861,7 @@ export namespace Session {
       try {
         await removeWorkspace({
           projectID: row.project_id,
-          directory: row.workspace_directory,
+          directory,
         })
         await Database.use((db) =>
           db
@@ -912,12 +887,12 @@ export namespace Session {
         )
         log.error("archive cleanup failed", {
           sessionID: input.sessionID,
-          directory: row.workspace_directory,
+          directory,
           error,
         })
       }
 
-      return session
+      return await get(input.sessionID)
     },
   )
 

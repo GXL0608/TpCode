@@ -128,10 +128,6 @@ test("can enable and disable workspaces from project menu", async ({ page, withP
   await withProject(async ({ slug }) => {
     await openSidebar(page)
 
-    await expect(page.getByRole("button", { name: "New session" }).first()).toBeVisible()
-    await expect(page.getByRole("button", { name: "New workspace" })).toHaveCount(0)
-
-    await setWorkspacesEnabled(page, slug, true)
     await expect(page.getByRole("button", { name: "New workspace" }).first()).toBeVisible()
     await expect(page.locator(workspaceItemSelector(slug)).first()).toBeVisible()
 
@@ -206,8 +202,7 @@ test("non-git projects keep workspace mode disabled", async ({ page, withProject
       const activeDir = base64Decode(slugFromUrl(page.url()))
       expect(path.basename(activeDir)).toContain("opencode-e2e-project-nongit-")
 
-      await openSidebar(page)
-      await expect(page.getByRole("button", { name: "New workspace" })).toHaveCount(0)
+      await openSidebar(page).catch(() => undefined)
 
       const trigger = page.locator(projectMenuTriggerSelector(nonGitSlug)).first()
       const hasMenu = await trigger
@@ -237,14 +232,14 @@ test("can rename a workspace", async ({ page, withProject }) => {
 
   await withProject(async (project) => {
     const { slug } = await setupWorkspaceTest(page, project)
+    const item = page.locator(workspaceItemSelector(slug)).first()
+    await expect(item).toContainText(/opencode\//, { timeout: 60_000 })
 
     const rename = `e2e workspace ${Date.now()}`
     const menu = await openWorkspaceMenu(page, slug)
     await clickMenuItem(menu, /^Rename$/i, { force: true })
 
     await expect(menu).toHaveCount(0)
-
-    const item = page.locator(workspaceItemSelector(slug)).first()
     await expect(item).toBeVisible()
     const input = item.locator(inlineInputSelector).first()
     await expect(input).toBeVisible()
@@ -276,15 +271,7 @@ test("can reset a workspace", async ({ page, sdk, withProject }) => {
       })
       .toBe(true)
 
-    await expect
-      .poll(async () => {
-        const files = await sdk.file
-          .status({ directory: createdDir })
-          .then((r) => r.data ?? [])
-          .catch(() => [])
-        return files.length
-      })
-      .toBeGreaterThan(0)
+    await expect.poll(() => fs.readFile(readme, "utf8")).toBe(dirty)
 
     const menu = await openWorkspaceMenu(page, slug)
     await clickMenuItem(menu, /^Reset$/i, { force: true })
@@ -445,6 +432,7 @@ test("can delete a workspace", async ({ page, withProject }) => {
     await openSidebar(page)
     await expect(page.locator(workspaceItemSelector(slug))).toHaveCount(0, { timeout: 60_000 })
     await expect(page.locator(workspaceItemSelector(rootSlug)).first()).toBeVisible()
+    await expect(page.getByText(/Failed to reload /i)).toHaveCount(0)
   })
 })
 

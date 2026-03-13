@@ -573,6 +573,13 @@ export const dict = {
   "session.new.worktree.main": "Main branch",
   "session.new.worktree.mainWithBranch": "Main branch ({{branch}})",
   "session.new.worktree.create": "Create new worktree",
+  "session.new.workspace.label": "Current workspace",
+  "session.new.workspace.main": "Main workspace",
+  "session.new.workspace.shared": "Shared workspace",
+  "session.new.workspace.path": "Current directory:",
+  "session.new.workspace.build.main": "The first build message will create an isolated workspace for this session.",
+  "session.new.workspace.build.shared":
+    "You are currently in a shared workspace. The first build message will switch this session to an isolated workspace.",
   "session.new.lastModified": "Last modified",
 
   "session.header.search.placeholder": "Search {{project}}",
@@ -863,6 +870,7 @@ export const dict = {
     "Archiving this session will clear the contents of this workspace. Unsaved, unpushed, or unmerged code changes will be lost. Continue?",
   "session.archive.confirm.clear.many":
     "Archiving these sessions will clear the contents of {{count}} workspaces. Unsaved, unpushed, or unmerged code changes will be lost. Continue?",
+  "session.archive.cleanup.failed": "Session was archived, but clearing its workspace failed.",
 
   "workspace.new": "New workspace",
   "workspace.type.local": "local",
@@ -872,6 +880,7 @@ export const dict = {
   "workspace.resetting.title": "Resetting workspace",
   "workspace.resetting.description": "This may take a minute.",
   "workspace.reset.failed.title": "Failed to reset workspace",
+  "workspace.reset.archive.failed.session": 'Failed to archive session "{{name}}": {{message}}',
   "workspace.reset.archive.failed.title": "Workspace reset needs attention",
   "workspace.reset.archive.failed.description":
     "Workspace reset finished, but {{count}} sessions could not be archived. Review those sessions before continuing.",
