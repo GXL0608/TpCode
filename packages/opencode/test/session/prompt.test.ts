@@ -801,7 +801,15 @@ describe("session.prompt finish reason", () => {
 })
 
 describe("session.prompt build confidentiality", () => {
-  test("appends the centralized confidentiality prompt for controlled build sessions", async () => {
+  test("describes disclosure bans in abstract protected-material terms", () => {
+    expect(BUILD_CONFIDENTIALITY).toContain("protected project material")
+    expect(BUILD_CONFIDENTIALITY).toContain("protected operating context")
+    expect(BUILD_CONFIDENTIALITY).toContain("sensitive information")
+    expect(BUILD_CONFIDENTIALITY).toContain("recoverable form")
+    expect(BUILD_CONFIDENTIALITY).toContain("disclosure rather than high-level assistance")
+  })
+
+  test("appends the centralized confidentiality prompt once for controlled build sessions", async () => {
     await using tmp = await tmpdir({
       git: true,
       init: async (dir) => {
@@ -830,9 +838,9 @@ describe("session.prompt build confidentiality", () => {
         expect(system).toContain(instructions)
         expect(system).toContain("Custom system line")
         expect(system).toContain(BUILD_CONFIDENTIALITY.trim())
-        expect(system.indexOf(instructions)).toBeGreaterThan(system.indexOf("Working directory:"))
-        expect(system.indexOf("Custom system line")).toBeGreaterThan(system.indexOf(instructions))
         expect(system.indexOf(BUILD_CONFIDENTIALITY.trim())).toBeGreaterThan(system.indexOf("Custom system line"))
+        expect(system.indexOf("Custom system line")).toBeGreaterThan(system.indexOf(instructions))
+        expect(system.indexOf(instructions)).toBeGreaterThan(system.indexOf("Working directory:"))
         expect(system.trimEnd().endsWith(BUILD_CONFIDENTIALITY.trim())).toBe(true)
       },
     })
@@ -944,7 +952,8 @@ describe("session.prompt build confidentiality", () => {
       },
     })
 
-    expect(captured.user.system ?? "").toContain(BUILD_CONFIDENTIALITY.trim())
+    expect(captured.user.system).toBeUndefined()
+    expect(captured.system.join("\n\n")).toContain(BUILD_CONFIDENTIALITY.trim())
     expect(captured.system.at(-1)).toContain("You MUST use the StructuredOutput tool")
   })
 })

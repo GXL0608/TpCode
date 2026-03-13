@@ -72,18 +72,21 @@ export namespace SessionPrompt {
 
   /** 中文注释：从已持久化的系统提示词中提取用户自定义部分，避免循环时重复拼接。 */
   function extractCustomSystem(input: { base: string; guard?: string; userSystem?: string }) {
-    const system = input.userSystem?.trim()
+    let system = input.userSystem?.trim()
     if (!system) return
+    if (input.guard && system.startsWith(input.guard)) {
+      system = system.slice(input.guard.length).trim()
+    }
+    if (input.guard && system.endsWith(input.guard)) {
+      system = system.slice(0, -input.guard.length).trim()
+    }
     if (!system.startsWith(input.base)) return system
 
-    let rest = system.slice(input.base.length).trim()
-    if (input.guard && rest.endsWith(input.guard)) {
-      rest = rest.slice(0, -input.guard.length).trim()
-    }
+    const rest = system.slice(input.base.length).trim()
     return rest || undefined
   }
 
-  /** 中文注释：集中装配会话系统提示词，并在受控 build 场景末尾追加保密 guard。 */
+  /** 中文注释：集中装配会话系统提示词，并在受控 build 场景末尾追加单份保密 guard。 */
   export async function buildSystem(input: {
     agent: string
     model: Provider.Model
@@ -101,9 +104,10 @@ export namespace SessionPrompt {
       guard,
       userSystem: input.userSystem,
     })
-    if (custom) system.push(custom)
-    if (guard) system.push(guard)
-    return system.filter((item) => item.trim().length > 0)
+    const next = [...system]
+    if (custom) next.push(custom)
+    if (guard) next.push(guard)
+    return next.filter((item) => item.trim().length > 0)
   }
 
   async function withBuild<T>(
@@ -1005,8 +1009,9 @@ export namespace SessionPrompt {
               agent: agent.name,
             },
             async () => {
+              const user = { ...runtimeUser, system: undefined }
               return processor.process({
-                user: runtimeUser,
+                user,
                 agent,
                 abort,
                 sessionID,
