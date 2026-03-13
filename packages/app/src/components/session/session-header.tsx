@@ -246,9 +246,18 @@ export function SessionHeader() {
   })
   const hotkey = createMemo(() => command.keybind("file.open"))
 
+  const sessionKey = createMemo(() => `${params.dir}${params.id ? "/" + params.id : ""}`)
+  const view = createMemo(() => layout.view(sessionKey))
   const currentSession = createMemo(() => sync.data.session.find((s) => s.id === params.id))
   const showShare = createMemo(() => false)
   const canBrowse = createMemo(() => auth.has("file:browse"))
+  const hasReview = createMemo(() => {
+    const id = params.id
+    if (!id) return false
+    const session = sync.session.get(id)
+    const diffs = sync.data.session_diff[id] ?? []
+    return Math.max(session?.summary?.files ?? 0, diffs.length) > 0
+  })
   const os = createMemo(() => detectOS(platform))
   const workspace = createMemo(() =>
     workspaceState({
@@ -323,6 +332,22 @@ export function SessionHeader() {
   const canOpen = createMemo(() => platform.platform === "desktop" && !!platform.openPath && server.isLocal())
   const current = createMemo(() => options().find((o) => o.id === prefs.app) ?? options()[0])
   const opening = createMemo(() => openRequest.app !== undefined)
+
+  const toggleFileTreePanel = () => {
+    if (!canBrowse()) return
+    view().reviewPanel.close()
+    layout.fileTree.toggle()
+  }
+
+  const toggleReviewPanel = () => {
+    if (!hasReview()) return
+    layout.fileTree.close()
+    view().reviewPanel.toggle()
+  }
+
+  const toggleTerminal = () => {
+    view().terminal.toggle()
+  }
 
   createEffect(() => {
     const value = prefs.app
@@ -416,6 +441,31 @@ export function SessionHeader() {
           <Portal mount={mount()}>
             <div class="flex items-center gap-2">
               <StatusPopover />
+              <div class="xl:hidden flex items-center gap-1">
+                <Show when={canBrowse()}>
+                  <Tooltip placement="bottom" gutter={8} value={language.t("session.files.all")}>
+                    <IconButton
+                      icon="dot-grid"
+                      variant="ghost"
+                      size="small"
+                      onClick={toggleFileTreePanel}
+                      aria-label={language.t("session.files.all")}
+                    />
+                  </Tooltip>
+                </Show>
+                <Show when={hasReview()}>
+                  <Tooltip placement="bottom" gutter={8} value={language.t("session.tab.review")}>
+                    <Button size="small" variant="ghost" onClick={toggleReviewPanel}>
+                      {language.t("session.tab.review")}
+                    </Button>
+                  </Tooltip>
+                </Show>
+                <Tooltip placement="bottom" gutter={8} value={language.t("terminal.title")}>
+                  <Button size="small" variant="ghost" onClick={toggleTerminal}>
+                    {language.t("terminal.title")}
+                  </Button>
+                </Tooltip>
+              </div>
               <Show when={workspace()}>
                 {(state) => (
                   <Tooltip

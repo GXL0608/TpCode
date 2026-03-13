@@ -49,10 +49,15 @@ export function SessionSidePanel(props: {
   const view = createMemo(() => layout.view(sessionKey))
   const canBrowse = createMemo(() => auth.has("file:browse"))
 
-  const reviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
+  const reviewOpen = createMemo(() => view().reviewPanel.opened())
   const fileTreeOpen = createMemo(() => canBrowse() && layout.fileTree.opened())
-  const open = createMemo(() => isDesktop() && (view().reviewPanel.opened() || fileTreeOpen()))
-  const reviewTab = createMemo(() => isDesktop())
+  const open = createMemo(() => reviewOpen() || fileTreeOpen())
+  const reviewTab = createMemo(() => isDesktop() || reviewOpen())
+
+  const closeMobilePanel = () => {
+    view().reviewPanel.close()
+    layout.fileTree.close()
+  }
 
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
   const diffs = createMemo(() => (params.id ? (sync.data.session_diff[params.id] ?? []) : []))
@@ -219,16 +224,27 @@ export function SessionSidePanel(props: {
 
   return (
     <Show when={open()}>
+      <>
+      <Show when={!isDesktop()}>
+        <div class="fixed inset-0 z-40 bg-black/35" onClick={closeMobilePanel} />
+      </Show>
       <aside
         id="review-panel"
         aria-label={language.t("session.panel.reviewAndFiles")}
-        class="relative min-w-0 h-full border-l border-border-weak-base flex"
         classList={{
-          "flex-1": reviewOpen(),
-          "shrink-0": !reviewOpen(),
+          "relative min-w-0 h-full border-l border-border-weak-base flex": isDesktop(),
+          "fixed inset-0 z-50 w-full bg-background-base flex flex-col": !isDesktop(),
+          "flex-1": isDesktop() && reviewOpen(),
+          "shrink-0": isDesktop() && !reviewOpen(),
         }}
-        style={{ width: reviewOpen() ? undefined : `${layout.fileTree.width()}px` }}
+        style={{ width: isDesktop() ? (reviewOpen() ? undefined : `${layout.fileTree.width()}px`) : undefined }}
       >
+        <Show when={!isDesktop()}>
+          <div class="h-11 px-3 border-b border-border-weak-base bg-background-base flex items-center justify-between">
+            <div class="text-14-medium text-text-strong">{language.t("session.panel.reviewAndFiles")}</div>
+            <IconButton icon="close-small" variant="ghost" onClick={closeMobilePanel} aria-label={language.t("common.close")} />
+          </div>
+        </Show>
         <Show when={reviewOpen()}>
           <div class="flex-1 min-w-0 h-full">
             <DragDropProvider
@@ -455,19 +471,22 @@ export function SessionSidePanel(props: {
                 </Tabs.Content>
               </Tabs>
             </div>
-            <ResizeHandle
-              direction="horizontal"
-              edge="start"
-              size={layout.fileTree.width()}
-              min={200}
-              max={480}
-              collapseThreshold={160}
-              onResize={layout.fileTree.resize}
-              onCollapse={layout.fileTree.close}
-            />
+            <Show when={isDesktop()}>
+              <ResizeHandle
+                direction="horizontal"
+                edge="start"
+                size={layout.fileTree.width()}
+                min={200}
+                max={480}
+                collapseThreshold={160}
+                onResize={layout.fileTree.resize}
+                onCollapse={layout.fileTree.close}
+              />
+            </Show>
           </div>
         </Show>
       </aside>
+      </>
     </Show>
   )
 }

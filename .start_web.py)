@@ -1,0 +1,4 @@
+f=open('.opencode-web.log','w'
+e=open('.opencode-web.err.log','w'
+env=os.environ.copy(
+subprocess.Popen(['bun','run','--cwd','packages/opencode','--conditions=browser','src/index.ts','web','--hostname','0.0.0.0','--port','4096'], stdout=f, stderr=e, env=env, creationflags=8

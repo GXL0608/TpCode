@@ -1092,7 +1092,7 @@ export default function Page() {
             <Switch>
               <Match when={params.id}>
                 <MessageTimeline
-                  mobileChanges={false}
+                  mobileChanges={!isDesktop()}
                   mobileFallback={reviewContent({
                     diffStyle: "unified",
                     classes: {

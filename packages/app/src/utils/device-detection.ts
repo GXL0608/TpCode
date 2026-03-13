@@ -49,6 +49,8 @@ function isTouchDevice(): boolean {
   const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
     navigator.userAgent
   )
+  const hasCoarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false
 
-  return hasTouchSupport || isMobileUA
+  // 仅在移动 UA 或触摸 + 粗指针时视为移动设备，避免触屏笔记本被误判为移动端
+  return isMobileUA || (hasTouchSupport && hasCoarsePointer)
 }

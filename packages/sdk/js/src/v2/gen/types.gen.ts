@@ -1686,62 +1686,6 @@ export type AccountProjectState = {
   }
 }
 
-export type AccountVhoFeedbackListSuccess = {
-  ok: true
-  login_info: {
-    user_id?: string
-    user_name?: string
-    [key: string]: unknown | string | undefined
-  }
-  list: Array<{
-    feedback_id: string
-    plan_id?: string
-    feedback_des?: string
-    customer_name?: string
-    feedback_time?: string
-    resolution_status_name?: string
-    [key: string]: unknown | string | undefined
-  }>
-  total: number
-  page_num: number
-  page_size: number
-  feedback_meta: {
-    [key: string]: unknown
-  }
-}
-
-export type AccountVhoFeedbackListFailure = {
-  ok: false
-  code:
-    | "vho_feedback_upstream_request_failed"
-    | "vho_feedback_upstream_invalid"
-    | "vho_feedback_upstream_failed"
-    | "forbidden"
-  message?: string
-  permission?: string
-}
-
-export type AccountVhoFeedbackResolveSuccess = {
-  ok: true
-  feedback_id?: string
-  plan_id?: string
-  feedback_des: string
-  saved_plan_id: string
-  plan_content: string
-  project_id: string
-  project_worktree: string
-  project_name?: string
-  matched_by: "plan_id" | "feedback_id"
-  prompt_text: string
-}
-
-export type AccountVhoFeedbackResolveFailure = {
-  ok: false
-  code: "vho_feedback_ref_missing" | "saved_plan_missing" | "saved_plan_project_missing" | "forbidden"
-  message?: string
-  permission?: string
-}
-
 export type AccountPlanSaveSuccess = {
   ok: true
   id: string
@@ -3006,87 +2950,6 @@ export type PostAccountContextSelectData = {
 export type PostAccountContextSelectResponses = {
   200: unknown
 }
-
-export type AccountVhoFeedbackListData = {
-  body?: {
-    user_id?: string
-    feedback_id?: string
-    plan_id?: string
-    feedback_des?: string
-    resolution_status?: Array<"0" | "1" | "9">
-    plan_start_date?: string
-    plan_end_date?: string
-    page_num?: number
-    page_size?: number
-  }
-  path?: never
-  query?: never
-  url: "/account/vho-feedback/list"
-}
-
-export type AccountVhoFeedbackListErrors = {
-  /**
-   * Validation failed
-   */
-  400: AccountVhoFeedbackListFailure
-  /**
-   * Forbidden
-   */
-  403: AccountVhoFeedbackListFailure
-  /**
-   * Upstream failed
-   */
-  502: AccountVhoFeedbackListFailure
-}
-
-export type AccountVhoFeedbackListError = AccountVhoFeedbackListErrors[keyof AccountVhoFeedbackListErrors]
-
-export type AccountVhoFeedbackListResponses = {
-  /**
-   * List result
-   */
-  200: AccountVhoFeedbackListSuccess
-}
-
-export type AccountVhoFeedbackListResponse = AccountVhoFeedbackListResponses[keyof AccountVhoFeedbackListResponses]
-
-export type AccountVhoFeedbackResolveData = {
-  body?: {
-    feedback_id?: string
-    plan_id?: string
-    feedback_des?: string
-  }
-  path?: never
-  query?: never
-  url: "/account/vho-feedback/resolve"
-}
-
-export type AccountVhoFeedbackResolveErrors = {
-  /**
-   * Validation failed
-   */
-  400: AccountVhoFeedbackResolveFailure
-  /**
-   * Forbidden
-   */
-  403: AccountVhoFeedbackResolveFailure
-  /**
-   * Plan not found
-   */
-  404: AccountVhoFeedbackResolveFailure
-}
-
-export type AccountVhoFeedbackResolveError = AccountVhoFeedbackResolveErrors[keyof AccountVhoFeedbackResolveErrors]
-
-export type AccountVhoFeedbackResolveResponses = {
-  /**
-   * Resolve result
-   */
-  200: AccountVhoFeedbackResolveSuccess
-}
-
-export type AccountVhoFeedbackResolveResponse =
-  AccountVhoFeedbackResolveResponses[keyof AccountVhoFeedbackResolveResponses]
 
 export type AccountPlanSaveData = {
   body?: {
@@ -5641,6 +5504,41 @@ export type SessionPrototypeCaptureResponses = {
 }
 
 export type SessionPrototypeCaptureResponse = SessionPrototypeCaptureResponses[keyof SessionPrototypeCaptureResponses]
+
+export type SessionVoiceTranscribeData = {
+  body?: {
+    mime: string
+    data_url: string
+    providerID?: string
+    modelID?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/session/voice/transcribe"
+}
+
+export type SessionVoiceTranscribeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SessionVoiceTranscribeError = SessionVoiceTranscribeErrors[keyof SessionVoiceTranscribeErrors]
+
+export type SessionVoiceTranscribeResponses = {
+  /**
+   * Transcription result
+   */
+  200: {
+    text: string
+    engine: string
+  }
+}
+
+export type SessionVoiceTranscribeResponse = SessionVoiceTranscribeResponses[keyof SessionVoiceTranscribeResponses]
 
 export type SessionVoiceData = {
   body?: never

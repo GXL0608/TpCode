@@ -10,6 +10,7 @@ import { SessionRevert } from "../../session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { SessionVoice } from "@/session/voice"
+import { SessionVoiceTranscribe } from "@/session/voice-transcribe"
 import { Todo } from "../../session/todo"
 import { Agent } from "../../agent/agent"
 import { Provider } from "@/provider/provider"
@@ -233,6 +234,53 @@ export const SessionRoutes = lazy(() =>
     .use("/:sessionID", requireSessionReadable)
     .use("/:sessionID/*", requireSessionReadable)
     .route("/:sessionID/prototype", SessionPrototypeRoutes())
+    .post(
+      "/voice/transcribe",
+      describeRoute({
+        summary: "Transcribe voice audio",
+        description: "Transcribe an audio data URL into plain text.",
+        operationId: "session.voiceTranscribe",
+        responses: {
+          200: {
+            description: "Transcription result",
+            content: {
+              "application/json": {
+                schema: resolver(
+                  z.object({
+                    text: z.string(),
+                    engine: z.string(),
+                  }),
+                ),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          mime: z.string(),
+          data_url: z.string(),
+          providerID: z.string().optional(),
+          modelID: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const result = await SessionVoiceTranscribe.transcribe({
+          mime: body.mime,
+          data_url: body.data_url,
+          providerID: body.providerID,
+          modelID: body.modelID,
+        }).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error)
+          return c.json({ error: "voice_transcribe_failed", message }, 400)
+        })
+        if (result instanceof Response) return result
+        return c.json(result)
+      },
+    )
     .get(
       "/:sessionID/voice/:voiceID",
       describeRoute({

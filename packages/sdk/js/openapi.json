@@ -1278,186 +1278,6 @@
         ]
       }
     },
-    "/account/vho-feedback/list": {
-      "post": {
-        "operationId": "account.vhoFeedback.list",
-        "summary": "List VHO feedback tasks",
-        "description": "Proxy the VHO feedback task list API and normalize paged result items for build mode selection.",
-        "responses": {
-          "200": {
-            "description": "List result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountVhoFeedbackListSuccess"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountVhoFeedbackListFailure"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountVhoFeedbackListFailure"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "Upstream failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountVhoFeedbackListFailure"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "user_id": {
-                    "type": "string"
-                  },
-                  "feedback_id": {
-                    "type": "string"
-                  },
-                  "plan_id": {
-                    "type": "string"
-                  },
-                  "feedback_des": {
-                    "type": "string"
-                  },
-                  "resolution_status": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "enum": [
-                        "0",
-                        "1",
-                        "9"
-                      ]
-                    }
-                  },
-                  "plan_start_date": {
-                    "type": "string"
-                  },
-                  "plan_end_date": {
-                    "type": "string"
-                  },
-                  "page_num": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "page_size": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  }
-                }
-              }
-            }
-          }
-        },
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.account.vhoFeedback.list({\n  ...\n})"
-          }
-        ]
-      }
-    },
-    "/account/vho-feedback/resolve": {
-      "post": {
-        "operationId": "account.vhoFeedback.resolve",
-        "summary": "Resolve selected VHO feedback to saved plan prompt",
-        "description": "Resolve a selected VHO feedback row into local saved plan content and prebuilt prompt text.",
-        "responses": {
-          "200": {
-            "description": "Resolve result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountVhoFeedbackResolveSuccess"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountVhoFeedbackResolveFailure"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountVhoFeedbackResolveFailure"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Plan not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountVhoFeedbackResolveFailure"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "feedback_id": {
-                    "type": "string"
-                  },
-                  "plan_id": {
-                    "type": "string"
-                  },
-                  "feedback_des": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.account.vhoFeedback.resolve({\n  ...\n})"
-          }
-        ]
-      }
-    },
     "/account/plan/save": {
       "post": {
         "operationId": "account.plan.save",
@@ -6605,6 +6425,89 @@
           {
             "lang": "js",
             "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.prototypeCapture({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/session/voice/transcribe": {
+      "post": {
+        "operationId": "session.voiceTranscribe",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Transcribe voice audio",
+        "description": "Transcribe an audio data URL into plain text.",
+        "responses": {
+          "200": {
+            "description": "Transcription result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "engine": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "engine"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mime": {
+                    "type": "string"
+                  },
+                  "data_url": {
+                    "type": "string"
+                  },
+                  "providerID": {
+                    "type": "string"
+                  },
+                  "modelID": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mime",
+                  "data_url"
+                ]
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.voiceTranscribe({\n  ...\n})"
           }
         ]
       }
@@ -18122,191 +18025,6 @@
           "workspace_order_by_project",
           "workspace_expanded_by_directory",
           "workspace_alias_by_project_branch"
-        ]
-      },
-      "AccountVhoFeedbackListSuccess": {
-        "type": "object",
-        "properties": {
-          "ok": {
-            "type": "boolean",
-            "const": true
-          },
-          "login_info": {
-            "type": "object",
-            "properties": {
-              "user_id": {
-                "type": "string"
-              },
-              "user_name": {
-                "type": "string"
-              }
-            },
-            "additionalProperties": {}
-          },
-          "list": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "feedback_id": {
-                  "type": "string"
-                },
-                "plan_id": {
-                  "type": "string"
-                },
-                "feedback_des": {
-                  "type": "string"
-                },
-                "customer_name": {
-                  "type": "string"
-                },
-                "feedback_time": {
-                  "type": "string"
-                },
-                "resolution_status_name": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "feedback_id"
-              ],
-              "additionalProperties": {}
-            }
-          },
-          "total": {
-            "type": "number"
-          },
-          "page_num": {
-            "type": "number"
-          },
-          "page_size": {
-            "type": "number"
-          },
-          "feedback_meta": {
-            "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {}
-          }
-        },
-        "required": [
-          "ok",
-          "login_info",
-          "list",
-          "total",
-          "page_num",
-          "page_size",
-          "feedback_meta"
-        ]
-      },
-      "AccountVhoFeedbackListFailure": {
-        "type": "object",
-        "properties": {
-          "ok": {
-            "type": "boolean",
-            "const": false
-          },
-          "code": {
-            "type": "string",
-            "enum": [
-              "vho_feedback_upstream_request_failed",
-              "vho_feedback_upstream_invalid",
-              "vho_feedback_upstream_failed",
-              "forbidden"
-            ]
-          },
-          "message": {
-            "type": "string"
-          },
-          "permission": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "ok",
-          "code"
-        ]
-      },
-      "AccountVhoFeedbackResolveSuccess": {
-        "type": "object",
-        "properties": {
-          "ok": {
-            "type": "boolean",
-            "const": true
-          },
-          "feedback_id": {
-            "type": "string"
-          },
-          "plan_id": {
-            "type": "string"
-          },
-          "feedback_des": {
-            "type": "string"
-          },
-          "saved_plan_id": {
-            "type": "string"
-          },
-          "plan_content": {
-            "type": "string"
-          },
-          "project_id": {
-            "type": "string"
-          },
-          "project_worktree": {
-            "type": "string"
-          },
-          "project_name": {
-            "type": "string"
-          },
-          "matched_by": {
-            "type": "string",
-            "enum": [
-              "plan_id",
-              "feedback_id"
-            ]
-          },
-          "prompt_text": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "ok",
-          "feedback_des",
-          "saved_plan_id",
-          "plan_content",
-          "project_id",
-          "project_worktree",
-          "matched_by",
-          "prompt_text"
-        ]
-      },
-      "AccountVhoFeedbackResolveFailure": {
-        "type": "object",
-        "properties": {
-          "ok": {
-            "type": "boolean",
-            "const": false
-          },
-          "code": {
-            "type": "string",
-            "enum": [
-              "vho_feedback_ref_missing",
-              "saved_plan_missing",
-              "saved_plan_project_missing",
-              "forbidden"
-            ]
-          },
-          "message": {
-            "type": "string"
-          },
-          "permission": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "ok",
-          "code"
         ]
       },
       "AccountPlanSaveSuccess": {

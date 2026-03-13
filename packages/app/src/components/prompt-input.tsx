@@ -18,7 +18,6 @@ import {
 import { useLayout } from "@/context/layout"
 import { useSDK } from "@/context/sdk"
 import { useParams } from "@solidjs/router"
-import { useNavigate } from "@solidjs/router"
 import { useSync } from "@/context/sync"
 import { useComments } from "@/context/comments"
 import { Button } from "@opencode-ai/ui/button"
@@ -36,7 +35,6 @@ import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useAccountAuth } from "@/context/account-auth"
-import { useAccountProject } from "@/context/account-project"
 import { useAccountRequest } from "./settings-account-api"
 import { createTextFragment, getCursorPosition, setCursorPosition, setRangeEdge } from "./prompt-input/editor-dom"
 import { createPromptAttachments, ACCEPTED_FILE_TYPES } from "./prompt-input/attachments"
@@ -61,14 +59,6 @@ import { canUseRuntimeModelSelector } from "./prompt-input/runtime-model-access"
 import { canUseBuildCapability } from "@/utils/account-build-access"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
 import { createSpeechRecognition } from "@/utils/speech"
-import { DialogVhoFeedback } from "./dialog-vho-feedback"
-import {
-  buildVhoFeedbackPrompt,
-  findAssignedVhoProject,
-  shouldShowVhoFeedbackAction,
-  vhoFeedbackApplyFailure,
-} from "./vho-feedback"
-import { base64Encode } from "@opencode-ai/util/encode"
 
 interface PromptInputProps {
   class?: string
@@ -136,10 +126,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const files = useFile()
   const prompt = usePrompt()
   const layout = useLayout()
-  const accountProject = useAccountProject()
   const comments = useComments()
   const params = useParams()
-  const navigate = useNavigate()
   const dialog = useDialog()
   const command = useCommand()
   const permission = usePermission()
@@ -302,6 +290,18 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     !!navigator.mediaDevices &&
     typeof navigator.mediaDevices.getUserMedia === "function" &&
     typeof MediaRecorder !== "undefined"
+  const voiceUnsupportedDescription = () => {
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      return "当前页面不是 HTTPS 安全上下文，手机浏览器会禁用麦克风。请使用 HTTPS 域名访问。"
+    }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+      return "当前浏览器不支持麦克风采集接口。"
+    }
+    if (typeof MediaRecorder === "undefined") {
+      return "当前浏览器不支持录音能力。建议使用最新版 Chrome 或 Safari。"
+    }
+    return language.t("prompt.toast.voiceUnsupported.description")
+  }
   const supportsSpeech = () => speech.isSupported()
   const clearVoiceTimer = () => {
     if (timer === undefined) return
@@ -354,6 +354,21 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     const modelID = rest.join("/")
     if (!providerID || !modelID) return
     return { providerID, modelID }
+  }
+
+  const transcribeVoice = async (input: { mime: string; dataUrl: string }) => {
+    const selected = runtimeValue() !== "__auto__" ? parseRuntimeValue(runtimeValue()) : undefined
+    const model = selected ?? info()?.runtime_model
+    const result = await sdk.client.session
+      .voiceTranscribe({
+        mime: input.mime,
+        data_url: input.dataUrl,
+        providerID: model?.providerID,
+        modelID: model?.modelID,
+      })
+      .then((response) => response.data)
+      .catch(() => undefined)
+    return result?.text?.trim() ?? ""
   }
 
   /** 中文注释：把当前选择同步到 session 手动模型接口。 */
@@ -412,8 +427,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (voicePhase() === "failed") return voiceError() || language.t("prompt.voice.status.failed")
     return ""
   })
-  const speechLocale = () =>
-    SPEECH_LOCALE[language.locale()] ?? (typeof navigator !== "undefined" ? navigator.language : "en-US")
+  const speechLocale = () => SPEECH_LOCALE[language.locale()] ?? (typeof navigator !== "undefined" ? navigator.language : "en-US")
 
   const [store, setStore] = createStore<{
     popover: "at" | "slash" | null
@@ -1160,10 +1174,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     if (blob.size <= 0) {
       finalizing = false
-      failVoice(
-        language.t("prompt.toast.voiceRecordFailed.title"),
-        language.t("prompt.toast.voiceRecordFailed.description"),
-      )
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
       return
     }
 
@@ -1180,10 +1191,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
     if (!dataUrl) {
       finalizing = false
-      failVoice(
-        language.t("prompt.toast.voiceRecordFailed.title"),
-        language.t("prompt.toast.voiceRecordFailed.description"),
-      )
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
       return
     }
 
@@ -1203,7 +1211,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     const cursorPosition = prompt.cursor() ?? getCursorPosition(editorRef)
     prompt.set([...prompt.current(), attachment], cursorPosition)
 
-    const transcript = speech.committed().trim()
+    const browserTranscript = speech.committed().trim()
+    const transcript = browserTranscript || (await transcribeVoice({ mime, dataUrl }))
     if (transcript) {
       editorRef.focus()
       addPart({
@@ -1211,11 +1220,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         content: transcript,
         start: 0,
         end: 0,
-      })
-    } else if (!supportsSpeech()) {
-      showToast({
-        title: language.t("prompt.toast.voiceRecognitionUnsupported.title"),
-        description: language.t("prompt.toast.voiceRecognitionUnsupported.description"),
       })
     } else {
       showToast({
@@ -1244,10 +1248,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const startVoiceInput = async () => {
     if (!supportsVoiceCapture()) {
-      failVoice(
-        language.t("prompt.toast.voiceUnsupported.title"),
-        language.t("prompt.toast.voiceUnsupported.description"),
-      )
+      failVoice(language.t("prompt.toast.voiceUnsupported.title"), voiceUnsupportedDescription())
       return
     }
     if (voicePhase() === "recording" || voicePhase() === "transcribing") return
@@ -1262,10 +1263,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         )
         return
       }
-      failVoice(
-        language.t("prompt.toast.voiceRecordFailed.title"),
-        language.t("prompt.toast.voiceRecordFailed.description"),
-      )
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
       return
     }
 
@@ -1292,10 +1290,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       speech.stop()
       recorder = undefined
       chunks = []
-      failVoice(
-        language.t("prompt.toast.voiceRecordFailed.title"),
-        language.t("prompt.toast.voiceRecordFailed.description"),
-      )
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
     }
     next.onstop = () => {
       void completeVoice(activeVoiceRun)
@@ -1321,10 +1316,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       clearVoiceStream()
       recorder = undefined
       chunks = []
-      failVoice(
-        language.t("prompt.toast.voiceRecordFailed.title"),
-        language.t("prompt.toast.voiceRecordFailed.description"),
-      )
+      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
       return
     }
     timer = window.setTimeout(() => {
@@ -1516,68 +1508,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return permission.isAutoAccepting(id, sdk.directory)
   })
 
-  const canSelectVhoFeedback = createMemo(
-    () =>
-      shouldShowVhoFeedbackAction({
-        agent: local.agent.current()?.name,
-        session_id: params.id,
-      }),
-  )
-
-  /**
-   * 中文注释：根据反馈关联计划切换到目标项目的新建会话页，并把回填文本交接给目标输入框。
-   */
-  const applyVhoFeedback = async (input: {
-    prompt_text?: string
-    feedback_des?: string
-    plan_content: string
-    project_id: string
-    project_worktree: string
-    project_name?: string
-  }) => {
-    const next =
-      input.prompt_text?.trim() ||
-      buildVhoFeedbackPrompt({
-        feedback_des: input.feedback_des,
-        plan_content: input.plan_content,
-      })
-    const payload = await auth.contextProducts()
-    if (!payload) {
-      return vhoFeedbackApplyFailure({
-        reason: "products_failed",
-      })
-    }
-
-    const target = findAssignedVhoProject({
-      project_id: input.project_id,
-      project_worktree: input.project_worktree,
-      products: payload.products.map((item) => ({
-        id: item.id,
-        project_id: item.project_id,
-        worktree: item.worktree,
-      })),
-    })
-    if (!target) {
-      return vhoFeedbackApplyFailure({
-        reason: "project_missing",
-      })
-    }
-
-    const activated = await accountProject.activate(target.project_id, true)
-    if (!activated.ok) {
-      return vhoFeedbackApplyFailure({
-        reason: "project_activate_failed",
-      })
-    }
-
-    const slug = base64Encode(target.worktree)
-    layout.handoff.setPrompt(slug, next, next.length)
-    navigate(`/${slug}/session`)
-    return {
-      ok: true,
-    } as const
-  }
-
   return (
     <div class="relative size-full _max-h-[320px] flex flex-col gap-0">
       <PromptPopover
@@ -1744,9 +1674,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       return
                     }
                     if (voicePhase() === "transcribing") return
+                    if (!supportsVoiceCapture()) {
+                      failVoice(language.t("prompt.toast.voiceUnsupported.title"), voiceUnsupportedDescription())
+                      return
+                    }
                     void startVoiceInput()
                   }}
-                  disabled={store.mode !== "normal" || !supportsVoiceCapture()}
+                  disabled={store.mode !== "normal"}
                   tabIndex={store.mode === "normal" ? undefined : -1}
                   aria-label={
                     voicePhase() === "recording"
@@ -1897,31 +1831,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 triggerStyle={{ height: "28px" }}
                 variant="ghost"
               />
-            </Show>
-            <Show when={canSelectVhoFeedback()}>
-              <Button
-                type="button"
-                variant="ghost"
-                class="h-7 px-2 text-13-regular"
-                onClick={() =>
-                  dialog.show(() => (
-                    <DialogVhoFeedback
-                      onSelect={(input) =>
-                        applyVhoFeedback({
-                          prompt_text: input.prompt_text,
-                          feedback_des: input.feedback_des,
-                          plan_content: input.plan_content,
-                          project_id: input.project_id,
-                          project_worktree: input.project_worktree,
-                          project_name: input.project_name,
-                        })
-                      }
-                    />
-                  ))
-                }
-              >
-                {language.t("prompt.action.selectFeedback")}
-              </Button>
             </Show>
           </div>
         </div>

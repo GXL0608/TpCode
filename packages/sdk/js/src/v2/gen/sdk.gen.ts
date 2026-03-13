@@ -37,10 +37,6 @@ import type {
   AccountRegisterResponses,
   AccountTokenRefreshErrors,
   AccountTokenRefreshResponses,
-  AccountVhoFeedbackListErrors,
-  AccountVhoFeedbackListResponses,
-  AccountVhoFeedbackResolveErrors,
-  AccountVhoFeedbackResolveResponses,
   AgentConfig,
   AgentPartInput,
   AppAgentsResponses,
@@ -315,6 +311,8 @@ import type {
   SessionUpdateResponses,
   SessionVoiceErrors,
   SessionVoiceResponses,
+  SessionVoiceTranscribeErrors,
+  SessionVoiceTranscribeResponses,
   SubtaskPartInput,
   TextPartInput,
   ToolIdsErrors,
@@ -768,102 +766,6 @@ export class Context extends HeyApiClient {
   }
 }
 
-export class VhoFeedback extends HeyApiClient {
-  /**
-   * List VHO feedback tasks
-   *
-   * Proxy the VHO feedback task list API and normalize paged result items for build mode selection.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      user_id?: string
-      feedback_id?: string
-      plan_id?: string
-      feedback_des?: string
-      resolution_status?: Array<"0" | "1" | "9">
-      plan_start_date?: string
-      plan_end_date?: string
-      page_num?: number
-      page_size?: number
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "body", key: "user_id" },
-            { in: "body", key: "feedback_id" },
-            { in: "body", key: "plan_id" },
-            { in: "body", key: "feedback_des" },
-            { in: "body", key: "resolution_status" },
-            { in: "body", key: "plan_start_date" },
-            { in: "body", key: "plan_end_date" },
-            { in: "body", key: "page_num" },
-            { in: "body", key: "page_size" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      AccountVhoFeedbackListResponses,
-      AccountVhoFeedbackListErrors,
-      ThrowOnError
-    >({
-      url: "/account/vho-feedback/list",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Resolve selected VHO feedback to saved plan prompt
-   *
-   * Resolve a selected VHO feedback row into local saved plan content and prebuilt prompt text.
-   */
-  public resolve<ThrowOnError extends boolean = false>(
-    parameters?: {
-      feedback_id?: string
-      plan_id?: string
-      feedback_des?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "body", key: "feedback_id" },
-            { in: "body", key: "plan_id" },
-            { in: "body", key: "feedback_des" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      AccountVhoFeedbackResolveResponses,
-      AccountVhoFeedbackResolveErrors,
-      ThrowOnError
-    >({
-      url: "/account/vho-feedback/resolve",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-}
-
 export class Eval extends HeyApiClient {
   /**
    * Retry saved plan evaluation
@@ -1262,11 +1164,6 @@ export class Account extends HeyApiClient {
   private _context?: Context
   get context(): Context {
     return (this._context ??= new Context({ client: this.client }))
-  }
-
-  private _vhoFeedback?: VhoFeedback
-  get vhoFeedback(): VhoFeedback {
-    return (this._vhoFeedback ??= new VhoFeedback({ client: this.client }))
   }
 
   private _plan?: Plan
@@ -2525,6 +2422,51 @@ export class Session2 extends HeyApiClient {
       ThrowOnError
     >({
       url: "/session/{sessionID}/prototype/capture",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Transcribe voice audio
+   *
+   * Transcribe an audio data URL into plain text.
+   */
+  public voiceTranscribe<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      mime?: string
+      data_url?: string
+      providerID?: string
+      modelID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "mime" },
+            { in: "body", key: "data_url" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "modelID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionVoiceTranscribeResponses,
+      SessionVoiceTranscribeErrors,
+      ThrowOnError
+    >({
+      url: "/session/voice/transcribe",
       ...options,
       ...params,
       headers: {

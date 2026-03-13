@@ -5,6 +5,7 @@ import { withNetworkOptions, resolveNetworkOptions } from "../network"
 import { Flag } from "../../flag/flag"
 import open from "open"
 import { networkInterfaces } from "os"
+import { SessionVoiceTranscribe } from "@/session/voice-transcribe"
 
 function getNetworkIPs() {
   const nets = networkInterfaces()
@@ -33,6 +34,12 @@ export const WebCommand = cmd({
   builder: (yargs) => withNetworkOptions(yargs),
   describe: "start TpCode server and open web interface",
   handler: async (args) => {
+    const block = process.env.TPCODE_LOCAL_STT_PREWARM_BLOCK?.toLowerCase()
+    const wait = block === "true" || block === "1"
+    const warm = SessionVoiceTranscribe.prewarm()
+    if (wait) await warm
+    else warm.catch(() => undefined)
+
     if (!Flag.OPENCODE_SERVER_PASSWORD) {
       UI.println(UI.Style.TEXT_WARNING_BOLD + "!  " + "OPENCODE_SERVER_PASSWORD is not set; server is unsecured.")
     }

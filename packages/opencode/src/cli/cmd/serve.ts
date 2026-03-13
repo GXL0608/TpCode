@@ -5,6 +5,7 @@ import { Flag } from "../../flag/flag"
 import { Workspace } from "../../control-plane/workspace"
 import { Project } from "../../project/project"
 import { Installation } from "../../installation"
+import { SessionVoiceTranscribe } from "@/session/voice-transcribe"
 
 const defaults = {
   TPCODE_ACCOUNT_ENABLED: "1",
@@ -25,6 +26,11 @@ export const ServeCommand = cmd({
   describe: "starts a headless TpCode server",
   handler: async (args) => {
     applyServeDefaults()
+    const block = process.env.TPCODE_LOCAL_STT_PREWARM_BLOCK?.toLowerCase()
+    const wait = block === "true" || block === "1"
+    const warm = SessionVoiceTranscribe.prewarm()
+    if (wait) await warm
+    else warm.catch(() => undefined)
 
     if (!Flag.OPENCODE_SERVER_PASSWORD) {
       console.log("Warning: OPENCODE_SERVER_PASSWORD is not set; server is unsecured.")

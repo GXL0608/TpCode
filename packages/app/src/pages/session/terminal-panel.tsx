@@ -32,7 +32,7 @@ export function TerminalPanel() {
   const view = createMemo(() => layout.view(sessionKey))
 
   const opened = createMemo(() => view().terminal.opened())
-  const open = createMemo(() => isDesktop() && opened())
+  const open = createMemo(() => opened())
   const height = createMemo(() => layout.terminal.height())
   const close = () => view().terminal.close()
 
@@ -134,22 +134,37 @@ export function TerminalPanel() {
 
   return (
     <Show when={open()}>
+      <>
+        <Show when={!isDesktop()}>
+          <div class="fixed inset-0 z-40 bg-black/35" onClick={close} />
+        </Show>
       <div
         id="terminal-panel"
         role="region"
         aria-label={language.t("terminal.title")}
-        class="relative w-full flex flex-col shrink-0 border-t border-border-weak-base"
-        style={{ height: `${height()}px` }}
+        classList={{
+          "relative w-full flex flex-col shrink-0 border-t border-border-weak-base": isDesktop(),
+          "fixed inset-0 z-50 bg-background-base flex flex-col": !isDesktop(),
+        }}
+        style={{ height: isDesktop() ? `${height()}px` : undefined }}
       >
-        <ResizeHandle
-          direction="vertical"
-          size={height()}
-          min={100}
-          max={typeof window === "undefined" ? 1000 : window.innerHeight * 0.6}
-          collapseThreshold={50}
-          onResize={layout.terminal.resize}
-          onCollapse={close}
-        />
+        <Show when={isDesktop()}>
+          <ResizeHandle
+            direction="vertical"
+            size={height()}
+            min={100}
+            max={typeof window === "undefined" ? 1000 : window.innerHeight * 0.6}
+            collapseThreshold={50}
+            onResize={layout.terminal.resize}
+            onCollapse={close}
+          />
+        </Show>
+        <Show when={!isDesktop()}>
+          <div class="h-11 px-3 border-b border-border-weak-base bg-background-base flex items-center justify-between">
+            <div class="text-14-medium text-text-strong">{language.t("terminal.title")}</div>
+            <IconButton icon="close-small" variant="ghost" onClick={close} aria-label={language.t("common.close")} />
+          </div>
+        </Show>
         <Show
           when={terminal.ready()}
           fallback={
@@ -242,6 +257,7 @@ export function TerminalPanel() {
           </DragDropProvider>
         </Show>
       </div>
+      </>
     </Show>
   )
 }
