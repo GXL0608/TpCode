@@ -20,6 +20,7 @@ import { VhoFeedbackService } from "@/plan/vho-feedback"
 import { Config } from "@/config/config"
 import { AccountProviderState } from "@/provider/account-provider-state"
 import { AccountUserProviderSettingService } from "@/user/user-provider-setting"
+import { UserRbac } from "@/user/rbac"
 
 const LoginResult = z
   .object({
