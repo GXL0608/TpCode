@@ -9,7 +9,7 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionSummary } from "../../src/session/summary"
 import { SessionVoiceTable, TpSessionPictureTable } from "../../src/session/session.sql"
 import { SessionStatus } from "../../src/session/status"
-import type { Provider } from "../../src/provider/provider"
+import { Provider } from "../../src/provider/provider"
 import { Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
@@ -57,6 +57,20 @@ async function captureSystem(input: {
     directory: input.directory,
     fn: async () => {
       const session = await Session.create({ title: "system capture" })
+      const model = {
+        id: "gpt-5.2",
+        providerID: "openai",
+        api: { id: "gpt-5.2" },
+        options: {},
+      } as unknown as Provider.Model
+      const runtime =
+        input.agent === "build"
+          ? spyOn(Session, "runtimeModel").mockResolvedValue({
+              providerID: model.providerID,
+              modelID: model.id,
+            })
+          : undefined
+      const provider = input.agent === "build" ? spyOn(Provider, "getModel").mockResolvedValue(model) : undefined
       if (input.agent === "build") {
         await Session.prepareBuild({ sessionID: session.id })
       }
@@ -74,6 +88,8 @@ async function captureSystem(input: {
           parts: [{ type: "text", text: "hello" }],
         })
       } finally {
+        provider?.mockRestore()
+        runtime?.mockRestore()
         stream.mockRestore()
         await Session.remove(session.id)
       }
@@ -861,6 +877,41 @@ describe("session.prompt build confidentiality", () => {
         })
 
         expect(system.join("\n\n")).not.toContain(BUILD_CONFIDENTIALITY.trim())
+      },
+    })
+  })
+
+  test("keeps build system assembly idempotent across repeated loop steps", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "AGENTS.md"), "# Project Instructions")
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = {
+          providerID: "openai",
+          api: { id: "gpt-5.2" },
+        } as unknown as Provider.Model
+
+        const first = await SessionPrompt.buildSystem({
+          agent: "build",
+          model,
+          userSystem: "Custom system line",
+        })
+        const second = await SessionPrompt.buildSystem({
+          agent: "build",
+          model,
+          userSystem: first.join("\n\n"),
+        })
+        const text = second.join("\n\n")
+
+        expect(second).toEqual(first)
+        expect(text.match(/Custom system line/g)?.length ?? 0).toBe(1)
+        expect(text.match(/## Controlled Build Confidentiality Guard/g)?.length ?? 0).toBe(1)
       },
     })
   })
