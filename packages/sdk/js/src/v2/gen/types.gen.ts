@@ -365,6 +365,8 @@ export type FilePart = {
   filename?: string
   url: string
   duration_ms?: number
+  ocr_text?: string
+  ocr_engine?: string
   forModel?: boolean
   source?: FilePartSource
 }
@@ -1684,6 +1686,55 @@ export type AccountProjectState = {
   }
 }
 
+export type AccountVhoFeedbackListSuccess = {
+  ok: true
+  login_info: {
+    user_id?: string
+    user_name?: string
+  }
+  list: Array<{
+    feedback_id: string
+    plan_id?: string
+    feedback_des?: string
+    customer_name?: string
+    feedback_time?: string
+    resolution_status_name?: string
+  }>
+  total: number
+  page_num: number
+  page_size: number
+}
+
+export type AccountVhoFeedbackListFailure = {
+  ok: false
+  code:
+    | "vho_feedback_phone_required"
+    | "vho_feedback_upstream_request_failed"
+    | "vho_feedback_upstream_invalid"
+    | "vho_feedback_upstream_failed"
+    | "forbidden"
+  message?: string
+  permission?: string
+}
+
+export type AccountVhoFeedbackResolveSuccess = {
+  ok: true
+  feedback_id?: string
+  plan_id?: string
+  feedback_des: string
+  saved_plan_id: string
+  plan_content: string
+  matched_by: "plan_id" | "feedback_id"
+  prompt_text: string
+}
+
+export type AccountVhoFeedbackResolveFailure = {
+  ok: false
+  code: "vho_feedback_ref_missing" | "saved_plan_missing" | "forbidden"
+  message?: string
+  permission?: string
+}
+
 export type AccountPlanSaveSuccess = {
   ok: true
   id: string
@@ -2000,6 +2051,93 @@ export type McpResource = {
   client: string
 }
 
+export type PrototypeSourceType = "manual_upload" | "playwright_capture"
+
+export type PrototypeTestResult = "passed" | "failed" | "unknown"
+
+export type PrototypeStatus = "ready" | "archived" | "deleted"
+
+export type PrototypeItem = {
+  id: string
+  session_id: string
+  message_id?: string
+  user_id?: string
+  org_id?: string
+  department_id?: string
+  agent_mode: string
+  title: string
+  description?: string
+  route?: string
+  page_key: string
+  viewport_width?: number
+  viewport_height?: number
+  device_scale_factor?: number
+  mime: string
+  size_bytes: number
+  storage_driver: string
+  storage_key: string
+  image_url: string
+  thumbnail_url: string
+  source_type: PrototypeSourceType
+  source_url?: string
+  test_run_id?: string
+  test_result?: PrototypeTestResult
+  version: number
+  is_latest: boolean
+  status: PrototypeStatus
+  time_created: number
+  time_updated: number
+}
+
+export type PrototypeListResult = {
+  items: Array<PrototypeItem>
+}
+
+export type PrototypeSaveResult = {
+  ok: true
+  prototype: PrototypeItem
+}
+
+export type PrototypeViewport = {
+  width?: number
+  height?: number
+  device_scale_factor?: number
+}
+
+export type PrototypeUploadInput = {
+  agent_mode?: string
+  saved_plan_id?: string
+  message_id?: string
+  title: string
+  description?: string
+  route?: string
+  page_key: string
+  filename: string
+  content_type: string
+  data_base64: string
+  viewport?: PrototypeViewport
+  source_url?: string
+  test_run_id?: string
+  test_result?: PrototypeTestResult
+}
+
+export type PrototypeCaptureInput = {
+  agent_mode?: string
+  saved_plan_id?: string
+  message_id?: string
+  title: string
+  description?: string
+  route?: string
+  page_key: string
+  source_url: string
+  wait_until?: "load" | "domcontentloaded" | "networkidle"
+  ready_selector?: string
+  delay_ms?: number
+  viewport?: PrototypeViewport
+  test_run_id?: string
+  test_result?: PrototypeTestResult
+}
+
 export type TextPartInput = {
   id?: string
   type: "text"
@@ -2022,6 +2160,8 @@ export type FilePartInput = {
   filename?: string
   url: string
   duration_ms?: number
+  ocr_text?: string
+  ocr_engine?: string
   forModel?: boolean
   source?: FilePartSource
 }
@@ -2112,6 +2252,17 @@ export type FeedbackPostCreateResult = {
 export type FeedbackThreadStatusResult = {
   ok: true
   thread: FeedbackThread
+}
+
+export type PrototypeDetailResult = {
+  ok: true
+  prototype: PrototypeItem
+}
+
+export type PrototypeVariant = "original" | "thumbnail"
+
+export type PrototypeDeleteResult = {
+  ok: true
 }
 
 export type ProviderAuthMethod = {
@@ -2848,6 +2999,86 @@ export type PostAccountContextSelectData = {
 export type PostAccountContextSelectResponses = {
   200: unknown
 }
+
+export type AccountVhoFeedbackListData = {
+  body?: {
+    feedback_id?: string
+    plan_id?: string
+    feedback_des?: string
+    resolution_status?: string
+    plan_start_date?: string
+    plan_end_date?: string
+    page_num?: number
+    page_size?: number
+  }
+  path?: never
+  query?: never
+  url: "/account/vho-feedback/list"
+}
+
+export type AccountVhoFeedbackListErrors = {
+  /**
+   * Validation failed
+   */
+  400: AccountVhoFeedbackListFailure
+  /**
+   * Forbidden
+   */
+  403: AccountVhoFeedbackListFailure
+  /**
+   * Upstream failed
+   */
+  502: AccountVhoFeedbackListFailure
+}
+
+export type AccountVhoFeedbackListError = AccountVhoFeedbackListErrors[keyof AccountVhoFeedbackListErrors]
+
+export type AccountVhoFeedbackListResponses = {
+  /**
+   * List result
+   */
+  200: AccountVhoFeedbackListSuccess
+}
+
+export type AccountVhoFeedbackListResponse = AccountVhoFeedbackListResponses[keyof AccountVhoFeedbackListResponses]
+
+export type AccountVhoFeedbackResolveData = {
+  body?: {
+    feedback_id?: string
+    plan_id?: string
+    feedback_des?: string
+  }
+  path?: never
+  query?: never
+  url: "/account/vho-feedback/resolve"
+}
+
+export type AccountVhoFeedbackResolveErrors = {
+  /**
+   * Validation failed
+   */
+  400: AccountVhoFeedbackResolveFailure
+  /**
+   * Forbidden
+   */
+  403: AccountVhoFeedbackResolveFailure
+  /**
+   * Plan not found
+   */
+  404: AccountVhoFeedbackResolveFailure
+}
+
+export type AccountVhoFeedbackResolveError = AccountVhoFeedbackResolveErrors[keyof AccountVhoFeedbackResolveErrors]
+
+export type AccountVhoFeedbackResolveResponses = {
+  /**
+   * Resolve result
+   */
+  200: AccountVhoFeedbackResolveSuccess
+}
+
+export type AccountVhoFeedbackResolveResponse =
+  AccountVhoFeedbackResolveResponses[keyof AccountVhoFeedbackResolveResponses]
 
 export type AccountPlanSaveData = {
   body?: {
@@ -5301,6 +5532,108 @@ export type SessionStatusResponses = {
 
 export type SessionStatusResponse = SessionStatusResponses[keyof SessionStatusResponses]
 
+export type SessionPrototypeListData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    page_key?: string
+    latest?: boolean
+    limit?: number
+  }
+  url: "/session/{sessionID}/prototype"
+}
+
+export type SessionPrototypeListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionPrototypeListError = SessionPrototypeListErrors[keyof SessionPrototypeListErrors]
+
+export type SessionPrototypeListResponses = {
+  /**
+   * Prototype list
+   */
+  200: PrototypeListResult
+}
+
+export type SessionPrototypeListResponse = SessionPrototypeListResponses[keyof SessionPrototypeListResponses]
+
+export type SessionPrototypeUploadData = {
+  body?: PrototypeUploadInput
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/prototype/upload"
+}
+
+export type SessionPrototypeUploadErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionPrototypeUploadError = SessionPrototypeUploadErrors[keyof SessionPrototypeUploadErrors]
+
+export type SessionPrototypeUploadResponses = {
+  /**
+   * Saved prototype
+   */
+  200: PrototypeSaveResult
+}
+
+export type SessionPrototypeUploadResponse = SessionPrototypeUploadResponses[keyof SessionPrototypeUploadResponses]
+
+export type SessionPrototypeCaptureData = {
+  body?: PrototypeCaptureInput
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/prototype/capture"
+}
+
+export type SessionPrototypeCaptureErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionPrototypeCaptureError = SessionPrototypeCaptureErrors[keyof SessionPrototypeCaptureErrors]
+
+export type SessionPrototypeCaptureResponses = {
+  /**
+   * Saved prototype
+   */
+  200: PrototypeSaveResult
+}
+
+export type SessionPrototypeCaptureResponse = SessionPrototypeCaptureResponses[keyof SessionPrototypeCaptureResponses]
+
 export type SessionVoiceData = {
   body?: never
   path: {
@@ -6239,6 +6572,8 @@ export type SessionCommandData = {
       filename?: string
       url: string
       duration_ms?: number
+      ocr_text?: string
+      ocr_engine?: string
       forModel?: boolean
       source?: FilePartSource
     }>
@@ -7085,6 +7420,93 @@ export type FeedbackUpdateStatusResponses = {
 }
 
 export type FeedbackUpdateStatusResponse = FeedbackUpdateStatusResponses[keyof FeedbackUpdateStatusResponses]
+
+export type PrototypeDeleteData = {
+  body?: never
+  path: {
+    prototypeID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/prototype/{prototypeID}"
+}
+
+export type PrototypeDeleteErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type PrototypeDeleteError = PrototypeDeleteErrors[keyof PrototypeDeleteErrors]
+
+export type PrototypeDeleteResponses = {
+  /**
+   * Prototype deleted
+   */
+  200: PrototypeDeleteResult
+}
+
+export type PrototypeDeleteResponse = PrototypeDeleteResponses[keyof PrototypeDeleteResponses]
+
+export type PrototypeGetData = {
+  body?: never
+  path: {
+    prototypeID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/prototype/{prototypeID}"
+}
+
+export type PrototypeGetErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type PrototypeGetError = PrototypeGetErrors[keyof PrototypeGetErrors]
+
+export type PrototypeGetResponses = {
+  /**
+   * Prototype detail
+   */
+  200: PrototypeDetailResult
+}
+
+export type PrototypeGetResponse = PrototypeGetResponses[keyof PrototypeGetResponses]
+
+export type PrototypeFileData = {
+  body?: never
+  path: {
+    prototypeID: string
+  }
+  query?: {
+    directory?: string
+    variant?: PrototypeVariant
+    access_token?: string
+  }
+  url: "/prototype/{prototypeID}/file"
+}
+
+export type PrototypeFileErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type PrototypeFileError = PrototypeFileErrors[keyof PrototypeFileErrors]
+
+export type PrototypeFileResponses = {
+  /**
+   * Prototype file
+   */
+  200: unknown
+}
 
 export type QuestionListData = {
   body?: never

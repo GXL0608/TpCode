@@ -96,6 +96,61 @@ type SavePlanResult =
       message?: string
     }
 
+type VhoFeedbackListInput = {
+  feedback_id?: string
+  plan_id?: string
+  feedback_des?: string
+  resolution_status?: string
+  plan_start_date?: string
+  plan_end_date?: string
+  page_num?: number
+  page_size?: number
+}
+
+type VhoFeedbackListItem = {
+  feedback_id: string
+  plan_id?: string
+  feedback_des?: string
+  customer_name?: string
+  feedback_time?: string
+  resolution_status_name?: string
+}
+
+type VhoFeedbackListResult =
+  | {
+      ok: true
+      login_info: {
+        user_id?: string
+        user_name?: string
+      }
+      list: VhoFeedbackListItem[]
+      total: number
+      page_num: number
+      page_size: number
+    }
+  | {
+      ok: false
+      code: string
+      message?: string
+    }
+
+type VhoFeedbackResolveResult =
+  | {
+      ok: true
+      feedback_id?: string
+      plan_id?: string
+      feedback_des: string
+      saved_plan_id: string
+      plan_content: string
+      matched_by: "plan_id" | "feedback_id"
+      prompt_text: string
+    }
+  | {
+      ok: false
+      code: string
+      message?: string
+    }
+
 type VhoBindInfo = {
   user_id: string
   phone?: string
@@ -502,6 +557,64 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           return
         }
         return json<VhoBindInfo>(await response.json().catch(() => undefined))
+      },
+      /** 中文注释：分页查询当前账号手机号对应的 VHO 反馈任务列表。 */
+      async listVhoFeedback(input: VhoFeedbackListInput): Promise<VhoFeedbackListResult> {
+        const response = await request({
+          path: "/account/vho-feedback/list",
+          method: "POST",
+          body: input,
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) {
+          const body = json<{ ok?: boolean; code?: string; error?: string; message?: string }>(
+            await response?.json().catch(() => undefined),
+          )
+          return {
+            ok: false,
+            code: body?.code ?? body?.error ?? "vho_feedback_list_failed",
+            message: body?.message,
+          }
+        }
+        const body = json<VhoFeedbackListResult>(await response.json().catch(() => undefined))
+        if (!body) {
+          return {
+            ok: false,
+            code: "vho_feedback_list_failed",
+          }
+        }
+        return body
+      },
+      /** 中文注释：根据所选反馈项解析本地计划内容并返回 prompt 回填文本。 */
+      async resolveVhoFeedback(input: {
+        feedback_id?: string
+        plan_id?: string
+        feedback_des?: string
+      }): Promise<VhoFeedbackResolveResult> {
+        const response = await request({
+          path: "/account/vho-feedback/resolve",
+          method: "POST",
+          body: input,
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) {
+          const body = json<{ ok?: boolean; code?: string; error?: string; message?: string }>(
+            await response?.json().catch(() => undefined),
+          )
+          return {
+            ok: false,
+            code: body?.code ?? body?.error ?? "vho_feedback_resolve_failed",
+            message: body?.message,
+          }
+        }
+        const body = json<VhoFeedbackResolveResult>(await response.json().catch(() => undefined))
+        if (!body) {
+          return {
+            ok: false,
+            code: "vho_feedback_resolve_failed",
+          }
+        }
+        return body
       },
       async contextProjects() {
         const response = await request({

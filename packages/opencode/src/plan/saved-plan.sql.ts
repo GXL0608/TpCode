@@ -31,5 +31,6 @@ export const TpSavedPlanTable = table(
     index("tp_saved_plan_session_time_idx").on(table.session_id, table.time_created),
     index("tp_saved_plan_project_time_idx").on(table.project_id, table.time_created),
     index("tp_saved_plan_message_idx").on(table.message_id),
+    index("tp_saved_plan_feedback_idx").on(table.vho_feedback_no),
   ],
 )

@@ -37,6 +37,10 @@ import type {
   AccountRegisterResponses,
   AccountTokenRefreshErrors,
   AccountTokenRefreshResponses,
+  AccountVhoFeedbackListErrors,
+  AccountVhoFeedbackListResponses,
+  AccountVhoFeedbackResolveErrors,
+  AccountVhoFeedbackResolveResponses,
   AgentConfig,
   AgentPartInput,
   AppAgentsResponses,
@@ -200,6 +204,15 @@ import type {
   ProjectListResponses,
   ProjectUpdateErrors,
   ProjectUpdateResponses,
+  PrototypeCaptureInput,
+  PrototypeDeleteErrors,
+  PrototypeDeleteResponses,
+  PrototypeFileErrors,
+  PrototypeFileResponses,
+  PrototypeGetErrors,
+  PrototypeGetResponses,
+  PrototypeUploadInput,
+  PrototypeVariant,
   ProviderAuthResponses,
   ProviderConfig,
   ProviderListResponses,
@@ -272,6 +285,12 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionPrototypeCaptureErrors,
+  SessionPrototypeCaptureResponses,
+  SessionPrototypeListErrors,
+  SessionPrototypeListResponses,
+  SessionPrototypeUploadErrors,
+  SessionPrototypeUploadResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionRuntimeModelClearErrors,
@@ -749,6 +768,100 @@ export class Context extends HeyApiClient {
   }
 }
 
+export class VhoFeedback extends HeyApiClient {
+  /**
+   * List VHO feedback tasks
+   *
+   * Proxy the VHO feedback task list API and normalize paged result items for build mode selection.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      feedback_id?: string
+      plan_id?: string
+      feedback_des?: string
+      resolution_status?: string
+      plan_start_date?: string
+      plan_end_date?: string
+      page_num?: number
+      page_size?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "feedback_id" },
+            { in: "body", key: "plan_id" },
+            { in: "body", key: "feedback_des" },
+            { in: "body", key: "resolution_status" },
+            { in: "body", key: "plan_start_date" },
+            { in: "body", key: "plan_end_date" },
+            { in: "body", key: "page_num" },
+            { in: "body", key: "page_size" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AccountVhoFeedbackListResponses,
+      AccountVhoFeedbackListErrors,
+      ThrowOnError
+    >({
+      url: "/account/vho-feedback/list",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Resolve selected VHO feedback to saved plan prompt
+   *
+   * Resolve a selected VHO feedback row into local saved plan content and prebuilt prompt text.
+   */
+  public resolve<ThrowOnError extends boolean = false>(
+    parameters?: {
+      feedback_id?: string
+      plan_id?: string
+      feedback_des?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "feedback_id" },
+            { in: "body", key: "plan_id" },
+            { in: "body", key: "feedback_des" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AccountVhoFeedbackResolveResponses,
+      AccountVhoFeedbackResolveErrors,
+      ThrowOnError
+    >({
+      url: "/account/vho-feedback/resolve",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Eval extends HeyApiClient {
   /**
    * Retry saved plan evaluation
@@ -1147,6 +1260,11 @@ export class Account extends HeyApiClient {
   private _context?: Context
   get context(): Context {
     return (this._context ??= new Context({ client: this.client }))
+  }
+
+  private _vhoFeedback?: VhoFeedback
+  get vhoFeedback(): VhoFeedback {
+    return (this._vhoFeedback ??= new VhoFeedback({ client: this.client }))
   }
 
   private _plan?: Plan
@@ -2294,6 +2412,128 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * List session prototypes
+   *
+   * List prototype assets inside a session.
+   */
+  public prototypeList<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      page_key?: string
+      latest?: boolean
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "page_key" },
+            { in: "query", key: "latest" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionPrototypeListResponses,
+      SessionPrototypeListErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/prototype",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Upload session prototype
+   *
+   * Save a manually uploaded prototype image into the current session.
+   */
+  public prototypeUpload<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      prototypeUploadInput?: PrototypeUploadInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { key: "prototypeUploadInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionPrototypeUploadResponses,
+      SessionPrototypeUploadErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/prototype/upload",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Capture session prototype
+   *
+   * Capture a page screenshot and store it as a prototype asset.
+   */
+  public prototypeCapture<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      prototypeCaptureInput?: PrototypeCaptureInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { key: "prototypeCaptureInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionPrototypeCaptureResponses,
+      SessionPrototypeCaptureErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/prototype/capture",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
    * Get session voice audio
    *
    * Retrieve a stored voice recording for a specific session.
@@ -3074,6 +3314,8 @@ export class Session2 extends HeyApiClient {
         filename?: string
         url: string
         duration_ms?: number
+        ocr_text?: string
+        ocr_engine?: string
         forModel?: boolean
         source?: FilePartSource
       }>
@@ -4073,6 +4315,102 @@ export class Feedback extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+}
+
+export class Prototype extends HeyApiClient {
+  /**
+   * Delete prototype
+   *
+   * Delete one prototype asset by ID.
+   */
+  public delete<ThrowOnError extends boolean = false>(
+    parameters: {
+      prototypeID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "prototypeID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<PrototypeDeleteResponses, PrototypeDeleteErrors, ThrowOnError>({
+      url: "/prototype/{prototypeID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get prototype detail
+   *
+   * Get one prototype asset by ID.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      prototypeID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "prototypeID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<PrototypeGetResponses, PrototypeGetErrors, ThrowOnError>({
+      url: "/prototype/{prototypeID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get prototype file
+   *
+   * Read the prototype image bytes.
+   */
+  public file<ThrowOnError extends boolean = false>(
+    parameters: {
+      prototypeID: string
+      directory?: string
+      variant?: PrototypeVariant
+      access_token?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "prototypeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "variant" },
+            { in: "query", key: "access_token" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<PrototypeFileResponses, PrototypeFileErrors, ThrowOnError>({
+      url: "/prototype/{prototypeID}/file",
+      ...options,
+      ...params,
     })
   }
 }
@@ -6783,6 +7121,11 @@ export class OpencodeClient extends HeyApiClient {
   private _feedback?: Feedback
   get feedback(): Feedback {
     return (this._feedback ??= new Feedback({ client: this.client }))
+  }
+
+  private _prototype?: Prototype
+  get prototype(): Prototype {
+    return (this._prototype ??= new Prototype({ client: this.client }))
   }
 
   private _question?: Question

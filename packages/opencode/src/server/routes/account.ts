@@ -3,7 +3,6 @@ import { describeRoute, resolver, validator } from "hono-openapi"
 import z from "zod"
 import { lazy } from "@/util/lazy"
 import { UserService } from "@/user/service"
-import { UserRbac } from "@/user/rbac"
 import { AccountContextService } from "@/user/context"
 import { AccountProjectCatalogService } from "@/user/project-catalog"
 import { AccountProjectStateService } from "@/user/project-state"
@@ -17,6 +16,7 @@ import path from "path"
 import { readdir } from "fs/promises"
 import { PlanService } from "@/plan/service"
 import { PlanEvalService } from "@/plan/eval-service"
+import { VhoFeedbackService } from "@/plan/vho-feedback"
 import { Config } from "@/config/config"
 import { AccountProviderState } from "@/provider/account-provider-state"
 import { AccountUserProviderSettingService } from "@/user/user-provider-setting"
@@ -160,6 +160,87 @@ const PlanEvalDetailFailure = z
     permission: z.string().optional(),
   })
   .meta({ ref: "AccountPlanEvalDetailFailure" })
+
+const VhoFeedbackListBody = z.object({
+  feedback_id: z.string().optional(),
+  plan_id: z.string().optional(),
+  feedback_des: z.string().optional(),
+  resolution_status: z.string().optional(),
+  plan_start_date: z.string().optional(),
+  plan_end_date: z.string().optional(),
+  page_num: z.number().int().positive().optional(),
+  page_size: z.number().int().positive().optional(),
+})
+
+const VhoFeedbackListSuccess = z
+  .object({
+    ok: z.literal(true),
+    login_info: z.object({
+      user_id: z.string().optional(),
+      user_name: z.string().optional(),
+    }),
+    list: z.array(
+      z.object({
+        feedback_id: z.string(),
+        plan_id: z.string().optional(),
+        feedback_des: z.string().optional(),
+        customer_name: z.string().optional(),
+        feedback_time: z.string().optional(),
+        resolution_status_name: z.string().optional(),
+      }),
+    ),
+    total: z.number(),
+    page_num: z.number(),
+    page_size: z.number(),
+  })
+  .meta({ ref: "AccountVhoFeedbackListSuccess" })
+
+const VhoFeedbackListFailure = z
+  .object({
+    ok: z.literal(false),
+    code: z.enum([
+      "vho_feedback_phone_required",
+      "vho_feedback_upstream_request_failed",
+      "vho_feedback_upstream_invalid",
+      "vho_feedback_upstream_failed",
+      "forbidden",
+    ]),
+    message: z.string().optional(),
+    permission: z.string().optional(),
+  })
+  .meta({ ref: "AccountVhoFeedbackListFailure" })
+
+const VhoFeedbackResolveBody = z
+  .object({
+    feedback_id: z.string().optional(),
+    plan_id: z.string().optional(),
+    feedback_des: z.string().optional(),
+  })
+  .refine((value) => !!value.feedback_id?.trim() || !!value.plan_id?.trim(), {
+    message: "feedback_id_or_plan_id_required",
+  })
+
+const VhoFeedbackResolveSuccess = z
+  .object({
+    ok: z.literal(true),
+    feedback_id: z.string().optional(),
+    plan_id: z.string().optional(),
+    feedback_des: z.string(),
+    saved_plan_id: z.string(),
+    plan_content: z.string(),
+    matched_by: z.enum(["plan_id", "feedback_id"]),
+    prompt_text: z.string(),
+  })
+  .meta({ ref: "AccountVhoFeedbackResolveSuccess" })
+
+const VhoFeedbackResolveFailure = z
+  .object({
+    ok: z.literal(false),
+    code: z.enum(["vho_feedback_ref_missing", "saved_plan_missing", "forbidden"]),
+    message: z.string().optional(),
+    permission: z.string().optional(),
+  })
+  .meta({ ref: "AccountVhoFeedbackResolveFailure" })
 
 const ModelPrefsBody = z.object({
   visibility: z.record(z.string(), z.enum(["show", "hide"])).optional(),
@@ -586,17 +667,13 @@ export const AccountRoutes = lazy(() =>
         return c.json(me)
       },
     )
-    .get(
-      "/me/vho-bind",
-      validator("query", z.object({}).optional()),
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const info = await UserService.meVho(user_id)
-        if (!info) return c.json({ error: "unauthorized" }, 401)
-        return c.json(info)
-      },
-    )
+    .get("/me/vho-bind", validator("query", z.object({}).optional()), async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const info = await UserService.meVho(user_id)
+      if (!info) return c.json({ error: "unauthorized" }, 401)
+      return c.json(info)
+    })
     .post(
       "/me/vho-bind",
       validator(
@@ -626,36 +703,27 @@ export const AccountRoutes = lazy(() =>
         })
       },
     )
-    .get(
-      "/context/projects",
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-        return c.json(await AccountContextService.listProjects({ user_id, context_project_id }))
-      },
-    )
-    .get(
-      "/context/products",
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-        return c.json(await AccountContextService.listProducts({ user_id, context_project_id }))
-      },
-    )
-    .get(
-      "/context/current",
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-        return c.json({
-          context_project_id,
-          last_project_id: await AccountContextService.lastProject(user_id),
-        })
-      },
-    )
+    .get("/context/projects", async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+      return c.json(await AccountContextService.listProjects({ user_id, context_project_id }))
+    })
+    .get("/context/products", async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+      return c.json(await AccountContextService.listProducts({ user_id, context_project_id }))
+    })
+    .get("/context/current", async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+      return c.json({
+        context_project_id,
+        last_project_id: await AccountContextService.lastProject(user_id),
+      })
+    })
     .get(
       "/context/state",
       describeRoute({
@@ -714,20 +782,137 @@ export const AccountRoutes = lazy(() =>
         )
       },
     )
+    .post("/context/select", validator("json", z.object({ project_id: z.string().min(1) })), async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const body = c.req.valid("json")
+      const result = await UserService.selectContext({
+        user_id,
+        project_id: body.project_id,
+        ip: c.req.header("x-forwarded-for"),
+        user_agent: c.req.header("user-agent"),
+      })
+      if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
+      return c.json(result)
+    })
     .post(
-      "/context/select",
-      validator("json", z.object({ project_id: z.string().min(1) })),
+      "/vho-feedback/list",
+      describeRoute({
+        summary: "List VHO feedback tasks",
+        description: "Proxy the VHO feedback task list API and normalize paged result items for build mode selection.",
+        operationId: "account.vhoFeedback.list",
+        responses: {
+          200: {
+            description: "List result",
+            content: {
+              "application/json": {
+                schema: resolver(VhoFeedbackListSuccess),
+              },
+            },
+          },
+          400: {
+            description: "Validation failed",
+            content: {
+              "application/json": {
+                schema: resolver(VhoFeedbackListFailure),
+              },
+            },
+          },
+          403: {
+            description: "Forbidden",
+            content: {
+              "application/json": {
+                schema: resolver(VhoFeedbackListFailure),
+              },
+            },
+          },
+          502: {
+            description: "Upstream failed",
+            content: {
+              "application/json": {
+                schema: resolver(VhoFeedbackListFailure),
+              },
+            },
+          },
+        },
+      }),
+      validator("json", VhoFeedbackListBody),
       async (c) => {
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
         const body = c.req.valid("json")
-        const result = await UserService.selectContext({
-          user_id,
-          project_id: body.project_id,
-          ip: c.req.header("x-forwarded-for"),
-          user_agent: c.req.header("user-agent"),
+        const info = await UserService.meVho(user_id)
+        const result = await VhoFeedbackService.search({
+          phone: info?.phone,
+          query: body,
         })
-        if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
+        if (!result.ok) {
+          const status =
+            result.code === "vho_feedback_phone_required"
+              ? 400
+              : result.code === "vho_feedback_upstream_request_failed" || result.code === "vho_feedback_upstream_failed"
+                ? 502
+                : 400
+          return c.json(result, status)
+        }
+        return c.json(result)
+      },
+    )
+    .post(
+      "/vho-feedback/resolve",
+      describeRoute({
+        summary: "Resolve selected VHO feedback to saved plan prompt",
+        description: "Resolve a selected VHO feedback row into local saved plan content and prebuilt prompt text.",
+        operationId: "account.vhoFeedback.resolve",
+        responses: {
+          200: {
+            description: "Resolve result",
+            content: {
+              "application/json": {
+                schema: resolver(VhoFeedbackResolveSuccess),
+              },
+            },
+          },
+          400: {
+            description: "Validation failed",
+            content: {
+              "application/json": {
+                schema: resolver(VhoFeedbackResolveFailure),
+              },
+            },
+          },
+          403: {
+            description: "Forbidden",
+            content: {
+              "application/json": {
+                schema: resolver(VhoFeedbackResolveFailure),
+              },
+            },
+          },
+          404: {
+            description: "Plan not found",
+            content: {
+              "application/json": {
+                schema: resolver(VhoFeedbackResolveFailure),
+              },
+            },
+          },
+        },
+      }),
+      validator("json", VhoFeedbackResolveBody),
+      async (c) => {
+        const user_id = requireLogin(c)
+        if (typeof user_id !== "string") return user_id
+        const denied = requireBuildUse(c)
+        if (denied) return denied
+        const body = c.req.valid("json")
+        const result = await VhoFeedbackService.resolve(body)
+        if (!result.ok) {
+          const status = result.code === "saved_plan_missing" ? 404 : 400
+          return c.json(result, status)
+        }
         return c.json(result)
       },
     )
@@ -797,7 +982,9 @@ export const AccountRoutes = lazy(() =>
           const status =
             result.code === "project_forbidden"
               ? 403
-              : result.code === "session_missing" || result.code === "message_missing" || result.code === "project_missing"
+              : result.code === "session_missing" ||
+                  result.code === "message_missing" ||
+                  result.code === "project_missing"
                 ? 404
                 : 400
           return c.json({ ...result, error_code: result.code }, status)
@@ -875,11 +1062,12 @@ export const AccountRoutes = lazy(() =>
           context_project_id,
         })
         if (!result.ok) {
-          const status = result.code === "forbidden"
-            ? 403
-            : result.code === "plan_eval_missing" || result.code === "plan_eval_plan_missing"
-              ? 404
-              : 400
+          const status =
+            result.code === "forbidden"
+              ? 403
+              : result.code === "plan_eval_missing" || result.code === "plan_eval_plan_missing"
+                ? 404
+                : 400
           return c.json(result, status)
         }
         UserService.auditLater({
@@ -1016,112 +1204,94 @@ export const AccountRoutes = lazy(() =>
         return c.json(true)
       },
     )
-    .delete(
-      "/me/provider/:provider_id",
-      validator("param", z.object({ provider_id: z.string() })),
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const denied = requireBuildUse(c)
-        if (denied) return denied
-        const param = c.req.valid("param")
-        await AccountUserProviderSettingService.removeProviderAuth(user_id, param.provider_id)
-        await UserService.audit({
-          actor_user_id: user_id,
-          action: "account.provider.self.remove",
-          target_type: "user",
-          target_id: param.provider_id,
-          result: "success",
-          detail_json: {
-            provider_id: param.provider_id,
-          },
-          ip: c.req.header("x-forwarded-for"),
-          user_agent: c.req.header("user-agent"),
-        })
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
-    )
-    .get(
-      "/me/providers/catalog",
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
-        const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
-        const state = await AccountProviderState.load(user_id)
-        const self = UserRbac.canUseBuild({ roles, permissions })
-          ? await AccountUserProviderSettingService.providerCatalog(user_id)
-          : { rows: {}, control: {}, providers: [] }
-        return c.json({
-          rows: self.rows,
-          providers: self.providers,
-          user_control: UserRbac.canUseBuild({ roles, permissions }) ? state.user_control : {},
-          global_control: state.global_control,
-          user_providers: self.providers,
-          selectable_models: UserRbac.canUseBuild({ roles, permissions })
-            ? state.selectable_models
-            : state.selectable_models.filter((item) => item.source !== "user"),
-        })
-      },
-    )
-    .get(
-      "/me/provider-control",
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
-        const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
-        const control = UserRbac.canUseBuild({ roles, permissions })
-          ? await AccountUserProviderSettingService.providerControl(user_id)
-          : await AccountSystemSettingService.providerControl()
-        return c.json({
-          model: control.model,
-          small_model: control.small_model,
-          enabled_providers: control.enabled_providers,
-          disabled_providers: control.disabled_providers,
-        })
-      },
-    )
-    .put(
-      "/me/provider-control",
-      validator("json", UserProviderControlBody),
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const denied = requireBuildUse(c)
-        if (denied) return denied
-        const body = c.req.valid("json")
-        const valid = await AccountUserProviderSettingService.validateProviderControl(user_id, body)
-        if (!valid.ok) return c.json(valid, 400)
-        await AccountUserProviderSettingService.setProviderControl(user_id, valid.value)
-        await UserService.audit({
-          actor_user_id: user_id,
-          action: "account.provider.self.control.update",
-          target_type: "user",
-          target_id: "provider_control",
-          result: "success",
-          detail_json: valid.value,
-          ip: c.req.header("x-forwarded-for"),
-          user_agent: c.req.header("user-agent"),
-        })
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
-    )
-    .get(
-      "/me/providers/:provider_id/config",
-      validator("param", z.object({ provider_id: z.string() })),
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const denied = requireBuildUse(c)
-        if (denied) return denied
-        const param = c.req.valid("param")
-        const config = await AccountUserProviderSettingService.providerConfig(user_id, param.provider_id)
-        return c.json({ provider_id: param.provider_id, config: config ?? null })
-      },
-    )
+    .delete("/me/provider/:provider_id", validator("param", z.object({ provider_id: z.string() })), async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const denied = requireBuildUse(c)
+      if (denied) return denied
+      const param = c.req.valid("param")
+      await AccountUserProviderSettingService.removeProviderAuth(user_id, param.provider_id)
+      await UserService.audit({
+        actor_user_id: user_id,
+        action: "account.provider.self.remove",
+        target_type: "user",
+        target_id: param.provider_id,
+        result: "success",
+        detail_json: {
+          provider_id: param.provider_id,
+        },
+        ip: c.req.header("x-forwarded-for"),
+        user_agent: c.req.header("user-agent"),
+      })
+      await AccountProviderState.invalidate()
+      return c.json(true)
+    })
+    .get("/me/providers/catalog", async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+      const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
+      const state = await AccountProviderState.load(user_id)
+      const self = UserRbac.canUseBuild({ roles, permissions })
+        ? await AccountUserProviderSettingService.providerCatalog(user_id)
+        : { rows: {}, control: {}, providers: [] }
+      return c.json({
+        rows: self.rows,
+        providers: self.providers,
+        user_control: UserRbac.canUseBuild({ roles, permissions }) ? state.user_control : {},
+        global_control: state.global_control,
+        user_providers: self.providers,
+        selectable_models: UserRbac.canUseBuild({ roles, permissions })
+          ? state.selectable_models
+          : state.selectable_models.filter((item) => item.source !== "user"),
+      })
+    })
+    .get("/me/provider-control", async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const roles = (c.get("account_roles" as never) as string[] | undefined) ?? []
+      const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
+      const control = UserRbac.canUseBuild({ roles, permissions })
+        ? await AccountUserProviderSettingService.providerControl(user_id)
+        : await AccountSystemSettingService.providerControl()
+      return c.json({
+        model: control.model,
+        small_model: control.small_model,
+        enabled_providers: control.enabled_providers,
+        disabled_providers: control.disabled_providers,
+      })
+    })
+    .put("/me/provider-control", validator("json", UserProviderControlBody), async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const denied = requireBuildUse(c)
+      if (denied) return denied
+      const body = c.req.valid("json")
+      const valid = await AccountUserProviderSettingService.validateProviderControl(user_id, body)
+      if (!valid.ok) return c.json(valid, 400)
+      await AccountUserProviderSettingService.setProviderControl(user_id, valid.value)
+      await UserService.audit({
+        actor_user_id: user_id,
+        action: "account.provider.self.control.update",
+        target_type: "user",
+        target_id: "provider_control",
+        result: "success",
+        detail_json: valid.value,
+        ip: c.req.header("x-forwarded-for"),
+        user_agent: c.req.header("user-agent"),
+      })
+      await AccountProviderState.invalidate()
+      return c.json(true)
+    })
+    .get("/me/providers/:provider_id/config", validator("param", z.object({ provider_id: z.string() })), async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const denied = requireBuildUse(c)
+      if (denied) return denied
+      const param = c.req.valid("param")
+      const config = await AccountUserProviderSettingService.providerConfig(user_id, param.provider_id)
+      return c.json({ provider_id: param.provider_id, config: config ?? null })
+    })
     .put(
       "/me/providers/:provider_id/config",
       validator("param", z.object({ provider_id: z.string() })),
@@ -1205,41 +1375,30 @@ export const AccountRoutes = lazy(() =>
         return c.json(true)
       },
     )
-    .delete(
-      "/me/providers/:provider_id",
-      validator("param", z.object({ provider_id: z.string() })),
-      async (c) => {
-        const user_id = requireLogin(c)
-        if (typeof user_id !== "string") return user_id
-        const denied = requireBuildUse(c)
-        if (denied) return denied
-        const param = c.req.valid("param")
-        await AccountUserProviderSettingService.removeProvider(user_id, param.provider_id)
-        await UserService.audit({
-          actor_user_id: user_id,
-          action: "account.provider.self.delete",
-          target_type: "user",
-          target_id: param.provider_id,
-          result: "success",
-          detail_json: {
-            provider_id: param.provider_id,
-          },
-          ip: c.req.header("x-forwarded-for"),
-          user_agent: c.req.header("user-agent"),
-        })
-        await AccountProviderState.invalidate()
-        return c.json(true)
-      },
-    )
-    .get(
-      "/me/model-prefs",
-      async (c) => c.json(forbidUserProviderConfig(), 403),
-    )
-    .put(
-      "/me/model-prefs",
-      validator("json", ModelPrefsBody),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
-    )
+    .delete("/me/providers/:provider_id", validator("param", z.object({ provider_id: z.string() })), async (c) => {
+      const user_id = requireLogin(c)
+      if (typeof user_id !== "string") return user_id
+      const denied = requireBuildUse(c)
+      if (denied) return denied
+      const param = c.req.valid("param")
+      await AccountUserProviderSettingService.removeProvider(user_id, param.provider_id)
+      await UserService.audit({
+        actor_user_id: user_id,
+        action: "account.provider.self.delete",
+        target_type: "user",
+        target_id: param.provider_id,
+        result: "success",
+        detail_json: {
+          provider_id: param.provider_id,
+        },
+        ip: c.req.header("x-forwarded-for"),
+        user_agent: c.req.header("user-agent"),
+      })
+      await AccountProviderState.invalidate()
+      return c.json(true)
+    })
+    .get("/me/model-prefs", async (c) => c.json(forbidUserProviderConfig(), 403))
+    .put("/me/model-prefs", validator("json", ModelPrefsBody), async (c) => c.json(forbidUserProviderConfig(), 403))
     .get(
       "/admin/roles",
       UserRbac.require("role:manage"),
@@ -1307,10 +1466,8 @@ export const AccountRoutes = lazy(() =>
         return c.json(result)
       },
     )
-    .get(
-      "/admin/settings/project-scan-root",
-      UserRbac.require("role:manage"),
-      async (c) => c.json(await AccountSystemSettingService.projectScanRoot()),
+    .get("/admin/settings/project-scan-root", UserRbac.require("role:manage"), async (c) =>
+      c.json(await AccountSystemSettingService.projectScanRoot()),
     )
     .get(
       "/admin/fs/directories",
@@ -1336,7 +1493,9 @@ export const AccountRoutes = lazy(() =>
           return c.json({ ok: false as const, code: "directory_missing" }, 400)
         }
         const full = path.resolve(current)
-        const entries = await readdir(full, { withFileTypes: true }).catch(() => [] as Awaited<ReturnType<typeof readdir>>)
+        const entries = await readdir(full, { withFileTypes: true }).catch(
+          () => [] as Awaited<ReturnType<typeof readdir>>,
+        )
         const directories = entries
           .filter((item) => item.isDirectory())
           .map((item) => ({
@@ -1383,14 +1542,10 @@ export const AccountRoutes = lazy(() =>
         return c.json(result)
       },
     )
-    .get(
-      "/admin/permissions",
-      UserRbac.require("role:manage"),
-      async (c) => {
-        await UserService.ensureSeed()
-        return c.json(await UserService.listPermissions())
-      },
-    )
+    .get("/admin/permissions", UserRbac.require("role:manage"), async (c) => {
+      await UserService.ensureSeed()
+      return c.json(await UserService.listPermissions())
+    })
     .get(
       "/admin/projects/catalog",
       UserRbac.require("role:manage"),
@@ -1405,11 +1560,7 @@ export const AccountRoutes = lazy(() =>
         return c.json(await AccountProjectCatalogService.list({ source: query.source }))
       },
     )
-    .get(
-      "/admin/products",
-      UserRbac.require("role:manage"),
-      async (c) => c.json(await AccountProductService.list()),
-    )
+    .get("/admin/products", UserRbac.require("role:manage"), async (c) => c.json(await AccountProductService.list()))
     .post(
       "/admin/products",
       UserRbac.require("role:manage"),
@@ -2116,10 +2267,8 @@ export const AccountRoutes = lazy(() =>
         return c.json(result)
       },
     )
-    .get(
-      "/admin/users/:user_id/providers",
-      validator("param", z.object({ user_id: z.string() })),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+    .get("/admin/users/:user_id/providers", validator("param", z.object({ user_id: z.string() })), async (c) =>
+      c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/admin/users/:user_id/providers/:provider_id",
@@ -2132,10 +2281,8 @@ export const AccountRoutes = lazy(() =>
       validator("param", z.object({ user_id: z.string(), provider_id: z.string() })),
       async (c) => c.json(forbidUserProviderConfig(), 403),
     )
-    .get(
-      "/admin/users/:user_id/provider-control",
-      validator("param", z.object({ user_id: z.string() })),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+    .get("/admin/users/:user_id/provider-control", validator("param", z.object({ user_id: z.string() })), async (c) =>
+      c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/admin/users/:user_id/provider-control",
@@ -2160,10 +2307,8 @@ export const AccountRoutes = lazy(() =>
       validator("json", z.object({ disabled: z.boolean() })),
       async (c) => c.json(forbidUserProviderConfig(), 403),
     )
-    .get(
-      "/admin/users/:user_id/model-prefs",
-      validator("param", z.object({ user_id: z.string() })),
-      async (c) => c.json(forbidUserProviderConfig(), 403),
+    .get("/admin/users/:user_id/model-prefs", validator("param", z.object({ user_id: z.string() })), async (c) =>
+      c.json(forbidUserProviderConfig(), 403),
     )
     .put(
       "/admin/users/:user_id/model-prefs",

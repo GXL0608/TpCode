@@ -59,6 +59,8 @@ import { canUseRuntimeModelSelector } from "./prompt-input/runtime-model-access"
 import { canUseBuildCapability } from "@/utils/account-build-access"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
 import { createSpeechRecognition } from "@/utils/speech"
+import { DialogVhoFeedback } from "./dialog-vho-feedback"
+import { buildVhoFeedbackPrompt, canOpenVhoFeedback, mergeVhoFeedbackPrompt } from "./vho-feedback"
 
 interface PromptInputProps {
   class?: string
@@ -400,7 +402,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (voicePhase() === "failed") return voiceError() || language.t("prompt.voice.status.failed")
     return ""
   })
-  const speechLocale = () => SPEECH_LOCALE[language.locale()] ?? (typeof navigator !== "undefined" ? navigator.language : "en-US")
+  const speechLocale = () =>
+    SPEECH_LOCALE[language.locale()] ?? (typeof navigator !== "undefined" ? navigator.language : "en-US")
 
   const [store, setStore] = createStore<{
     popover: "at" | "slash" | null
@@ -1147,7 +1150,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     if (blob.size <= 0) {
       finalizing = false
-      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      failVoice(
+        language.t("prompt.toast.voiceRecordFailed.title"),
+        language.t("prompt.toast.voiceRecordFailed.description"),
+      )
       return
     }
 
@@ -1164,7 +1170,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
     if (!dataUrl) {
       finalizing = false
-      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      failVoice(
+        language.t("prompt.toast.voiceRecordFailed.title"),
+        language.t("prompt.toast.voiceRecordFailed.description"),
+      )
       return
     }
 
@@ -1225,7 +1234,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const startVoiceInput = async () => {
     if (!supportsVoiceCapture()) {
-      failVoice(language.t("prompt.toast.voiceUnsupported.title"), language.t("prompt.toast.voiceUnsupported.description"))
+      failVoice(
+        language.t("prompt.toast.voiceUnsupported.title"),
+        language.t("prompt.toast.voiceUnsupported.description"),
+      )
       return
     }
     if (voicePhase() === "recording" || voicePhase() === "transcribing") return
@@ -1240,7 +1252,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         )
         return
       }
-      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      failVoice(
+        language.t("prompt.toast.voiceRecordFailed.title"),
+        language.t("prompt.toast.voiceRecordFailed.description"),
+      )
       return
     }
 
@@ -1267,7 +1282,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       speech.stop()
       recorder = undefined
       chunks = []
-      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      failVoice(
+        language.t("prompt.toast.voiceRecordFailed.title"),
+        language.t("prompt.toast.voiceRecordFailed.description"),
+      )
     }
     next.onstop = () => {
       void completeVoice(activeVoiceRun)
@@ -1293,7 +1311,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       clearVoiceStream()
       recorder = undefined
       chunks = []
-      failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
+      failVoice(
+        language.t("prompt.toast.voiceRecordFailed.title"),
+        language.t("prompt.toast.voiceRecordFailed.description"),
+      )
       return
     }
     timer = window.setTimeout(() => {
@@ -1484,6 +1505,38 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (!id) return false
     return permission.isAutoAccepting(id, sdk.directory)
   })
+
+  const canSelectVhoFeedback = createMemo(
+    () =>
+      !!params.id &&
+      canOpenVhoFeedback({
+        agent: local.agent.current()?.name,
+      }),
+  )
+
+  /**
+   * 中文注释：把选中的反馈内容写回当前输入框，必要时先确认覆盖现有草稿。
+   */
+  const applyVhoFeedback = (input: { prompt_text?: string; feedback_des?: string; plan_content: string }) => {
+    const next =
+      input.prompt_text?.trim() ||
+      buildVhoFeedbackPrompt({
+        feedback_des: input.feedback_des,
+        plan_content: input.plan_content,
+      })
+    const current = prompt
+      .current()
+      .map((part) => ("content" in part ? part.content : ""))
+      .join("")
+    const merged = mergeVhoFeedbackPrompt({
+      current,
+      next,
+      confirm: (message) => window.confirm(message),
+    })
+    if (!merged.ok) return
+    prompt.set([{ type: "text", content: merged.value, start: 0, end: merged.value.length }], merged.value.length)
+    requestAnimationFrame(() => editorRef?.focus())
+  }
 
   return (
     <div class="relative size-full _max-h-[320px] flex flex-col gap-0">
@@ -1804,6 +1857,28 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 triggerStyle={{ height: "28px" }}
                 variant="ghost"
               />
+            </Show>
+            <Show when={canSelectVhoFeedback()}>
+              <Button
+                type="button"
+                variant="ghost"
+                class="h-7 px-2 text-13-regular"
+                onClick={() =>
+                  dialog.show(() => (
+                    <DialogVhoFeedback
+                      onSelect={(input) =>
+                        applyVhoFeedback({
+                          prompt_text: input.prompt_text,
+                          feedback_des: input.feedback_des,
+                          plan_content: input.plan_content,
+                        })
+                      }
+                    />
+                  ))
+                }
+              >
+                {language.t("prompt.action.selectFeedback")}
+              </Button>
             </Show>
           </div>
         </div>
