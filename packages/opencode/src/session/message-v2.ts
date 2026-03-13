@@ -173,6 +173,8 @@ export namespace MessageV2 {
     filename: z.string().optional(),
     url: z.string(),
     duration_ms: z.number().int().nonnegative().optional(),
+    ocr_text: z.string().optional(),
+    ocr_engine: z.string().optional(),
     forModel: z.boolean().optional(),
     source: FilePartSource.optional(),
   }).meta({

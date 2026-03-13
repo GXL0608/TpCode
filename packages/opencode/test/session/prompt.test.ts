@@ -7,7 +7,7 @@ import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionSummary } from "../../src/session/summary"
-import { SessionVoiceTable } from "../../src/session/session.sql"
+import { SessionVoiceTable, TpSessionPictureTable } from "../../src/session/session.sql"
 import { SessionStatus } from "../../src/session/status"
 import { Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
@@ -695,6 +695,77 @@ describe("session.prompt voice", () => {
       },
     })
   })
+})
+
+describe("session.prompt picture", () => {
+  test(
+    "stores data image attachment with ocr fields",
+    async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const payload = Buffer.from("picture-data", "utf-8").toString("base64")
+
+        const message = await SessionPrompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: "extract text from image",
+            },
+            {
+              type: "file",
+              mime: "image/png",
+              filename: "picture.png",
+              url: `data:image/png;base64,${payload}`,
+              ocr_text: "detected text",
+              ocr_engine: "browser_ocr",
+            },
+          ],
+        })
+
+        if (message.info.role !== "user") throw new Error("expected user message")
+        const image = message.parts.find((part): part is MessageV2.FilePart => part.type === "file")
+        expect(image).toBeDefined()
+        if (!image) return
+
+        expect(image.url.startsWith("data:image/png;base64,")).toBe(true)
+
+        const row = await Database.use((db) =>
+          db.select().from(TpSessionPictureTable).where(eq(TpSessionPictureTable.part_id, image.id)).get(),
+        )
+        expect(row).toBeDefined()
+        if (!row) return
+
+        expect(row.session_id).toBe(session.id)
+        expect(row.message_id).toBe(message.info.id)
+        expect(row.mime).toBe("image/png")
+        expect(row.filename).toBe("picture.png")
+        expect(row.ocr_text).toBe("detected text")
+        expect(row.ocr_engine).toBe("browser_ocr")
+        expect(row.size_bytes).toBe(Buffer.from("picture-data", "utf-8").length)
+        expect(Buffer.from(row.image_bytes).toString("utf-8")).toBe("picture-data")
+
+        await Session.remove(session.id)
+      },
+    })
+    },
+    30_000,
+  )
 })
 
 describe("session.prompt plan confidentiality hardening", () => {

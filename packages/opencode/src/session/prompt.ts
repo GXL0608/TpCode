@@ -46,6 +46,7 @@ import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
 import { TokenUsageService } from "@/usage/service"
 import { SessionVoice } from "./voice"
+import { SessionPicture } from "./picture"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { NotFoundError } from "@/storage/db"
 
@@ -1435,6 +1436,36 @@ export namespace SessionPrompt {
                     sessionID: input.sessionID,
                     filename,
                     url: SessionVoice.url(input.sessionID, saved.id),
+                  },
+                ]
+              }
+              if (part.mime.startsWith("image/")) {
+                const id = part.id ?? Identifier.ascending("part")
+                const filename = part.filename ?? "attachment"
+                await SessionPicture.saveDataFile({
+                  session_id: input.sessionID,
+                  message_id: info.id,
+                  part_id: id,
+                  mime: part.mime,
+                  filename,
+                  ocr_text: part.ocr_text,
+                  ocr_engine: part.ocr_engine,
+                  data_url: part.url,
+                }).catch((error) => {
+                  log.error("failed to store picture attachment", {
+                    error,
+                    sessionID: input.sessionID,
+                    messageID: info.id,
+                    partID: id,
+                  })
+                })
+                return [
+                  {
+                    ...part,
+                    id,
+                    messageID: info.id,
+                    sessionID: input.sessionID,
+                    filename,
                   },
                 ]
               }

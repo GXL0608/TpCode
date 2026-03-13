@@ -124,6 +124,32 @@ export const SessionVoiceTable = table(
   ],
 )
 
+export const TpSessionPictureTable = table(
+  "tp_session_picture",
+  {
+    id: text().primaryKey(),
+    session_id: text()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    message_id: text()
+      .notNull()
+      .references(() => MessageTable.id, { onDelete: "cascade" }),
+    part_id: text().notNull(),
+    mime: text().notNull(),
+    filename: text().notNull(),
+    size_bytes: integer().notNull(),
+    ocr_text: text(),
+    ocr_engine: text(),
+    image_bytes: bytes().notNull(),
+    ...Timestamps,
+  },
+  (table) => [
+    index("tp_session_picture_session_time_idx").on(table.session_id, table.time_created),
+    index("tp_session_picture_message_idx").on(table.message_id),
+    uniqueIndex("tp_session_picture_part_uidx").on(table.part_id),
+  ],
+)
+
 export const TodoTable = table(
   "todo",
   {

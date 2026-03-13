@@ -4,6 +4,7 @@ export {
   MessageTable,
   PartTable,
   SessionVoiceTable,
+  TpSessionPictureTable,
   TodoTable,
   PermissionTable,
   SyncQueueTable,
