@@ -2184,6 +2184,7 @@ export default function Layout(props: ParentProps) {
           >
             <SidebarContent
               mobile
+              onMobileBlankPress={() => layout.mobileSidebar.hide()}
               opened={() => layout.sidebar.opened()}
               aimMove={aim.move}
               projects={() => layout.projects.list()}

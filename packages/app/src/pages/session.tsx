@@ -1,6 +1,6 @@
 import { onCleanup, Show, Match, Switch, createMemo, createEffect, on, onMount, untrack } from "solid-js"
-import { createMediaQuery } from "@solid-primitives/media"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
+import { createIsDesktop } from "@/utils/device-detection"
 import { useLocal } from "@/context/local"
 import { selectionFromLines, useFile, type FileSelection, type SelectedLineRange } from "@/context/file"
 import { createStore } from "solid-js/store"
@@ -111,7 +111,7 @@ export default function Page() {
     ),
   )
 
-  const isDesktop = createMediaQuery("(min-width: 768px)")
+  const isDesktop = createIsDesktop()
   const desktopReviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
   const desktopFileTreeOpen = createMemo(() => isDesktop() && layout.fileTree.opened())
   const desktopSidePanelOpen = createMemo(() => desktopReviewOpen() || desktopFileTreeOpen())

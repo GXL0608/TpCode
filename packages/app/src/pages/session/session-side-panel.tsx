@@ -1,6 +1,6 @@
 import { For, Match, Show, Switch, createEffect, createMemo, onCleanup, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
-import { createMediaQuery } from "@solid-primitives/media"
+import { createIsDesktop } from "@/utils/device-detection"
 import { useParams } from "@solidjs/router"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { IconButton } from "@opencode-ai/ui/icon-button"
@@ -42,7 +42,7 @@ export function SessionSidePanel(props: {
   const command = useCommand()
   const dialog = useDialog()
 
-  const isDesktop = createMediaQuery("(min-width: 768px)")
+  const isDesktop = createIsDesktop()
   const sessionKey = createMemo(() => `${params.dir}${params.id ? "/" + params.id : ""}`)
   const tabs = createMemo(() => layout.tabs(sessionKey))
   const view = createMemo(() => layout.view(sessionKey))

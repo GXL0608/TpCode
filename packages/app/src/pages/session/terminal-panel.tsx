@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, on } from "solid-js"
 import { createStore } from "solid-js/store"
-import { createMediaQuery } from "@solid-primitives/media"
+import { createIsDesktop } from "@/utils/device-detection"
 import { useParams } from "@solidjs/router"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
@@ -27,7 +27,7 @@ export function TerminalPanel() {
   const language = useLanguage()
   const command = useCommand()
 
-  const isDesktop = createMediaQuery("(min-width: 768px)")
+  const isDesktop = createIsDesktop()
   const sessionKey = createMemo(() => `${params.dir}${params.id ? "/" + params.id : ""}`)
   const view = createMemo(() => layout.view(sessionKey))
 

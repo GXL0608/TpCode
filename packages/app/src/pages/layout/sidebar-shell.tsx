@@ -15,6 +15,7 @@ import { sidebarExpanded } from "./sidebar-shell-helpers"
 
 export const SidebarContent = (props: {
   mobile?: boolean
+  onMobileBlankPress?: () => void
   opened: Accessor<boolean>
   aimMove: (event: MouseEvent) => void
   projects: Accessor<LocalProject[]>
@@ -33,9 +34,38 @@ export const SidebarContent = (props: {
 }): JSX.Element => {
   const expanded = createMemo(() => sidebarExpanded(props.mobile, props.opened()))
   const placement = () => (props.mobile ? "bottom" : "right")
+  const blank = (event: MouseEvent) => {
+    if (!props.mobile || !props.onMobileBlankPress) return
+
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+
+    if (
+      target.closest(
+        [
+          "button",
+          "a",
+          "input",
+          "textarea",
+          "select",
+          "[role='button']",
+          "[data-action]",
+          "[data-session-id]",
+          "[data-project]",
+          "[data-workspace]",
+          "[data-slot='dropdown-menu-content']",
+          "[data-slot='dropdown-menu-trigger']",
+        ].join(","),
+      )
+    ) {
+      return
+    }
+
+    props.onMobileBlankPress()
+  }
 
   return (
-    <div class="flex h-full w-full overflow-hidden">
+    <div class="flex h-full w-full overflow-hidden" onClick={blank}>
       <div
         class="w-16 shrink-0 bg-background-base flex flex-col items-center overflow-hidden"
         onMouseMove={props.aimMove}
