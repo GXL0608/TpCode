@@ -87,7 +87,7 @@ import {
   WorkspaceDragOverlay,
   type WorkspaceSidebarContext,
 } from "./layout/sidebar-workspace"
-import { workspaceOpenState } from "./layout/sidebar-workspace-helpers"
+import { workspaceOpenState, workspaceVisibleName } from "./layout/sidebar-workspace-helpers"
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
 
@@ -608,8 +608,15 @@ export default function Layout(props: ParentProps) {
     void accountProject.setWorkspaceAlias(projectId, branch, next)
   }
 
+  /** 中文注释：左侧工作区标签需要按角色隐藏分支来源，普通用户仅显示别名或目录名。 */
   const workspaceLabel = (directory: string, branch?: string, projectId?: string) =>
-    workspaceName(directory, projectId, branch) ?? branch ?? getFilename(directory)
+    workspaceVisibleName({
+      directory,
+      branch,
+      alias: workspaceName(directory, projectId, branch),
+      local: projectRootByDirectory(globalSync.data.project, directory) === directory,
+      superAdmin: isSuperAdmin(),
+    })
 
   const workspaceSetting = createMemo(() => {
     const project = currentProject()
@@ -1800,6 +1807,7 @@ export default function Layout(props: ParentProps) {
       }),
     )
     globalSync.child(created.directory)
+    layout.handoff.setWorkspace(created.directory, created.branch)
     navigateWithSidebarReset(`/${base64Encode(created.directory)}/session`)
   }
 
@@ -1813,6 +1821,7 @@ export default function Layout(props: ParentProps) {
     clearHoverProjectSoon,
     prefetchSession,
     archiveSession,
+    isSuperAdmin,
     workspaceName,
     renameWorkspace,
     editorOpen,
@@ -1910,20 +1919,22 @@ export default function Layout(props: ParentProps) {
                       stopPropagation
                     />
 
-                    <Tooltip
-                      placement="bottom"
-                      gutter={2}
-                      value={p().worktree}
-                      class="shrink-0"
-                      contentStyle={{
-                        "max-width": "640px",
-                        transform: "translate3d(52px, 0, 0)",
-                      }}
-                    >
-                      <span class="text-12-regular text-text-base truncate select-text">
-                        {p().worktree.replace(homedir(), "~")}
-                      </span>
-                    </Tooltip>
+                    <Show when={isSuperAdmin()}>
+                      <Tooltip
+                        placement="bottom"
+                        gutter={2}
+                        value={p().worktree}
+                        class="shrink-0"
+                        contentStyle={{
+                          "max-width": "640px",
+                          transform: "translate3d(52px, 0, 0)",
+                        }}
+                      >
+                        <span class="text-12-regular text-text-base truncate select-text">
+                          {p().worktree.replace(homedir(), "~")}
+                        </span>
+                      </Tooltip>
+                    </Show>
                   </div>
 
                   <DropdownMenu modal={!sidebarHovering()}>

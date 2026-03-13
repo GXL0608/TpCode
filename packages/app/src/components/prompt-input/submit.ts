@@ -115,7 +115,13 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
   const errorMessage = (err: unknown) => {
     if (err && typeof err === "object" && "data" in err) {
-      const data = (err as { data?: { message?: string } }).data
+      const data = (err as { data?: { name?: string; message?: string } }).data
+      if (data?.name === "BuildMainWorktreeWriteDeniedError") {
+        return language.t("toast.build.mainWorktreeWriteDenied.description")
+      }
+      if (data?.name === "BuildProtectedBranchPushDeniedError") {
+        return language.t("toast.build.protectedBranchPushDenied.description")
+      }
       if (data?.message) return data.message
     }
     if (err instanceof Error) return err.message
@@ -239,6 +245,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const routeID = params.id
     const isNewSession = !routeID
     const worktreeSelection = input.newSessionWorktree?.() || "main"
+    let createdWorkspace: { directory: string; branch?: string } | undefined
 
     let sessionDirectory = projectDirectory
     let client =
@@ -271,6 +278,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         }
         WorktreeState.pending(createdWorktree.directory)
         sessionDirectory = createdWorktree.directory
+        createdWorkspace = {
+          directory: createdWorktree.directory,
+          branch: createdWorktree.branch,
+        }
       }
 
       if (worktreeSelection !== "main" && worktreeSelection !== "create") {
@@ -290,8 +301,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     let sessionID = routeID ?? input.info()?.id
     if (!sessionID && !routeID) {
+      const ownedWorkspace = layout.handoff.workspace(sessionDirectory)
       const created = await client.session
-        .create()
+        .create(createdWorkspace || ownedWorkspace ? { workspace: createdWorkspace ?? ownedWorkspace } : undefined)
         .then((x) => x.data ?? undefined)
         .catch((err) => {
           showToast({
@@ -301,6 +313,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           return undefined
         })
       if (created) {
+        if (createdWorkspace || ownedWorkspace) layout.handoff.clearWorkspace(sessionDirectory)
         sessionID = created.id
         layout.handoff.setTabs(base64Encode(sessionDirectory), created.id)
         navigate(`/${base64Encode(sessionDirectory)}/session/${created.id}`)

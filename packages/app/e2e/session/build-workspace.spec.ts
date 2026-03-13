@@ -111,13 +111,14 @@ async function openProject(page: Page, directory: string, sessionID?: string) {
 
 test.describe.configure({ mode: "serial" })
 
-test("build new session page shows the main workspace before the first prompt", async ({ page, withProject }) => {
+test("build new session page opens without workspace hints before the first prompt", async ({ page, withProject }) => {
   await withProject(async ({ directory }) => {
     await openProject(page, directory)
     await selectBuild(page)
-    await expect(page.getByText("Current workspace")).toBeVisible()
-    await expect(page.getByText("Main workspace")).toBeVisible()
-    await expect(page.getByText("The first build message will create an isolated workspace for this session.")).toBeVisible()
+    await expect(page.getByText("Current workspace")).toHaveCount(0)
+    await expect(page.getByText("Main workspace")).toHaveCount(0)
+    await expect(page.getByText("The first build message will create an isolated workspace for this session.")).toHaveCount(0)
+    await expect(page.locator(promptSelector)).toBeVisible()
   })
 })
 
@@ -275,9 +276,9 @@ test("build sessions started from an existing workspace still migrate to a fresh
     await page.goto(sessionPath(workspace.directory))
     await expect(page.locator(promptSelector)).toBeVisible()
     await selectBuild(page)
-    await expect(page.getByText("Current workspace")).toBeVisible()
-    await expect(page.getByText("Shared workspace", { exact: true })).toBeVisible()
-    await expect(page.getByText("You are currently in a shared workspace. The first build message will switch this session to an isolated workspace.")).toBeVisible()
+    await expect(page.getByText("Current workspace")).toHaveCount(0)
+    await expect(page.getByText("Shared workspace", { exact: true })).toHaveCount(0)
+    await expect(page.getByText("You are currently in a shared workspace. The first build message will switch this session to an isolated workspace.")).toHaveCount(0)
     await sendFirstPrompt(page, `Reply with exactly: E2E_BUILD_SHARED_${Date.now()}`)
 
     await expect.poll(() => sessionIDFromUrl(page.url()) ?? "", { timeout: 30_000 }).not.toBe("")

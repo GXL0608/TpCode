@@ -450,6 +450,8 @@ export const dict = {
   "toast.model.none.description": "请先连接提供商以总结此会话",
   "toast.model.unavailable.title": "未获取到模型",
   "toast.model.unavailable.description": "当前模型不可用，请先配置或连接可用模型。",
+  "toast.build.mainWorktreeWriteDenied.description": "Build 模式禁止写入主工作区，请在当前工作区沙盒内操作。",
+  "toast.build.protectedBranchPushDenied.description": "禁止推送到受保护主分支，请推送到其他分支。",
   "session.header.workspace.main": "主工作区",
   "session.header.workspace.isolated": "独立工作区",
   "session.header.workspace.preparing": "工作区准备中",

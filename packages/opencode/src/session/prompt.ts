@@ -49,6 +49,7 @@ import { SessionVoice } from "./voice"
 import { SessionPicture } from "./picture"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { NotFoundError } from "@/storage/db"
+import { assertBuildCommandAllowed } from "./build-protection"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -592,11 +593,17 @@ export namespace SessionPrompt {
             throw e
           })
           if (step === 1)
-            ensureTitle({
+            void ensureTitle({
               session,
               modelID: model.id,
               providerID: model.providerID,
               history: msgs,
+            }).catch((error) => {
+              if (missing(error)) return
+              log.warn("failed to ensure title", {
+                sessionID,
+                error,
+              })
             })
           const task = tasks.pop()
 
@@ -876,9 +883,12 @@ export namespace SessionPrompt {
           }
 
           if (step === 1) {
-            SessionSummary.summarize({
+            void SessionSummary.summarize({
               sessionID: sessionID,
               messageID: lastUser.id,
+            }).catch((error) => {
+              if (missing(error)) return
+              throw error
             })
           }
 
@@ -1016,6 +1026,11 @@ export namespace SessionPrompt {
             queueResolve(sessionID, item)
             return item
           }
+          const session = await Session.get(sessionID).catch((error) => {
+            if (missing(error)) return
+            throw error
+          })
+          if (!session) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
           throw new Error("Impossible")
         } catch (error) {
           queueReject(sessionID, error)
@@ -1957,6 +1972,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       } else {
         // Otherwise, trigger the session loop to process queued items
         loop({ sessionID: input.sessionID, resume_existing: true }).catch((error) => {
+          if (missing(error)) {
+            log.warn("session loop resume dropped after shell command", {
+              sessionID: input.sessionID,
+              error,
+            })
+            return
+          }
           log.error("session loop failed to resume after shell command", { sessionID: input.sessionID, error })
         })
       }
@@ -2093,6 +2115,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const args = matchingInvocation?.args
 
     const cwd = Instance.directory
+    await assertBuildCommandAllowed({
+      sessionID: input.sessionID,
+      agent: input.agent,
+      command: input.command,
+      cwd,
+    })
     const shellEnv = await Plugin.trigger(
       "shell.env",
       { cwd, sessionID: input.sessionID, callID: part.callID },
@@ -2266,6 +2294,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     if (shell.length > 0) {
       const results = await Promise.all(
         shell.map(async ([, cmd]) => {
+          await assertBuildCommandAllowed({
+            sessionID: input.sessionID,
+            agent: agentName,
+            command: cmd,
+            cwd: Instance.directory,
+          })
           try {
             return await $`${{ raw: cmd }}`.quiet().nothrow().text()
           } catch (error) {
@@ -2461,16 +2495,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       ],
     })
     const text = await result.text.catch((err) => {
+      if (missing(err)) return undefined
       log.error("failed to generate title", { error: err })
       return undefined
     })
     void (async () => {
       const [totalUsage, providerMetadata] = await Promise.all([
         result.totalUsage.catch((err) => {
+          if (missing(err)) return undefined
           log.warn("failed to read title generation usage", { error: err })
           return undefined
         }),
         result.providerMetadata.catch((err) => {
+          if (missing(err)) return undefined
           log.warn("failed to read title generation provider metadata", { error: err })
           return undefined
         }),
@@ -2491,6 +2528,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         cost: usage.cost,
       })
     })().catch((error) => {
+      if (missing(error)) return
       log.warn("failed to record token usage on auto-title", {
         error,
         sessionID: input.session.id,
@@ -2508,7 +2546,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       if (!cleaned) return
 
       const title = cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
-      return Session.setTitle({ sessionID: input.session.id, title })
+      return Session.setTitle({ sessionID: input.session.id, title }).catch((error) => {
+        if (missing(error)) return
+        throw error
+      })
     }
   }
 }

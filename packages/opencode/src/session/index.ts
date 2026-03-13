@@ -45,6 +45,10 @@ export namespace Session {
   const childTitlePrefix = "Child session - "
   const WorkspaceStatus = z.enum(["pending", "ready", "failed", "removed"])
   const WorkspaceCleanupStatus = z.enum(["none", "pending", "failed", "deleted"])
+  const WorkspaceInput = z.object({
+    directory: z.string(),
+    branch: z.string().optional(),
+  })
 
   function createDefaultTitle(isChild = false) {
     return (isChild ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString()
@@ -116,6 +120,29 @@ export namespace Session {
 
   function workspaceDirectory(row: SessionRow) {
     return row.workspace_directory ?? undefined
+  }
+
+  /** 中文注释：统一识别 session 在并发删除场景下的缺失错误，便于 build/workspace 清理链路复用。 */
+  function missingSession(error: unknown) {
+    if (error instanceof NotFoundError) return true
+    if (!(error instanceof Error)) return false
+    return error.message.startsWith("Session not found:")
+  }
+
+  /** 中文注释：校验“新建工作区归属于当前 session”的输入，只允许认领当前目录下一次性新建的工作区。 */
+  async function ownedWorkspace(input?: z.infer<typeof WorkspaceInput>) {
+    if (!input) return {}
+    const owned = await Worktree.claimOwnership({
+      directory: input.directory,
+      branch: input.branch,
+    })
+    return {
+      directory: owned.directory,
+      workspaceDirectory: owned.directory,
+      workspaceBranch: owned.branch,
+      workspaceStatus: "ready" as const,
+      workspaceCleanupStatus: "none" as const,
+    }
   }
 
   async function projectRow(projectID: string) {
@@ -496,14 +523,17 @@ export namespace Session {
       .object({
         parentID: Identifier.schema("session").optional(),
         title: z.string().optional(),
+        workspace: WorkspaceInput.optional(),
         permission: Info.shape.permission,
         visibility: z.enum(["private", "department", "org", "public"]).optional(),
       })
       .optional(),
     async (input) => {
+      const workspace = await ownedWorkspace(input?.workspace)
       return createNext({
         parentID: input?.parentID,
-        directory: Instance.directory,
+        ...workspace,
+        directory: workspace.directory ?? Instance.directory,
         title: input?.title,
         permission: input?.permission,
         visibility: input?.visibility,
@@ -574,6 +604,10 @@ export namespace Session {
     title?: string
     parentID?: string
     directory: string
+    workspaceDirectory?: string
+    workspaceBranch?: string
+    workspaceStatus?: z.infer<typeof WorkspaceStatus>
+    workspaceCleanupStatus?: z.infer<typeof WorkspaceCleanupStatus>
     permission?: PermissionNext.Ruleset
     visibility?: "private" | "department" | "org" | "public"
   }) {
@@ -588,6 +622,10 @@ export namespace Session {
       version: Installation.VERSION,
       projectID: Instance.project.id,
       directory: input.directory,
+      workspaceDirectory: input.workspaceDirectory,
+      workspaceBranch: input.workspaceBranch,
+      workspaceStatus: input.workspaceStatus,
+      workspaceCleanupStatus: input.workspaceCleanupStatus,
       parentID: input.parentID,
       title: input.title ?? createDefaultTitle(!!input.parentID),
       permission: input.permission,
@@ -772,10 +810,13 @@ export namespace Session {
           branch: row.workspace_branch,
           status: status ?? "ready",
           cleanup,
+        }).catch((error) => {
+          if (missingSession(error)) throw error
+          throw error
         })
       }
 
-      const created = await Worktree.create({
+      const created = await Worktree.createUnowned({
         name: [row.slug, row.id].join("-"),
       })
 
@@ -795,6 +836,13 @@ export namespace Session {
         branch: created.branch,
         status: "ready",
         cleanup: "none",
+      }).catch(async (error) => {
+        if (!missingSession(error)) throw error
+        await removeWorkspace({
+          projectID: row.project_id,
+          directory: created.directory,
+        }).catch(() => undefined)
+        throw error
       })
     },
   )

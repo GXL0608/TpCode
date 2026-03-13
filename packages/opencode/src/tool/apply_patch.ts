@@ -13,6 +13,7 @@ import { LSP } from "../lsp"
 import { Filesystem } from "../util/filesystem"
 import DESCRIPTION from "./apply_patch.txt"
 import { File } from "../file"
+import { assertBuildWriteTarget } from "@/session/build-protection"
 
 const PatchParams = z.object({
   patchText: z.string().describe("The full patch text that describes all changes to be made"),
@@ -60,6 +61,11 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
     for (const hunk of hunks) {
       const filePath = path.resolve(Instance.directory, hunk.path)
       await assertExternalDirectory(ctx, filePath)
+      await assertBuildWriteTarget({
+        sessionID: ctx.sessionID,
+        agent: ctx.agent,
+        target: filePath,
+      })
 
       switch (hunk.type) {
         case "add": {
@@ -118,6 +124,11 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
 
           const movePath = hunk.move_path ? path.resolve(Instance.directory, hunk.move_path) : undefined
           await assertExternalDirectory(ctx, movePath)
+          await assertBuildWriteTarget({
+            sessionID: ctx.sessionID,
+            agent: ctx.agent,
+            target: movePath,
+          })
 
           fileChanges.push({
             filePath,

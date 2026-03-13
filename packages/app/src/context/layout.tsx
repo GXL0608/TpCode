@@ -50,6 +50,12 @@ type TabHandoff = {
   at: number
 }
 
+type WorkspaceHandoff = {
+  directory: string
+  branch?: string
+  at: number
+}
+
 export type LocalProject = Partial<Project> & { worktree: string; expanded: boolean }
 
 export type ReviewDiffStyle = "unified" | "split"
@@ -182,6 +188,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         sessionView: {} as Record<string, SessionView>,
         handoff: {
           tabs: undefined as TabHandoff | undefined,
+          workspaces: {} as Record<string, WorkspaceHandoff | undefined>,
         },
       }),
     )
@@ -372,6 +379,29 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         clearTabs() {
           if (!store.handoff?.tabs) return
           setStore("handoff", "tabs", undefined)
+        },
+        /** 中文注释：记录“本次新建工作区”到新会话页的临时归属信息，供首条消息创建 session 时绑定 workspace。 */
+        workspace(directory: string) {
+          return store.handoff?.workspaces[directory]
+        },
+        /** 中文注释：在新建工作区后写入临时归属信息，只有从该入口进入的新会话才会复用当前工作区。 */
+        setWorkspace(directory: string, branch?: string) {
+          setStore("handoff", "workspaces", directory, {
+            directory,
+            branch,
+            at: Date.now(),
+          })
+        },
+        /** 中文注释：session 创建完成后清除临时工作区归属，避免已有共享工作区被误判为 owned workspace。 */
+        clearWorkspace(directory: string) {
+          if (!store.handoff?.workspaces[directory]) return
+          setStore(
+            "handoff",
+            "workspaces",
+            produce((draft) => {
+              delete draft[directory]
+            }),
+          )
         },
       },
       projects: {

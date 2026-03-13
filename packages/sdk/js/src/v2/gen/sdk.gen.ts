@@ -2238,6 +2238,10 @@ export class Session2 extends HeyApiClient {
       directory?: string
       parentID?: string
       title?: string
+      workspace?: {
+        directory: string
+        branch?: string
+      }
       permission?: PermissionRuleset
       visibility?: "private" | "department" | "org" | "public"
     },
@@ -2251,6 +2255,7 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "body", key: "parentID" },
             { in: "body", key: "title" },
+            { in: "body", key: "workspace" },
             { in: "body", key: "permission" },
             { in: "body", key: "visibility" },
           ],

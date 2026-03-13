@@ -1,4 +1,5 @@
 import path from "path"
+import { $ } from "bun"
 import { describe, expect, test } from "bun:test"
 import { Instance } from "../../src/project/instance"
 import { Project } from "../../src/project/project"
@@ -35,6 +36,65 @@ describe("session build workspace", () => {
         expect(Reflect.get(prepared, "workspaceStatus")).toBe("ready")
         expect(await Filesystem.isDir(prepared.directory)).toBe(true)
         expect(sandboxes).toContain(prepared.directory)
+      },
+    })
+  })
+
+  test("reuses the owned workspace captured when the session is created inside a new worktree", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const owned = await Worktree.create({ name: "owned-plan-workspace" })
+        const session = await Instance.provide({
+          directory: owned.directory,
+          fn: async () =>
+            Session.create({
+              title: "owned-build",
+              workspace: {
+                directory: owned.directory,
+                branch: owned.branch,
+              },
+            }),
+        })
+
+        const prepared = await Session.prepareBuild({ sessionID: session.id })
+        const current = await Session.get(session.id)
+
+        expect(prepared.directory).toBe(owned.directory)
+        expect(prepared.workspaceDirectory).toBe(owned.directory)
+        expect(prepared.workspaceBranch).toBe(owned.branch)
+        expect(current.directory).toBe(owned.directory)
+        expect(current.workspaceDirectory).toBe(owned.directory)
+      },
+    })
+  })
+
+  test("rejects binding an existing shared workspace when the ownership marker is missing", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const shared = await Worktree.create({ name: "shared-plan-workspace" })
+        await Bun.file(path.join(shared.directory, ".opencode", "workspace-owner.json"))
+          .delete()
+          .catch(() => undefined)
+
+        await expect(
+          Instance.provide({
+            directory: shared.directory,
+            fn: async () =>
+              Session.create({
+                title: "shared-build",
+                workspace: {
+                  directory: shared.directory,
+                  branch: shared.branch,
+                },
+              }),
+          }),
+        ).rejects.toThrow("WorktreeOwnershipInvalidError")
       },
     })
   })
@@ -215,6 +275,38 @@ describe("session build workspace", () => {
         const current = await Session.get(session.id)
         expect(current.directory).not.toBe(tmp.path)
         expect(Reflect.get(current, "workspaceDirectory")).toBe(current.directory)
+      },
+    })
+  })
+
+  test("blocks pushing to the protected default branch from the build shell", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await $`git branch -M main`.quiet().nothrow().cwd(tmp.path)
+        const session = await Session.create({ title: "shell-protected-push" })
+
+        await expect(
+          SessionPrompt.shell({
+            sessionID: session.id,
+            agent: "build",
+            command: "git push origin main",
+          }),
+        ).rejects.toThrow("BuildProtectedBranchPushDeniedError")
+
+        const current = await Session.get(session.id)
+        expect(current.workspaceDirectory).toBeDefined()
       },
     })
   })

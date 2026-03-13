@@ -18,6 +18,7 @@ import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { NewSessionItem, SessionItem, SessionSkeleton } from "./sidebar-items"
 import { childMapByParent, sortedRootSessions } from "./helpers"
+import { workspaceVisibleName } from "./sidebar-workspace-helpers"
 
 type InlineEditorComponent = (props: {
   id: string
@@ -40,6 +41,7 @@ export type WorkspaceSidebarContext = {
   clearHoverProjectSoon: () => void
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   archiveSession: (session: Session) => Promise<void>
+  isSuperAdmin: Accessor<boolean>
   workspaceName: (directory: string, projectId?: string, branch?: string) => string | undefined
   renameWorkspace: (directory: string, next: string, projectId?: string, branch?: string) => void
   editorOpen: (id: string) => boolean
@@ -58,7 +60,7 @@ export type WorkspaceSidebarContext = {
 export const WorkspaceDragOverlay = (props: {
   sidebarProject: Accessor<LocalProject | undefined>
   activeWorkspace: Accessor<string | undefined>
-  workspaceLabel: (directory: string, branch?: string, projectId?: string) => string
+  workspaceLabel: (directory: string, branch?: string, projectId?: string) => string | undefined
 }): JSX.Element => {
   const globalSync = useGlobalSync()
   const language = useLanguage()
@@ -72,7 +74,7 @@ export const WorkspaceDragOverlay = (props: {
     const kind =
       directory === project.worktree ? language.t("workspace.type.local") : language.t("workspace.type.sandbox")
     const name = props.workspaceLabel(directory, workspaceStore.vcs?.branch, project.id)
-    return `${kind} : ${name}`
+    return name ? `${kind} : ${name}` : kind
   })
 
   return (
@@ -89,7 +91,7 @@ const WorkspaceHeader = (props: {
   directory: string
   language: ReturnType<typeof useLanguage>
   branch: Accessor<string | undefined>
-  workspaceValue: Accessor<string>
+  workspaceValue: Accessor<string | undefined>
   workspaceEditActive: Accessor<boolean>
   InlineEditor: WorkspaceSidebarContext["InlineEditor"]
   renameWorkspace: WorkspaceSidebarContext["renameWorkspace"]
@@ -103,24 +105,27 @@ const WorkspaceHeader = (props: {
       </Show>
     </div>
     <span class="text-14-medium text-text-base shrink-0">
-      {props.local() ? props.language.t("workspace.type.local") : props.language.t("workspace.type.sandbox")} :
+      {props.local() ? props.language.t("workspace.type.local") : props.language.t("workspace.type.sandbox")}
+      <Show when={props.workspaceValue()}>
+        {" :"}
+      </Show>
     </span>
     <Show
       when={!props.local()}
       fallback={
-        <span class="text-14-medium text-text-base min-w-0 truncate">
-          {props.branch() ?? getFilename(props.directory)}
-        </span>
+        <Show when={props.workspaceValue()}>
+          {(value) => <span class="text-14-medium text-text-base min-w-0 truncate">{value()}</span>}
+        </Show>
       }
     >
       <props.InlineEditor
         id={`workspace:${props.directory}`}
-        value={props.workspaceValue}
+        value={() => props.workspaceValue() ?? getFilename(props.directory)}
         onSave={(next) => {
           const trimmed = next.trim()
           if (!trimmed) return
           props.renameWorkspace(props.directory, trimmed, props.projectId, props.branch())
-          props.setEditor("value", props.workspaceValue())
+          props.setEditor("value", props.workspaceValue() ?? getFilename(props.directory))
         }}
         class="text-14-medium text-text-base min-w-0 truncate"
         displayClass="text-14-medium text-text-base min-w-0 truncate"
@@ -148,7 +153,7 @@ const WorkspaceActions = (props: {
   nav: Accessor<HTMLElement | undefined>
   touch: Accessor<boolean>
   language: ReturnType<typeof useLanguage>
-  workspaceValue: Accessor<string>
+  workspaceValue: Accessor<string | undefined>
   openEditor: WorkspaceSidebarContext["openEditor"]
   showResetWorkspaceDialog: WorkspaceSidebarContext["showResetWorkspaceDialog"]
   showDeleteWorkspaceDialog: WorkspaceSidebarContext["showDeleteWorkspaceDialog"]
@@ -184,11 +189,11 @@ const WorkspaceActions = (props: {
       </Tooltip>
       <DropdownMenu.Portal mount={!props.mobile ? props.nav() : undefined}>
         <DropdownMenu.Content
-          onCloseAutoFocus={(event) => {
+              onCloseAutoFocus={(event) => {
             if (!props.pendingRename()) return
             event.preventDefault()
             props.setPendingRename(false)
-            props.openEditor(`workspace:${props.directory}`, props.workspaceValue())
+            props.openEditor(`workspace:${props.directory}`, props.workspaceValue() ?? getFilename(props.directory))
           }}
         >
           <DropdownMenu.Item
@@ -322,8 +327,13 @@ export const SortableWorkspace = (props: {
   const active = createMemo(() => props.ctx.currentDir() === props.directory)
   const workspaceValue = createMemo(() => {
     const branch = workspaceStore.vcs?.branch
-    const name = branch ?? getFilename(props.directory)
-    return props.ctx.workspaceName(props.directory, props.project.id, branch) ?? name
+    return workspaceVisibleName({
+      directory: props.directory,
+      branch,
+      alias: props.ctx.workspaceName(props.directory, props.project.id, branch),
+      local: local(),
+      superAdmin: props.ctx.isSuperAdmin(),
+    })
   })
   const open = createMemo(() => props.ctx.workspaceExpanded(props.directory, local()))
   const boot = createMemo(() => open() || active())

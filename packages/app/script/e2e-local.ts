@@ -42,6 +42,13 @@ async function waitForHealth(url: string) {
   throw new Error(`Timed out waiting for server health: ${url}${last}`)
 }
 
+/** 中文注释：识别 e2e 清理阶段可忽略的已删除会话噪音，避免把测试环境的迟到回包误判成真实失败。 */
+function ignorableInternalError(reason: string, error: unknown) {
+  if (reason !== "unhandledRejection") return false
+  if (!(error instanceof Error)) return false
+  return error.message === "NotFoundError" && "data" in error && `${(error as { data?: { message?: string } }).data?.message ?? ""}`.startsWith("Session not found:")
+}
+
 const appDir = process.cwd()
 const repoDir = path.resolve(appDir, "../..")
 const opencodeDir = path.join(repoDir, "packages", "opencode")
@@ -114,6 +121,7 @@ const shutdown = (code: number, reason: string) => {
 }
 
 const reportInternalError = (reason: string, error: unknown) => {
+  if (ignorableInternalError(reason, error)) return
   console.warn(`e2e-local ignored server error: ${reason}`)
   console.warn(error)
 }

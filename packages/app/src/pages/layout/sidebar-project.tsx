@@ -32,7 +32,7 @@ export type ProjectSidebarContext = {
   toggleProjectWorkspaces: (project: LocalProject) => void
   workspacesEnabled: (project: LocalProject) => boolean
   workspaceIds: (project: LocalProject) => string[]
-  workspaceLabel: (directory: string, branch?: string, projectId?: string) => string
+  workspaceLabel: (directory: string, branch?: string, projectId?: string) => string | undefined
   sessionProps: Omit<SessionItemProps, "session" | "slug" | "children" | "mobile" | "dense" | "popover">
   setHoverSession: (id: string | undefined) => void
 }
@@ -329,7 +329,7 @@ export const SortableProject = (props: {
     const kind =
       directory === props.project.worktree ? language.t("workspace.type.local") : language.t("workspace.type.sandbox")
     const name = props.ctx.workspaceLabel(directory, data.vcs?.branch, props.project.id)
-    return `${kind} : ${name}`
+    return name ? `${kind} : ${name}` : kind
   }
 
   const projectStore = createMemo(() => globalSync.child(props.project.worktree, { bootstrap: false })[0])

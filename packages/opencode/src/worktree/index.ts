@@ -12,9 +12,17 @@ import { fn } from "../util/fn"
 import { Log } from "../util/log"
 import { BusEvent } from "@/bus/bus-event"
 import { GlobalBus } from "@/bus/global"
+import { AccountCurrent } from "@/user/current"
+import { Flag } from "@/flag/flag"
 
 export namespace Worktree {
   const log = Log.create({ service: "worktree" })
+  const Ownership = z.object({
+    project_id: z.string(),
+    user_id: z.string().optional(),
+    branch: z.string(),
+    created_at: z.number(),
+  })
 
   export const Event = {
     Ready: BusEvent.define(
@@ -78,6 +86,10 @@ export namespace Worktree {
 
   export type ResetInput = z.infer<typeof ResetInput>
 
+  type InternalCreateInput = CreateInput & {
+    claimable?: boolean
+  }
+
   export const NotGitError = NamedError.create(
     "WorktreeNotGitError",
     z.object({
@@ -115,6 +127,13 @@ export namespace Worktree {
 
   export const ResetFailedError = NamedError.create(
     "WorktreeResetFailedError",
+    z.object({
+      message: z.string(),
+    }),
+  )
+
+  export const OwnershipInvalidError = NamedError.create(
+    "WorktreeOwnershipInvalidError",
     z.object({
       message: z.string(),
     }),
@@ -268,6 +287,66 @@ export namespace Worktree {
     return process.platform === "win32" ? normalized.toLowerCase() : normalized
   }
 
+  /** 中文注释：返回工作区的一次性归属标记文件路径，仅用于首条会话认领新建工作区。 */
+  function ownershipPath(directory: string) {
+    return path.join(directory, ".opencode", "workspace-owner.json")
+  }
+
+  /** 中文注释：为新建工作区写入一次性归属标记，后续只有当前用户的首条会话可以认领它。 */
+  async function writeOwnership(input: { directory: string; branch: string }) {
+    const current = Flag.TPCODE_ACCOUNT_ENABLED ? AccountCurrent.optional() : undefined
+    await fs.mkdir(path.dirname(ownershipPath(input.directory)), { recursive: true })
+    await fs.writeFile(
+      ownershipPath(input.directory),
+      JSON.stringify(
+        {
+          project_id: Instance.project.id,
+          user_id: current?.user_id,
+          branch: input.branch,
+          created_at: Date.now(),
+        } satisfies z.infer<typeof Ownership>,
+      ),
+    )
+  }
+
+  /** 中文注释：校验并消费一次性工作区归属标记，防止把已有共享工作区误绑定到当前 session。 */
+  export const claimOwnership = fn(
+    z.object({
+      directory: z.string(),
+      branch: z.string().optional(),
+    }),
+    async (input) => {
+      const directory = await canonical(input.directory)
+      if (directory !== Instance.directory) {
+        throw new OwnershipInvalidError({ message: "Workspace ownership can only be claimed from the current directory" })
+      }
+      const file = ownershipPath(directory)
+      const payload = await fs
+        .readFile(file, "utf-8")
+        .then((value) => JSON.parse(value))
+        .catch(() => undefined)
+      const owned = Ownership.safeParse(payload)
+      if (!owned.success) {
+        throw new OwnershipInvalidError({ message: "Workspace ownership marker is missing" })
+      }
+      if (owned.data.project_id !== Instance.project.id) {
+        throw new OwnershipInvalidError({ message: "Workspace ownership belongs to another project" })
+      }
+      const current = Flag.TPCODE_ACCOUNT_ENABLED ? AccountCurrent.optional() : undefined
+      if (owned.data.user_id && current?.user_id && owned.data.user_id !== current.user_id) {
+        throw new OwnershipInvalidError({ message: "Workspace ownership belongs to another user" })
+      }
+      if (input.branch && owned.data.branch !== input.branch) {
+        throw new OwnershipInvalidError({ message: "Workspace ownership branch does not match" })
+      }
+      await fs.rm(file, { force: true }).catch(() => undefined)
+      return {
+        directory,
+        branch: owned.data.branch,
+      }
+    },
+  )
+
   async function candidate(root: string, base?: string) {
     for (const attempt of Array.from({ length: 26 }, (_, i) => i)) {
       const name = base ? (attempt === 0 ? base : `${base}-${randomName()}`) : randomName()
@@ -370,7 +449,8 @@ export namespace Worktree {
     }, 0)
   }
 
-  export const create = fn(CreateInput.optional(), async (input) => {
+  /** 中文注释：创建工作区，并按需写入一次性归属标记，供“新建工作区后的首条会话”认领。 */
+  async function createNext(input?: InternalCreateInput) {
     if (Instance.project.vcs !== "git") {
       throw new NotGitError({ message: "Worktrees are only supported for git projects" })
     }
@@ -404,6 +484,9 @@ export namespace Worktree {
     }
 
     await Project.addSandbox(Instance.project.id, directory).catch(() => undefined)
+    if (input?.claimable !== false) {
+      await writeOwnership({ directory, branch: info.branch })
+    }
 
     const projectID = Instance.project.id
     const extra = input?.startCommand?.trim()
@@ -420,7 +503,17 @@ export namespace Worktree {
     queueStartScripts(directory, { projectID, extra })
 
     return result
-  })
+  }
+
+  export const create = fn(CreateInput.optional(), async (input) => createNext(input))
+
+  /** 中文注释：为 session.prepareBuild 这类系统内部隔离场景创建工作区，不写入会话认领标记。 */
+  export const createUnowned = fn(CreateInput.optional(), async (input) =>
+    createNext({
+      ...input,
+      claimable: false,
+    }),
+  )
 
   export const remove = fn(RemoveInput, async (input) => {
     if (Instance.project.vcs !== "git") {

@@ -6,6 +6,7 @@ let createPromptSubmit: typeof import("./submit").createPromptSubmit
 
 const createdClients: string[] = []
 const createdSessions: string[] = []
+const createSessionInputs: Array<{ directory: string; input: unknown }> = []
 const syncedDirectories: string[] = []
 const toasts: { title?: string; description?: string }[] = []
 const shellCalls: { directory: string; sessionID: string }[] = []
@@ -30,12 +31,13 @@ const setCalls: Array<{ path: string }> = []
 const workspaceModeCalls: Array<{ directory: string; value: boolean }> = []
 const workspaceExpandedCalls: Array<{ directory: string; value: boolean }> = []
 const workspaceSessionLoads: string[] = []
+const clearedWorkspaceHandoffs: string[] = []
 
 let selected = "/repo/worktree-a"
 let route: { id?: string } = {}
 let promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
 let commands: { name: string }[] = []
-let promptAsyncError: Error | undefined
+let promptAsyncError: unknown
 let clearDraftCalls = 0
 let localModel: { id: string; provider: { id: string } } | undefined = { id: "model", provider: { id: "provider" } }
 let syncRuntimeModelCalls: string[] = []
@@ -47,6 +49,7 @@ let syncRuntimeModelPending:
   | undefined
 let currentAgentName = "agent"
 let projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] as string[] }]
+let handoffWorkspaces: Record<string, { directory: string; branch?: string }> = {}
 
 const event = { preventDefault: () => undefined } as unknown as Event
 
@@ -58,7 +61,8 @@ const clientFor = (directory: string) => {
   createdClients.push(directory)
   return {
     session: {
-      create: async () => {
+      create: async (input?: unknown) => {
+        createSessionInputs.push({ directory, input })
         createdSessions.push(directory)
         return { data: { id: `session-${createdSessions.length}` } }
       },
@@ -99,7 +103,7 @@ const clientFor = (directory: string) => {
       abort: async () => ({ data: undefined }),
     },
     worktree: {
-      create: async () => ({ data: { directory: `${directory}/new` } }),
+      create: async () => ({ data: { directory: `${directory}/new`, branch: "opencode/new" } }),
     },
   }
 }
@@ -154,6 +158,11 @@ beforeAll(async () => {
     useLayout: () => ({
       handoff: {
         setTabs: () => undefined,
+        workspace: (directory: string) => handoffWorkspaces[directory],
+        clearWorkspace: (directory: string) => {
+          clearedWorkspaceHandoffs.push(directory)
+          delete handoffWorkspaces[directory]
+        },
       },
       sidebar: {
         setWorkspaces: (directory: string, value: boolean) => {
@@ -244,6 +253,7 @@ beforeAll(async () => {
 beforeEach(() => {
   createdClients.length = 0
   createdSessions.length = 0
+  createSessionInputs.length = 0
   syncedDirectories.length = 0
   toasts.length = 0
   shellCalls.length = 0
@@ -265,10 +275,12 @@ beforeEach(() => {
   syncRuntimeModelPending = undefined
   currentAgentName = "agent"
   projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] }]
+  handoffWorkspaces = {}
   setCalls.length = 0
   workspaceModeCalls.length = 0
   workspaceExpandedCalls.length = 0
   workspaceSessionLoads.length = 0
+  clearedWorkspaceHandoffs.length = 0
 })
 
 function createSubmit(input?: {
@@ -343,6 +355,64 @@ describe("prompt submit session resolution", () => {
     expect(createdSessions).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(shellCalls.map((item) => item.directory)).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(syncedDirectories).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
+  })
+
+  test("binds a newly created workspace to the new session", async () => {
+    selected = "create"
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createSessionInputs).toEqual([
+      {
+        directory: "/repo/main/new",
+        input: {
+          workspace: {
+            directory: "/repo/main/new",
+            branch: "opencode/new",
+          },
+        },
+      },
+    ])
+  })
+
+  test("does not bind an existing shared workspace to the new session", async () => {
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createSessionInputs).toEqual([
+      {
+        directory: "/repo/worktree-a",
+        input: undefined,
+      },
+    ])
+  })
+
+  test("binds a newly created workspace handoff to the first plan session", async () => {
+    handoffWorkspaces["/repo/worktree-a"] = {
+      directory: "/repo/worktree-a",
+      branch: "opencode/worktree-a",
+    }
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createSessionInputs).toEqual([
+      {
+        directory: "/repo/worktree-a",
+        input: {
+          workspace: {
+            directory: "/repo/worktree-a",
+            branch: "opencode/worktree-a",
+          },
+        },
+      },
+    ])
+    expect(clearedWorkspaceHandoffs).toEqual(["/repo/worktree-a"])
   })
 
   test("uses route session id for normal mode without creating a session", async () => {
@@ -539,6 +609,49 @@ describe("prompt submit session resolution", () => {
     expect(toasts[0]?.title).toBe("prompt.toast.promptSendFailed.title")
     expect(toasts[0]?.description).toBe("Session not found: session-route-missing")
     expect(toasts[0]?.description).not.toBe("prompt.toast.promptSendFailed.description")
+  })
+
+  test("maps build main worktree write denial to a dedicated toast description", async () => {
+    route = { id: "session-route-main-worktree-denied" }
+    promptAsyncError = {
+      data: {
+        name: "BuildMainWorktreeWriteDeniedError",
+        message: "build main worktree write denied",
+      },
+    }
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(toasts).toEqual([
+      {
+        title: "prompt.toast.promptSendFailed.title",
+        description: "toast.build.mainWorktreeWriteDenied.description",
+      },
+    ])
+  })
+
+  test("maps protected branch push denial to a dedicated toast description", async () => {
+    route = { id: "session-route-protected-push-denied" }
+    promptValue = [{ type: "text", content: "git push origin main", start: 0, end: 20 }]
+    promptAsyncError = {
+      data: {
+        name: "BuildProtectedBranchPushDeniedError",
+        message: "build protected branch push denied",
+      },
+    }
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(toasts).toEqual([
+      {
+        title: "prompt.toast.promptSendFailed.title",
+        description: "toast.build.protectedBranchPushDenied.description",
+      },
+    ])
   })
 
   test("prepares a build workspace lazily for an existing session before sending the first prompt", async () => {

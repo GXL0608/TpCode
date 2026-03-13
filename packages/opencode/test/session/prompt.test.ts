@@ -596,6 +596,95 @@ describe("session.prompt finish reason", () => {
     ).toBe(false)
   })
 
+  test("does not leak missing-session rejections when auto title finishes after session deletion", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    const errors: unknown[] = []
+    const onError = (error: unknown) => {
+      errors.push(error)
+    }
+    process.on("unhandledRejection", onError)
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        let call = 0
+        const stream = spyOn(LLM, "stream").mockImplementation(async () => {
+          call++
+          if (call === 1) {
+            return {
+              fullStream: (async function* () {
+                yield { type: "start" }
+                yield { type: "text-start" }
+                yield { type: "text-delta", text: "working" }
+                yield { type: "text-end" }
+                yield {
+                  type: "finish-step",
+                  finishReason: "stop",
+                  usage: {
+                    inputTokens: 1,
+                    outputTokens: 1,
+                    totalTokens: 2,
+                  },
+                }
+                yield { type: "finish" }
+              })(),
+              text: Promise.resolve("working"),
+              totalUsage: Promise.resolve(undefined),
+              providerMetadata: Promise.resolve(undefined),
+            } as unknown as Awaited<ReturnType<typeof LLM.stream>>
+          }
+
+          return {
+            fullStream: (async function* () {
+              yield { type: "start" }
+              yield {
+                type: "finish-step",
+                finishReason: "stop",
+                usage: {
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  totalTokens: 2,
+                },
+              }
+              yield { type: "finish" }
+            })(),
+            text: Bun.sleep(100).then(() => "late title"),
+            totalUsage: Promise.resolve(undefined),
+            providerMetadata: Promise.resolve(undefined),
+          } as unknown as Awaited<ReturnType<typeof LLM.stream>>
+        })
+
+        try {
+          await SessionPrompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "hello" }],
+          })
+          await Session.remove(session.id)
+          await Bun.sleep(150)
+        } finally {
+          stream.mockRestore()
+        }
+      },
+    })
+
+    process.off("unhandledRejection", onError)
+    expect(
+      errors.some((error) => (error instanceof Error ? error.message : String(error)).includes("Session not found")),
+    ).toBe(false)
+  }, 10000)
+
   test("ignores removed sessions when background summary work runs late", async () => {
     await using tmp = await tmpdir({
       git: true,

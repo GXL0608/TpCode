@@ -456,6 +456,10 @@ export const dict = {
   "toast.model.none.description": "Connect a provider to summarize this session",
   "toast.model.unavailable.title": "Model unavailable",
   "toast.model.unavailable.description": "Unable to resolve a usable model. Configure or connect a model first.",
+  "toast.build.mainWorktreeWriteDenied.description":
+    "Build mode cannot write to the main worktree. Please operate inside the current workspace sandbox.",
+  "toast.build.protectedBranchPushDenied.description":
+    "Pushing to the protected default branch is blocked. Push to another branch instead.",
   "session.header.workspace.main": "Main workspace",
   "session.header.workspace.isolated": "Isolated workspace",
   "session.header.workspace.preparing": "Workspace preparing",
