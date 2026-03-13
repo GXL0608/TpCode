@@ -20,6 +20,7 @@ import { InstructionPrompt } from "./instruction"
 import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
 import BUILD_SWITCH from "../session/prompt/build-switch.txt"
+import BUILD_CONFIDENTIALITY from "../session/prompt/build-confidentiality.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { defer } from "../util/defer"
 import { ToolRegistry } from "../tool/registry"
@@ -68,6 +69,42 @@ export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
   const QUEUE_TIMEOUT_MS = Number(process.env.OPENCODE_SESSION_QUEUE_TIMEOUT_MS ?? "120000")
   const terminal = (finish?: string) => !!finish && finish !== "tool-calls"
+
+  /** 中文注释：从已持久化的系统提示词中提取用户自定义部分，避免循环时重复拼接。 */
+  function extractCustomSystem(input: { base: string; guard?: string; userSystem?: string }) {
+    const system = input.userSystem?.trim()
+    if (!system) return
+    if (!system.startsWith(input.base)) return system
+
+    let rest = system.slice(input.base.length).trim()
+    if (input.guard && rest.endsWith(input.guard)) {
+      rest = rest.slice(0, -input.guard.length).trim()
+    }
+    return rest || undefined
+  }
+
+  /** 中文注释：集中装配会话系统提示词，并在受控 build 场景末尾追加保密 guard。 */
+  export async function buildSystem(input: {
+    agent: string
+    model: Provider.Model
+    userSystem?: string
+    accountEnabled?: boolean
+  }) {
+    const system = [...(await SystemPrompt.environment(input.model)), ...(await InstructionPrompt.system())]
+    const guard =
+      (input.accountEnabled ?? Flag.TPCODE_ACCOUNT_ENABLED) && input.agent === "build"
+        ? BUILD_CONFIDENTIALITY.trim()
+        : undefined
+    const base = system.join("\n\n")
+    const custom = extractCustomSystem({
+      base,
+      guard,
+      userSystem: input.userSystem,
+    })
+    if (custom) system.push(custom)
+    if (guard) system.push(guard)
+    return system.filter((item) => item.trim().length > 0)
+  }
 
   async function withBuild<T>(
     input: { sessionID: string; agent?: string },
@@ -914,7 +951,11 @@ export namespace SessionPrompt {
           await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
           // Build system prompt, adding structured output instruction if needed
-          const system = [...(await SystemPrompt.environment(model)), ...(await InstructionPrompt.system())]
+          const system = await buildSystem({
+            agent: runtimeUser.agent,
+            model,
+            userSystem: runtimeUser.system,
+          })
           const systemText = system.join("\n\n")
           if (runtimeUser.system !== systemText) {
             runtimeUser.system = systemText

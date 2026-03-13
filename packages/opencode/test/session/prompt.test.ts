@@ -9,13 +9,80 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionSummary } from "../../src/session/summary"
 import { SessionVoiceTable, TpSessionPictureTable } from "../../src/session/session.sql"
 import { SessionStatus } from "../../src/session/status"
+import type { Provider } from "../../src/provider/provider"
 import { Database, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
 import { AccountSystemSettingService } from "../../src/user/system-setting"
 import { Flag } from "../../src/flag/flag"
+import BUILD_CONFIDENTIALITY from "../../src/session/prompt/build-confidentiality.txt"
 
 Log.init({ print: false })
+
+/** 中文注释：构造最小流式响应，专用于系统提示词装配测试。 */
+function mockLLMStream(text = "ok") {
+  return {
+    fullStream: (async function* () {
+      yield { type: "start" }
+      yield { type: "text-start" }
+      yield { type: "text-delta", text }
+      yield { type: "text-end" }
+      yield {
+        type: "finish-step",
+        finishReason: "stop",
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+        },
+      }
+      yield { type: "finish" }
+    })(),
+    text: Promise.resolve(text),
+    totalUsage: Promise.resolve(undefined),
+    providerMetadata: Promise.resolve(undefined),
+  } as unknown as Awaited<ReturnType<typeof LLM.stream>>
+}
+
+/** 中文注释：执行一次提示并捕获传给模型的系统提示词。 */
+async function captureSystem(input: {
+  directory: string
+  agent: string
+  system?: string
+  format?: MessageV2.User["format"]
+}) {
+  let captured: LLM.StreamInput | undefined
+
+  await Instance.provide({
+    directory: input.directory,
+    fn: async () => {
+      const session = await Session.create({ title: "system capture" })
+      if (input.agent === "build") {
+        await Session.prepareBuild({ sessionID: session.id })
+      }
+      const stream = spyOn(LLM, "stream").mockImplementation(async (payload) => {
+        captured = payload
+        return mockLLMStream()
+      })
+
+      try {
+        await SessionPrompt.prompt({
+          sessionID: session.id,
+          agent: input.agent,
+          system: input.system,
+          format: input.format,
+          parts: [{ type: "text", text: "hello" }],
+        })
+      } finally {
+        stream.mockRestore()
+        await Session.remove(session.id)
+      }
+    },
+  })
+
+  expect(captured).toBeDefined()
+  return captured!
+}
 
 describe("session.prompt missing file", () => {
   test("does not fail the prompt when a file part is missing", async () => {
@@ -714,6 +781,120 @@ describe("session.prompt finish reason", () => {
         )
       },
     })
+  })
+})
+
+describe("session.prompt build confidentiality", () => {
+  test("appends the centralized confidentiality prompt for controlled build sessions", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "AGENTS.md"), "# Project Instructions")
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = {
+          providerID: "openai",
+          api: { id: "gpt-5.2" },
+        } as unknown as Provider.Model
+
+        const system = (
+          await SessionPrompt.buildSystem({
+            agent: "build",
+            model,
+            userSystem: "Custom system line",
+          })
+        ).join("\n\n")
+        const instructions = `Instructions from: ${path.join(tmp.path, "AGENTS.md")}`
+
+        expect(system).toContain("Working directory:")
+        expect(system).toContain(instructions)
+        expect(system).toContain("Custom system line")
+        expect(system).toContain(BUILD_CONFIDENTIALITY.trim())
+        expect(system.indexOf(instructions)).toBeGreaterThan(system.indexOf("Working directory:"))
+        expect(system.indexOf("Custom system line")).toBeGreaterThan(system.indexOf(instructions))
+        expect(system.indexOf(BUILD_CONFIDENTIALITY.trim())).toBeGreaterThan(system.indexOf("Custom system line"))
+        expect(system.trimEnd().endsWith(BUILD_CONFIDENTIALITY.trim())).toBe(true)
+      },
+    })
+  })
+
+  test("does not append the confidentiality prompt for plan sessions", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = {
+          providerID: "openai",
+          api: { id: "gpt-5.2" },
+        } as unknown as Provider.Model
+
+        const system = await SessionPrompt.buildSystem({
+          agent: "plan",
+          model,
+        })
+
+        expect(system.join("\n\n")).not.toContain(BUILD_CONFIDENTIALITY.trim())
+      },
+    })
+  })
+
+  test("supports skipping the confidentiality prompt outside controlled build mode", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = {
+          providerID: "openai",
+          api: { id: "gpt-5.2" },
+        } as unknown as Provider.Model
+
+        const system = await SessionPrompt.buildSystem({
+          agent: "build",
+          model,
+          accountEnabled: false,
+        })
+
+        expect(system.join("\n\n")).not.toContain(BUILD_CONFIDENTIALITY.trim())
+      },
+    })
+  })
+
+  test("keeps structured output instructions after the confidentiality prompt", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    const captured = await captureSystem({
+      directory: tmp.path,
+      agent: "build",
+      format: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+          },
+          required: ["ok"],
+        },
+        retryCount: 1,
+      },
+    })
+
+    expect(captured.user.system ?? "").toContain(BUILD_CONFIDENTIALITY.trim())
+    expect(captured.system.at(-1)).toContain("You MUST use the StructuredOutput tool")
   })
 })
 
