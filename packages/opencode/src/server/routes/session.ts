@@ -24,8 +24,7 @@ import { Flag } from "@/flag/flag"
 import { AccountProviderState } from "@/provider/account-provider-state"
 import { UserRbac } from "@/user/rbac"
 import { NotFoundError } from "@/storage/db"
-import { AccountProviderState } from "@/provider/account-provider-state"
-import { UserRbac } from "@/user/rbac"
+import { SessionPrototypeRoutes } from "./session-prototype"
 
 const log = Log.create({ service: "server" })
 
@@ -233,6 +232,7 @@ export const SessionRoutes = lazy(() =>
     )
     .use("/:sessionID", requireSessionReadable)
     .use("/:sessionID/*", requireSessionReadable)
+    .route("/:sessionID/prototype", SessionPrototypeRoutes())
     .get(
       "/:sessionID/voice/:voiceID",
       describeRoute({

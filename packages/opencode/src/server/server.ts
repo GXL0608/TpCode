@@ -43,6 +43,7 @@ import { PermissionRoutes } from "./routes/permission"
 import { GlobalRoutes } from "./routes/global"
 import { ApprovalRoutes } from "./routes/approval"
 import { FeedbackRoutes } from "./routes/feedback"
+import { PrototypeRoutes } from "./routes/prototype"
 import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
@@ -339,6 +340,7 @@ export namespace Server {
               "/path",
               "/permission",
               "/project",
+              "/prototype",
               "/provider",
               "/pty",
               "/question",
@@ -357,7 +359,8 @@ export namespace Server {
               }
               const auth = c.req.header("authorization")
               const queryToken =
-                c.req.method === "GET" && /^\/session\/[^/]+\/voice\/[^/]+$/.test(path)
+                c.req.method === "GET" &&
+                (/^\/session\/[^/]+\/voice\/[^/]+$/.test(path) || /^\/prototype\/[^/]+\/file$/.test(path))
                   ? c.req.query("access_token")
                   : undefined
               const token = UserService.parseBearer(auth) ?? queryToken
@@ -771,6 +774,7 @@ export namespace Server {
         .route("/permission", PermissionRoutes())
         .route("/approval", ApprovalRoutes())
         .route("/feedback", FeedbackRoutes())
+        .route("/prototype", PrototypeRoutes())
         .route("/question", QuestionRoutes())
         .route("/provider", ProviderRoutes())
         .route("/", FileRoutes())

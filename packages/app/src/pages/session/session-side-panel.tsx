@@ -25,6 +25,7 @@ import { useSync } from "@/context/sync"
 import { createFileTabListSync } from "@/pages/session/file-tab-scroll"
 import { FileTabContent } from "@/pages/session/file-tabs"
 import { createOpenSessionFileTab, getTabReorderIndex } from "@/pages/session/helpers"
+import { PrototypeTab } from "@/pages/session/prototype-tab"
 import { StickyAddButton } from "@/pages/session/review-tab"
 import { setSessionHandoff } from "@/pages/session/handoff"
 
@@ -110,22 +111,25 @@ export function SessionSidePanel(props: {
   })
 
   const contextOpen = createMemo(() => tabs().active() === "context" || tabs().all().includes("context"))
+  const prototypeOpen = createMemo(() => tabs().active() === "prototype" || tabs().all().includes("prototype"))
   const openedTabs = createMemo(() => {
     if (!canBrowse()) return [] as string[]
     return tabs()
       .all()
-      .filter((tab) => tab !== "context" && tab !== "review")
+      .filter((tab) => tab !== "context" && tab !== "review" && tab !== "prototype")
   })
 
   const activeTab = createMemo(() => {
     const active = tabs().active()
     if (active === "context") return "context"
+    if (active === "prototype") return "prototype"
     if (active === "review" && reviewTab()) return "review"
     if (active && canBrowse() && file.pathFromTab(active)) return normalizeTab(active)
 
     const first = openedTabs()[0]
     if (first) return first
     if (contextOpen()) return "context"
+    if (prototypeOpen()) return "prototype"
     if (reviewTab() && hasReview()) return "review"
     return "empty"
   })
@@ -282,6 +286,16 @@ export function SessionSidePanel(props: {
                           </div>
                         </Tabs.Trigger>
                       </Show>
+                      <Show when={prototypeOpen()}>
+                        <Tabs.Trigger
+                          value="prototype"
+                          class="absolute pointer-events-none opacity-0 w-0 h-0 overflow-hidden"
+                          aria-hidden="true"
+                          tabIndex={-1}
+                        >
+                          <div>原型上传</div>
+                        </Tabs.Trigger>
+                      </Show>
                       <SortableProvider ids={openedTabs()}>
                         <For each={openedTabs()}>{(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}</For>
                       </SortableProvider>
@@ -343,6 +357,12 @@ export function SessionSidePanel(props: {
                     </Show>
                   </Tabs.Content>
                 </Show>
+
+                <Tabs.Content value="prototype" class="flex flex-col h-full overflow-hidden contain-strict">
+                  <Show when={activeTab() === "prototype"}>
+                    <PrototypeTab />
+                  </Show>
+                </Tabs.Content>
 
                 <Show when={activeFileTab()} keyed>
                   {(tab) => <FileTabContent tab={tab} />}

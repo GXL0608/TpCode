@@ -17,6 +17,7 @@ import { shouldMarkBoundaryGesture, normalizeWheelDelta } from "@/pages/session/
 import { SessionContextUsage } from "@/components/session-context-usage"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useLanguage } from "@/context/language"
+import { useLayout } from "@/context/layout"
 import { useSettings } from "@/context/settings"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
@@ -117,12 +118,15 @@ export function MessageTimeline(props: {
   const sdk = useSDK()
   const server = useServer()
   const sync = useSync()
+  const layout = useLayout()
   const settings = useSettings()
   const dialog = useDialog()
   const language = useLanguage()
 
   const sessionKey = createMemo(() => `${params.dir}${params.id ? "/" + params.id : ""}`)
   const sessionID = createMemo(() => params.id)
+  const tabs = createMemo(() => layout.tabs(sessionKey))
+  const view = createMemo(() => layout.view(sessionKey))
   const info = createMemo(() => {
     const id = sessionID()
     if (!id) return
@@ -149,6 +153,13 @@ export function MessageTimeline(props: {
     }
     if (err instanceof Error) return err.message
     return language.t("common.requestFailed")
+  }
+
+  const openPrototype = () => {
+    if (!sessionID()) return
+    if (!view().reviewPanel.opened()) view().reviewPanel.open()
+    void tabs().open("prototype")
+    tabs().setActive("prototype")
   }
 
   createEffect(
@@ -485,6 +496,16 @@ export function MessageTimeline(props: {
                 {(id) => (
                   <div class="shrink-0 flex items-center gap-3">
                     <SessionContextUsage placement="bottom" />
+                    <Show when={props.isDesktop}>
+                      <Button
+                        variant="ghost"
+                        size="small"
+                        class="h-6 px-2 rounded-md border border-border-weak-base bg-surface-panel shadow-none"
+                        onClick={openPrototype}
+                      >
+                        原型上传
+                      </Button>
+                    </Show>
                     <DropdownMenu
                       gutter={4}
                       placement="bottom-end"
