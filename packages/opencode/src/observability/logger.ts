@@ -68,6 +68,12 @@ export namespace Logger {
     const stream = input.print ? undefined : input.stream ?? createWriteStream(file, { flags: "a" })
     const pending: string[] = []
     let blocked = false
+    /** 中文注释：统一收窄 drain 事件监听类型，避免 EventEmitter 与 WriteStream 联合类型调用报错。 */
+    const onDrain = (fn: () => void) => {
+      if (!stream) return
+      const target = stream as { once(event: string, listener: () => void): unknown }
+      target.once("drain", fn)
+    }
     const drain = () => {
       if (!stream) return
       blocked = false
@@ -75,7 +81,7 @@ export namespace Logger {
         const ok = stream.write(pending.shift()!)
         if (ok) continue
         blocked = true
-        stream.once("drain", drain)
+        onDrain(drain)
         return
       }
     }
@@ -91,7 +97,7 @@ export namespace Logger {
       const ok = stream.write(text)
       if (ok) return
       blocked = true
-      stream.once("drain", drain)
+      onDrain(drain)
     }
 
     return {
@@ -103,7 +109,7 @@ export namespace Logger {
         if (!stream) return
         if (blocked) {
           await new Promise<void>((resolve) => {
-            stream.once("drain", () => {
+            onDrain(() => {
               drain()
               resolve()
             })

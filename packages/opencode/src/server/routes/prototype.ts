@@ -106,7 +106,7 @@ export const PrototypeRoutes = lazy(() =>
         const denied = requirePermission(c, "code:generate")
         if (denied) return denied
         const result = await PrototypeService.remove({ id: c.req.valid("param").prototypeID })
-        if (!result.ok) return c.json(result, result.code === "prototype_invalid_mode" ? 400 : 404)
+        if (!result.ok) return c.json(result, 404)
         return c.json(result)
       },
     ),

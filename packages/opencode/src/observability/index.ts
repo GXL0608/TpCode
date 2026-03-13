@@ -81,7 +81,7 @@ async function tick() {
         }),
         { spool: true },
       )
-      return ok
+      if (ok) return
     })
   await state.running
 }

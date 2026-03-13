@@ -316,7 +316,8 @@ export namespace PrototypeService {
     test_run_id?: string
     test_result?: "passed" | "failed" | "unknown"
   }) {
-    const { chromium } = await import("@playwright/test")
+    const pkg = "@playwright/test"
+    const { chromium } = await import(pkg)
     const browser = await chromium.launch()
     const page = await browser.newPage({
       viewport:

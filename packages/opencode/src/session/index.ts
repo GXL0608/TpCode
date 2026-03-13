@@ -800,13 +800,14 @@ export namespace Session {
       const status = WorkspaceStatus.safeParse(row.workspace_status).data
       const cleanup = WorkspaceCleanupStatus.safeParse(row.workspace_cleanup_status).data ?? "none"
 
+      const workspace = workspaceDirectory(row)
       if (project.vcs !== "git") return fromRow(row)
-      if (workspaceDirectory(row) && status !== "failed" && status !== "removed" && (await Filesystem.isDir(row.workspace_directory))) {
-        if (row.directory === row.workspace_directory) return fromRow(row)
+      if (workspace && status !== "failed" && status !== "removed" && (await Filesystem.isDir(workspace))) {
+        if (row.directory === workspace) return fromRow(row)
         return setWorkspaceMeta({
           sessionID: input.sessionID,
-          workspaceDirectory: row.workspace_directory,
-          activeDirectory: row.workspace_directory,
+          workspaceDirectory: workspace,
+          activeDirectory: workspace,
           branch: row.workspace_branch,
           status: status ?? "ready",
           cleanup,

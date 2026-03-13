@@ -77,9 +77,11 @@ describe("session build workspace routes", () => {
         directory: tmp.path,
         fn: async () => {
           const session = await Session.create({ title: "async-prompt-delete" })
-          const prompt = spyOn(SessionPrompt, "prompt").mockImplementation(async () => {
-            throw new Error(`Session not found: ${session.id}`)
-          })
+          const prompt = spyOn(SessionPrompt, "prompt").mockImplementation(
+            (async () => {
+              throw new Error(`Session not found: ${session.id}`)
+            }) as unknown as typeof SessionPrompt.prompt,
+          )
 
           try {
             const response = await SessionRoutes().request(`/${session.id}/prompt_async`, {

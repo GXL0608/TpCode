@@ -15,7 +15,7 @@ describe("share-next", () => {
     await Instance.provide({
       directory: projectRoot,
       fn: async () => {
-        globalThis.setTimeout = (() => 0) as typeof globalThis.setTimeout
+        globalThis.setTimeout = (() => 0) as unknown as typeof globalThis.setTimeout
 
         const gate = Promise.withResolvers<Provider.Model>()
         const getModel = spyOn(Provider, "getModel").mockImplementation(() => gate.promise)
