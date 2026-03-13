@@ -776,10 +776,11 @@ export class VhoFeedback extends HeyApiClient {
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
+      user_id?: string
       feedback_id?: string
       plan_id?: string
       feedback_des?: string
-      resolution_status?: string
+      resolution_status?: Array<"0" | "1" | "9">
       plan_start_date?: string
       plan_end_date?: string
       page_num?: number
@@ -792,6 +793,7 @@ export class VhoFeedback extends HeyApiClient {
       [
         {
           args: [
+            { in: "body", key: "user_id" },
             { in: "body", key: "feedback_id" },
             { in: "body", key: "plan_id" },
             { in: "body", key: "feedback_des" },

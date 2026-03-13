@@ -163,10 +163,11 @@ const PlanEvalDetailFailure = z
   .meta({ ref: "AccountPlanEvalDetailFailure" })
 
 const VhoFeedbackListBody = z.object({
+  user_id: z.string().optional(),
   feedback_id: z.string().optional(),
   plan_id: z.string().optional(),
   feedback_des: z.string().optional(),
-  resolution_status: z.string().optional(),
+  resolution_status: z.array(z.enum(["0", "1", "9"])).optional(),
   plan_start_date: z.string().optional(),
   plan_end_date: z.string().optional(),
   page_num: z.number().int().positive().optional(),
@@ -176,36 +177,35 @@ const VhoFeedbackListBody = z.object({
 const VhoFeedbackListSuccess = z
   .object({
     ok: z.literal(true),
-    login_info: z.object({
-      user_id: z.string().optional(),
-      user_name: z.string().optional(),
-    }),
+    login_info: z
+      .object({
+        user_id: z.string().optional(),
+        user_name: z.string().optional(),
+      })
+      .catchall(z.unknown()),
     list: z.array(
-      z.object({
-        feedback_id: z.string(),
-        plan_id: z.string().optional(),
-        feedback_des: z.string().optional(),
-        customer_name: z.string().optional(),
-        feedback_time: z.string().optional(),
-        resolution_status_name: z.string().optional(),
-      }),
+      z
+        .object({
+          feedback_id: z.string(),
+          plan_id: z.string().optional(),
+          feedback_des: z.string().optional(),
+          customer_name: z.string().optional(),
+          feedback_time: z.string().optional(),
+          resolution_status_name: z.string().optional(),
+        })
+        .catchall(z.unknown()),
     ),
     total: z.number(),
     page_num: z.number(),
     page_size: z.number(),
+    feedback_meta: z.record(z.string(), z.unknown()),
   })
   .meta({ ref: "AccountVhoFeedbackListSuccess" })
 
 const VhoFeedbackListFailure = z
   .object({
     ok: z.literal(false),
-    code: z.enum([
-      "vho_feedback_phone_required",
-      "vho_feedback_upstream_request_failed",
-      "vho_feedback_upstream_invalid",
-      "vho_feedback_upstream_failed",
-      "forbidden",
-    ]),
+    code: z.enum(["vho_feedback_upstream_request_failed", "vho_feedback_upstream_invalid", "vho_feedback_upstream_failed", "forbidden"]),
     message: z.string().optional(),
     permission: z.string().optional(),
   })
@@ -229,6 +229,9 @@ const VhoFeedbackResolveSuccess = z
     feedback_des: z.string(),
     saved_plan_id: z.string(),
     plan_content: z.string(),
+    project_id: z.string(),
+    project_worktree: z.string(),
+    project_name: z.string().optional(),
     matched_by: z.enum(["plan_id", "feedback_id"]),
     prompt_text: z.string(),
   })
@@ -237,7 +240,7 @@ const VhoFeedbackResolveSuccess = z
 const VhoFeedbackResolveFailure = z
   .object({
     ok: z.literal(false),
-    code: z.enum(["vho_feedback_ref_missing", "saved_plan_missing", "forbidden"]),
+    code: z.enum(["vho_feedback_ref_missing", "saved_plan_missing", "saved_plan_project_missing", "forbidden"]),
     message: z.string().optional(),
     permission: z.string().optional(),
   })
@@ -844,18 +847,14 @@ export const AccountRoutes = lazy(() =>
         const denied = requireBuildUse(c)
         if (denied) return denied
         const body = c.req.valid("json")
-        const info = await UserService.meVho(user_id)
         const result = await VhoFeedbackService.search({
-          phone: info?.phone,
           query: body,
         })
         if (!result.ok) {
           const status =
-            result.code === "vho_feedback_phone_required"
-              ? 400
-              : result.code === "vho_feedback_upstream_request_failed" || result.code === "vho_feedback_upstream_failed"
-                ? 502
-                : 400
+            result.code === "vho_feedback_upstream_request_failed" || result.code === "vho_feedback_upstream_failed"
+              ? 502
+              : 400
           return c.json(result, status)
         }
         return c.json(result)

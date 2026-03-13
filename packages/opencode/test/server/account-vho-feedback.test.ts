@@ -71,14 +71,8 @@ afterEach(async () => {
 })
 
 describe("account vho feedback routes", () => {
-  test.skipIf(!on)("proxies list request with current user phone", async () => {
+  test.skipIf(!on)("proxies list request with optional phone filter and multi status filter", async () => {
     const token = await login()
-    await req({
-      path: "/account/me/vho-bind",
-      method: "POST",
-      token,
-      body: { phone: "13800138000" },
-    })
     const fetch = spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -88,6 +82,7 @@ describe("account vho feedback routes", () => {
             loginInfo: {
               userId: "13800138000",
               userName: "系统管理员",
+              departmentName: "研发部",
             },
             feedbackData: {
               list: [
@@ -95,9 +90,11 @@ describe("account vho feedback routes", () => {
                   feedbackId: "F-1",
                   planId: "plan_1",
                   feedbackDes: "登录慢",
+                  productName: "院感管理系统",
                 },
               ],
               total: 1,
+              fwBugCount: 2,
             },
           },
         }),
@@ -110,25 +107,46 @@ describe("account vho feedback routes", () => {
       method: "POST",
       token,
       body: {
+        user_id: "13800138000",
         feedback_id: "F-1",
+        resolution_status: ["0", "9"],
         page_num: 1,
-        page_size: 10,
+        page_size: 50,
       },
     })
 
     expect(response.status).toBe(200)
     const body = (await response.json()) as {
       ok?: boolean
-      list?: Array<{ feedback_id: string; plan_id?: string; feedback_des?: string }>
+      login_info?: Record<string, unknown>
+      list?: Array<Record<string, unknown>>
+      feedback_meta?: Record<string, unknown>
     }
     expect(body.ok).toBe(true)
-    expect(body.list).toEqual([{ feedback_id: "F-1", plan_id: "plan_1", feedback_des: "登录慢" }])
+    expect(body.login_info).toMatchObject({
+      user_id: "13800138000",
+      user_name: "系统管理员",
+      department_name: "研发部",
+    })
+    expect(body.list).toMatchObject([
+      {
+        feedback_id: "F-1",
+        plan_id: "plan_1",
+        feedback_des: "登录慢",
+        product_name: "院感管理系统",
+      },
+    ])
+    expect(body.feedback_meta).toMatchObject({
+      total: 1,
+      fw_bug_count: 2,
+    })
     const [, init] = fetch.mock.calls[0]!
     expect(JSON.parse(String((init as RequestInit | undefined)?.body))).toMatchObject({
       userId: "13800138000",
       feedbackId: "F-1",
+      resolutionStatus: "0,9",
       pageNum: 1,
-      pageSize: 10,
+      pageSize: 50,
     })
     fetch.mockRestore()
   })
@@ -144,9 +162,9 @@ describe("account vho feedback routes", () => {
           session_id: uid("session"),
           message_id: uid("message"),
           part_id: uid("part"),
-          project_id: uid("project"),
-          project_name: "测试项目",
-          project_worktree: process.cwd(),
+          project_id: "project_route_1",
+          project_name: "路由测试项目",
+          project_worktree: "/tmp/project-route-1",
           session_title: "测试会话",
           user_id: uid("user"),
           username: uid("username"),
@@ -181,9 +199,15 @@ describe("account vho feedback routes", () => {
       ok?: boolean
       matched_by?: string
       prompt_text?: string
+      project_id?: string
+      project_name?: string
+      project_worktree?: string
     }
     expect(body.ok).toBe(true)
     expect(body.matched_by).toBe("feedback_id")
     expect(body.prompt_text).toBe("反馈问题：登录超时\n\n计划内容：先抓日志，再查接口。")
+    expect(body.project_id).toBe("project_route_1")
+    expect(body.project_name).toBe("路由测试项目")
+    expect(body.project_worktree).toBe("/tmp/project-route-1")
   })
 })

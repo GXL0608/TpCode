@@ -17,6 +17,9 @@ function uid(prefix: string) {
 async function seedSavedPlan(input: {
   id?: string
   vho_feedback_no?: string
+  project_id?: string
+  project_name?: string
+  project_worktree?: string
   plan_content: string
   time_created: number
 }) {
@@ -29,9 +32,9 @@ async function seedSavedPlan(input: {
         session_id: uid("session"),
         message_id: uid("message"),
         part_id: uid("part"),
-        project_id: uid("project"),
-        project_name: "测试项目",
-        project_worktree: process.cwd(),
+        project_id: input.project_id ?? uid("project"),
+        project_name: input.project_name ?? "测试项目",
+        project_worktree: input.project_worktree ?? process.cwd(),
         session_title: "测试会话",
         user_id: uid("user"),
         username: uid("username"),
@@ -68,6 +71,8 @@ describe("vho feedback service", () => {
             loginInfo: {
               userId: "13800138000",
               userName: "系统管理员",
+              departmentId: "01",
+              departmentName: "研发部",
             },
             feedbackData: {
               list: [
@@ -76,11 +81,19 @@ describe("vho feedback service", () => {
                   planId: "plan_123",
                   feedbackDes: "登录界面加载缓慢的问题",
                   customerName: "第一人民医院",
+                  productName: "院感管理系统",
+                  moduleName: "院感上报卡",
+                  functionName: "多重耐药菌感染上报卡",
+                  userName: "邹卓衡",
+                  rdTaskStatus: "已完成",
+                  demandTypeName: "正常需求",
                   feedbackTime: "2023-10-24 10:00:00",
                   resolutionStatusName: "已解决",
                 },
               ],
               total: 125,
+              todayTaskSl: 3,
+              fwBugCount: 9,
             },
           },
         }),
@@ -89,16 +102,16 @@ describe("vho feedback service", () => {
     )
 
     const result = await VhoFeedbackService.search({
-      phone: "13800138000",
       query: {
+        user_id: "13800138000",
         feedback_id: "F1,F2",
         plan_id: "plan_123",
         feedback_des: "登录",
-        resolution_status: "resolved",
+        resolution_status: ["0", "9"],
         plan_start_date: "2026-03-01",
         plan_end_date: "2026-03-13",
         page_num: 2,
-        page_size: 20,
+        page_size: 50,
       },
     })
 
@@ -107,6 +120,8 @@ describe("vho feedback service", () => {
       login_info: {
         user_id: "13800138000",
         user_name: "系统管理员",
+        department_id: "01",
+        department_name: "研发部",
       },
       list: [
         {
@@ -114,13 +129,24 @@ describe("vho feedback service", () => {
           plan_id: "plan_123",
           feedback_des: "登录界面加载缓慢的问题",
           customer_name: "第一人民医院",
+          product_name: "院感管理系统",
+          module_name: "院感上报卡",
+          function_name: "多重耐药菌感染上报卡",
+          user_name: "邹卓衡",
+          rd_task_status: "已完成",
+          demand_type_name: "正常需求",
           feedback_time: "2023-10-24 10:00:00",
           resolution_status_name: "已解决",
         },
       ],
       total: 125,
       page_num: 2,
-      page_size: 20,
+      page_size: 50,
+      feedback_meta: {
+        total: 125,
+        today_task_sl: 3,
+        fw_bug_count: 9,
+      },
     })
     expect(fetch).toHaveBeenCalledTimes(1)
     const [, init] = fetch.mock.calls[0]!
@@ -130,26 +156,53 @@ describe("vho feedback service", () => {
       feedbackId: "F1,F2",
       planId: "plan_123",
       feedbackDes: "登录",
-      resolutionStatus: "resolved",
+      resolutionStatus: "0,9",
       planStartDate: "2026-03-01",
       planEndDate: "2026-03-13",
       pageNum: 2,
-      pageSize: 20,
+      pageSize: 50,
     })
     fetch.mockRestore()
   })
 
-  test("returns phone required error when search phone is missing", async () => {
+  test("allows empty user id when phone filter is not provided", async () => {
+    const fetch = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 200,
+          message: "查询成功",
+          content: {
+            loginInfo: {},
+            feedbackData: {
+              list: [],
+              total: 0,
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    )
+
     const result = await VhoFeedbackService.search({
-      phone: "   ",
-      query: {},
+      query: {
+        resolution_status: ["0", "9"],
+      },
     })
 
-    expect(result).toEqual({
-      ok: false,
-      code: "vho_feedback_phone_required",
-      message: "请先绑定手机号后再查询反馈任务。",
+    expect(result.ok).toBe(true)
+    const [, init] = fetch.mock.calls[0]!
+    expect(JSON.parse(String((init as RequestInit | undefined)?.body))).toEqual({
+      userId: undefined,
+      feedbackId: undefined,
+      planId: undefined,
+      feedbackDes: undefined,
+      resolutionStatus: "0,9",
+      planStartDate: undefined,
+      planEndDate: undefined,
+      pageNum: 1,
+      pageSize: 50,
     })
+    fetch.mockRestore()
   })
 
   test("resolves prompt by plan id before falling back to feedback id", async () => {
@@ -157,6 +210,9 @@ describe("vho feedback service", () => {
     await seedSavedPlan({
       id: "plan_direct",
       vho_feedback_no: "F20231024001",
+      project_id: "project_direct",
+      project_name: "直接命中项目",
+      project_worktree: "/tmp/project-direct",
       plan_content: "直接命中的计划内容",
       time_created: now,
     })
@@ -180,6 +236,9 @@ describe("vho feedback service", () => {
       feedback_des: "登录界面加载缓慢的问题",
       saved_plan_id: "plan_direct",
       plan_content: "直接命中的计划内容",
+      project_id: "project_direct",
+      project_name: "直接命中项目",
+      project_worktree: "/tmp/project-direct",
       matched_by: "plan_id",
       prompt_text: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：直接命中的计划内容",
     })
@@ -196,6 +255,9 @@ describe("vho feedback service", () => {
     await seedSavedPlan({
       id: "plan_new",
       vho_feedback_no: "F20231024002",
+      project_id: "project_new",
+      project_name: "最新计划项目",
+      project_worktree: "/tmp/project-new",
       plan_content: "最新计划内容",
       time_created: now + 10,
     })
@@ -209,6 +271,9 @@ describe("vho feedback service", () => {
     if (!result.ok) throw new Error(result.code)
     expect(result.saved_plan_id).toBe("plan_new")
     expect(result.plan_content).toBe("最新计划内容")
+    expect(result.project_id).toBe("project_new")
+    expect(result.project_name).toBe("最新计划项目")
+    expect(result.project_worktree).toBe("/tmp/project-new")
     expect(result.matched_by).toBe("feedback_id")
 
     const rows = await Database.use((db) =>
@@ -220,5 +285,42 @@ describe("vho feedback service", () => {
         .all(),
     )
     expect(rows[0]?.id).toBe("plan_new")
+  })
+
+  test("returns explicit error when saved plan is not linked", async () => {
+    const result = await VhoFeedbackService.resolve({
+      feedback_id: "F404",
+      feedback_des: "未关联计划",
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      code: "saved_plan_missing",
+      message: "未关联到 tp_saved_plan 计划内容，请确认该反馈是否已保存计划。",
+    })
+  })
+
+  test("returns project missing error when saved plan has no project fields", async () => {
+    const now = Date.now()
+    await seedSavedPlan({
+      id: "plan_without_project",
+      vho_feedback_no: "F_PROJECT_MISSING",
+      project_id: "",
+      project_name: "",
+      project_worktree: "",
+      plan_content: "项目字段缺失",
+      time_created: now,
+    })
+
+    const result = await VhoFeedbackService.resolve({
+      feedback_id: "F_PROJECT_MISSING",
+      feedback_des: "缺少项目字段",
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      code: "saved_plan_project_missing",
+      message: "计划已找到，但缺少关联项目，请联系管理员检查计划数据。",
+    })
   })
 })

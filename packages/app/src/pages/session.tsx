@@ -32,6 +32,7 @@ import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { SessionComposerRegion, createSessionComposerState } from "@/pages/session/composer"
 import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
+import { shouldConsumePromptHandoff } from "@/context/layout"
 
 export default function Page() {
   const layout = useLayout()
@@ -64,6 +65,28 @@ export default function Page() {
   const workspaceTabs = createMemo(() => layout.tabs(workspaceKey))
   const tabs = createMemo(() => layout.tabs(sessionKey))
   const view = createMemo(() => layout.view(sessionKey))
+
+  createEffect(() => {
+    const directory = params.dir
+    const handoff = directory ? layout.handoff.prompt(directory) : undefined
+    if (!prompt.ready()) return
+    if (!handoff) return
+    if (
+      !shouldConsumePromptHandoff({
+        handoff,
+        directory,
+        session_id: params.id,
+        now: Date.now(),
+      })
+    ) {
+      if (directory && handoff && Date.now() - handoff.at > 60_000) {
+        layout.handoff.clearPrompt(directory)
+      }
+      return
+    }
+    prompt.set([{ type: "text", content: handoff.prompt, start: 0, end: handoff.prompt.length }], handoff.cursor)
+    layout.handoff.clearPrompt(directory!)
+  })
 
   createEffect(
     on(

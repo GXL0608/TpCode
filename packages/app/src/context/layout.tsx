@@ -56,6 +56,13 @@ type WorkspaceHandoff = {
   at: number
 }
 
+type PromptHandoff = {
+  directory: string
+  prompt: string
+  cursor: number
+  at: number
+}
+
 export type LocalProject = Partial<Project> & { worktree: string; expanded: boolean }
 
 export type ReviewDiffStyle = "unified" | "split"
@@ -73,6 +80,22 @@ export function createSessionKeyReader(sessionKey: string | Accessor<string>, en
     ensure(value)
     return value
   }
+}
+
+/**
+ * 中文注释：仅允许目标项目的新建会话页在有效期内消费一次跨项目 Prompt 交接数据。
+ */
+export function shouldConsumePromptHandoff(input: {
+  handoff?: PromptHandoff
+  directory?: string
+  session_id?: string
+  now: number
+}) {
+  if (!input.handoff) return false
+  if (!input.directory) return false
+  if (input.session_id) return false
+  if (input.handoff.directory !== input.directory) return false
+  return input.now - input.handoff.at <= 60_000
 }
 
 export function pruneSessionKeys(input: {
@@ -189,6 +212,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         handoff: {
           tabs: undefined as TabHandoff | undefined,
           workspaces: {} as Record<string, WorkspaceHandoff | undefined>,
+          prompts: {} as Record<string, PromptHandoff | undefined>,
         },
       }),
     )
@@ -398,6 +422,30 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           setStore(
             "handoff",
             "workspaces",
+            produce((draft) => {
+              delete draft[directory]
+            }),
+          )
+        },
+        /** 中文注释：记录跨项目跳转后要注入到“新建会话页”的一次性 Prompt 文本。 */
+        prompt(directory: string) {
+          return store.handoff?.prompts[directory]
+        },
+        /** 中文注释：在跳转到目标项目的新建会话页前，暂存待注入的 Prompt 文本。 */
+        setPrompt(directory: string, prompt: string, cursor = prompt.length) {
+          setStore("handoff", "prompts", directory, {
+            directory,
+            prompt,
+            cursor,
+            at: Date.now(),
+          })
+        },
+        /** 中文注释：目标新建会话页消费完成后清理 Prompt 交接数据，避免污染后续新会话。 */
+        clearPrompt(directory: string) {
+          if (!store.handoff?.prompts[directory]) return
+          setStore(
+            "handoff",
+            "prompts",
             produce((draft) => {
               delete draft[directory]
             }),

@@ -97,10 +97,11 @@ type SavePlanResult =
     }
 
 type VhoFeedbackListInput = {
+  user_id?: string
   feedback_id?: string
   plan_id?: string
   feedback_des?: string
-  resolution_status?: string
+  resolution_status?: Array<"0" | "1" | "9">
   plan_start_date?: string
   plan_end_date?: string
   page_num?: number
@@ -114,7 +115,7 @@ type VhoFeedbackListItem = {
   customer_name?: string
   feedback_time?: string
   resolution_status_name?: string
-}
+} & Record<string, unknown>
 
 type VhoFeedbackListResult =
   | {
@@ -122,11 +123,12 @@ type VhoFeedbackListResult =
       login_info: {
         user_id?: string
         user_name?: string
-      }
+      } & Record<string, unknown>
       list: VhoFeedbackListItem[]
       total: number
       page_num: number
       page_size: number
+      feedback_meta: Record<string, unknown>
     }
   | {
       ok: false
@@ -142,6 +144,9 @@ type VhoFeedbackResolveResult =
       feedback_des: string
       saved_plan_id: string
       plan_content: string
+      project_id: string
+      project_worktree: string
+      project_name?: string
       matched_by: "plan_id" | "feedback_id"
       prompt_text: string
     }

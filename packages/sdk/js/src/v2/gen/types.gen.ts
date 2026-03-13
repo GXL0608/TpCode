@@ -1691,6 +1691,7 @@ export type AccountVhoFeedbackListSuccess = {
   login_info: {
     user_id?: string
     user_name?: string
+    [key: string]: unknown | string | undefined
   }
   list: Array<{
     feedback_id: string
@@ -1699,16 +1700,19 @@ export type AccountVhoFeedbackListSuccess = {
     customer_name?: string
     feedback_time?: string
     resolution_status_name?: string
+    [key: string]: unknown | string | undefined
   }>
   total: number
   page_num: number
   page_size: number
+  feedback_meta: {
+    [key: string]: unknown
+  }
 }
 
 export type AccountVhoFeedbackListFailure = {
   ok: false
   code:
-    | "vho_feedback_phone_required"
     | "vho_feedback_upstream_request_failed"
     | "vho_feedback_upstream_invalid"
     | "vho_feedback_upstream_failed"
@@ -1724,13 +1728,16 @@ export type AccountVhoFeedbackResolveSuccess = {
   feedback_des: string
   saved_plan_id: string
   plan_content: string
+  project_id: string
+  project_worktree: string
+  project_name?: string
   matched_by: "plan_id" | "feedback_id"
   prompt_text: string
 }
 
 export type AccountVhoFeedbackResolveFailure = {
   ok: false
-  code: "vho_feedback_ref_missing" | "saved_plan_missing" | "forbidden"
+  code: "vho_feedback_ref_missing" | "saved_plan_missing" | "saved_plan_project_missing" | "forbidden"
   message?: string
   permission?: string
 }
@@ -3002,10 +3009,11 @@ export type PostAccountContextSelectResponses = {
 
 export type AccountVhoFeedbackListData = {
   body?: {
+    user_id?: string
     feedback_id?: string
     plan_id?: string
     feedback_des?: string
-    resolution_status?: string
+    resolution_status?: Array<"0" | "1" | "9">
     plan_start_date?: string
     plan_end_date?: string
     page_num?: number

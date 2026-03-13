@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createRoot, createSignal } from "solid-js"
-import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys } from "./layout"
+import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys, shouldConsumePromptHandoff } from "./layout"
 
 describe("layout session-key helpers", () => {
   test("couples touch and scroll seed in order", () => {
@@ -65,5 +65,67 @@ describe("pruneSessionKeys", () => {
     })
 
     expect(drop).toEqual([])
+  })
+})
+
+describe("shouldConsumePromptHandoff", () => {
+  test("consumes only on target new-session route before ttl expires", () => {
+    expect(
+      shouldConsumePromptHandoff({
+        handoff: {
+          directory: "/tmp/project-a",
+          prompt: "反馈问题：A",
+          cursor: 7,
+          at: 1_000,
+        },
+        directory: "/tmp/project-a",
+        session_id: undefined,
+        now: 30_000,
+      }),
+    ).toBe(true)
+  })
+
+  test("rejects expired or mismatched handoff", () => {
+    expect(
+      shouldConsumePromptHandoff({
+        handoff: {
+          directory: "/tmp/project-a",
+          prompt: "反馈问题：A",
+          cursor: 7,
+          at: 1_000,
+        },
+        directory: "/tmp/project-b",
+        session_id: undefined,
+        now: 30_000,
+      }),
+    ).toBe(false)
+
+    expect(
+      shouldConsumePromptHandoff({
+        handoff: {
+          directory: "/tmp/project-a",
+          prompt: "反馈问题：A",
+          cursor: 7,
+          at: 1_000,
+        },
+        directory: "/tmp/project-a",
+        session_id: "session_1",
+        now: 30_000,
+      }),
+    ).toBe(false)
+
+    expect(
+      shouldConsumePromptHandoff({
+        handoff: {
+          directory: "/tmp/project-a",
+          prompt: "反馈问题：A",
+          cursor: 7,
+          at: 1_000,
+        },
+        directory: "/tmp/project-a",
+        session_id: undefined,
+        now: 70_000,
+      }),
+    ).toBe(false)
   })
 })

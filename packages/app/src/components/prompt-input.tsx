@@ -18,6 +18,7 @@ import {
 import { useLayout } from "@/context/layout"
 import { useSDK } from "@/context/sdk"
 import { useParams } from "@solidjs/router"
+import { useNavigate } from "@solidjs/router"
 import { useSync } from "@/context/sync"
 import { useComments } from "@/context/comments"
 import { Button } from "@opencode-ai/ui/button"
@@ -35,6 +36,7 @@ import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useAccountAuth } from "@/context/account-auth"
+import { useAccountProject } from "@/context/account-project"
 import { useAccountRequest } from "./settings-account-api"
 import { createTextFragment, getCursorPosition, setCursorPosition, setRangeEdge } from "./prompt-input/editor-dom"
 import { createPromptAttachments, ACCEPTED_FILE_TYPES } from "./prompt-input/attachments"
@@ -60,7 +62,13 @@ import { canUseBuildCapability } from "@/utils/account-build-access"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
 import { createSpeechRecognition } from "@/utils/speech"
 import { DialogVhoFeedback } from "./dialog-vho-feedback"
-import { buildVhoFeedbackPrompt, canOpenVhoFeedback, mergeVhoFeedbackPrompt } from "./vho-feedback"
+import {
+  buildVhoFeedbackPrompt,
+  findAssignedVhoProject,
+  shouldShowVhoFeedbackAction,
+  vhoFeedbackApplyFailure,
+} from "./vho-feedback"
+import { base64Encode } from "@opencode-ai/util/encode"
 
 interface PromptInputProps {
   class?: string
@@ -128,8 +136,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const files = useFile()
   const prompt = usePrompt()
   const layout = useLayout()
+  const accountProject = useAccountProject()
   const comments = useComments()
   const params = useParams()
+  const navigate = useNavigate()
   const dialog = useDialog()
   const command = useCommand()
   const permission = usePermission()
@@ -1508,34 +1518,64 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const canSelectVhoFeedback = createMemo(
     () =>
-      !!params.id &&
-      canOpenVhoFeedback({
+      shouldShowVhoFeedbackAction({
         agent: local.agent.current()?.name,
+        session_id: params.id,
       }),
   )
 
   /**
-   * 中文注释：把选中的反馈内容写回当前输入框，必要时先确认覆盖现有草稿。
+   * 中文注释：根据反馈关联计划切换到目标项目的新建会话页，并把回填文本交接给目标输入框。
    */
-  const applyVhoFeedback = (input: { prompt_text?: string; feedback_des?: string; plan_content: string }) => {
+  const applyVhoFeedback = async (input: {
+    prompt_text?: string
+    feedback_des?: string
+    plan_content: string
+    project_id: string
+    project_worktree: string
+    project_name?: string
+  }) => {
     const next =
       input.prompt_text?.trim() ||
       buildVhoFeedbackPrompt({
         feedback_des: input.feedback_des,
         plan_content: input.plan_content,
       })
-    const current = prompt
-      .current()
-      .map((part) => ("content" in part ? part.content : ""))
-      .join("")
-    const merged = mergeVhoFeedbackPrompt({
-      current,
-      next,
-      confirm: (message) => window.confirm(message),
+    const payload = await auth.contextProducts()
+    if (!payload) {
+      return vhoFeedbackApplyFailure({
+        reason: "products_failed",
+      })
+    }
+
+    const target = findAssignedVhoProject({
+      project_id: input.project_id,
+      project_worktree: input.project_worktree,
+      products: payload.products.map((item) => ({
+        id: item.id,
+        project_id: item.project_id,
+        worktree: item.worktree,
+      })),
     })
-    if (!merged.ok) return
-    prompt.set([{ type: "text", content: merged.value, start: 0, end: merged.value.length }], merged.value.length)
-    requestAnimationFrame(() => editorRef?.focus())
+    if (!target) {
+      return vhoFeedbackApplyFailure({
+        reason: "project_missing",
+      })
+    }
+
+    const activated = await accountProject.activate(target.project_id, true)
+    if (!activated.ok) {
+      return vhoFeedbackApplyFailure({
+        reason: "project_activate_failed",
+      })
+    }
+
+    const slug = base64Encode(target.worktree)
+    layout.handoff.setPrompt(slug, next, next.length)
+    navigate(`/${slug}/session`)
+    return {
+      ok: true,
+    } as const
   }
 
   return (
@@ -1871,6 +1911,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                           prompt_text: input.prompt_text,
                           feedback_des: input.feedback_des,
                           plan_content: input.plan_content,
+                          project_id: input.project_id,
+                          project_worktree: input.project_worktree,
+                          project_name: input.project_name,
                         })
                       }
                     />
