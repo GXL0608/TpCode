@@ -1442,14 +1442,22 @@ export namespace SessionPrompt {
               if (part.mime.startsWith("image/")) {
                 const id = part.id ?? Identifier.ascending("part")
                 const filename = part.filename ?? "attachment"
+                const ocr =
+                  part.ocr_text?.trim()
+                    ? undefined
+                    : await SessionPicture.extractDataUrlOCR({
+                        mime: part.mime,
+                        data_url: part.url,
+                        model: info.model,
+                      })
                 await SessionPicture.saveDataFile({
                   session_id: input.sessionID,
                   message_id: info.id,
                   part_id: id,
                   mime: part.mime,
                   filename,
-                  ocr_text: part.ocr_text,
-                  ocr_engine: part.ocr_engine,
+                  ocr_text: part.ocr_text?.trim() || ocr?.ocr_text,
+                  ocr_engine: part.ocr_engine?.trim() || ocr?.ocr_engine,
                   data_url: part.url,
                 }).catch((error) => {
                   log.error("failed to store picture attachment", {

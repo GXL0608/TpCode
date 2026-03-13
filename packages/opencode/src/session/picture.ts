@@ -1,9 +1,13 @@
 import { Database } from "@/storage/db"
 import { Log } from "@/util/log"
+import { Provider } from "@/provider/provider"
+import { generateText } from "ai"
+import { MessageV2 } from "./message-v2"
 import { TpSessionPictureTable } from "./session.sql"
 
 const PREFIX = "picture"
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+const MAX_OCR_TEXT_CHARS = 24_000
 const log = Log.create({ service: "session.picture" })
 
 let ensure: Promise<void> | undefined
@@ -69,6 +73,82 @@ async function ensureTable() {
 }
 
 export namespace SessionPicture {
+  export async function extractDataUrlOCR(input: {
+    mime: string
+    data_url: string
+    model: {
+      providerID: string
+      modelID: string
+    }
+  }) {
+    if (!input.mime.startsWith("image/")) return
+    const picked = await Provider.getModel(input.model.providerID, input.model.modelID).catch(() => undefined)
+    if (!picked) return
+
+    const language = await Provider.getLanguage(picked).catch(() => undefined)
+    if (!language) return
+
+    const user: MessageV2.User = {
+      id: "message_ocr",
+      sessionID: "session_ocr",
+      role: "user",
+      time: {
+        created: Date.now(),
+      },
+      agent: "build",
+      model: input.model,
+    }
+    const messages = MessageV2.toModelMessages(
+      [
+        {
+          info: user,
+          parts: [
+            {
+              id: "part_ocr_text",
+              sessionID: user.sessionID,
+              messageID: user.id,
+              type: "text",
+              text: "Extract all readable text from this image. Return plain text only. If no text is present, return an empty string.",
+            },
+            {
+              id: "part_ocr_file",
+              sessionID: user.sessionID,
+              messageID: user.id,
+              type: "file",
+              mime: input.mime,
+              filename: "attachment",
+              url: input.data_url,
+            },
+          ],
+        },
+      ],
+      picked,
+    )
+
+    const result = await generateText({
+      model: language,
+      temperature: 0,
+      maxOutputTokens: 1200,
+      messages,
+      abortSignal: AbortSignal.timeout(Number(process.env.OPENCODE_IMAGE_OCR_TIMEOUT_MS ?? "12000")),
+    }).catch((error) => {
+      log.warn("image OCR generation failed", {
+        error,
+        providerID: picked.providerID,
+        modelID: picked.id,
+      })
+      return undefined
+    })
+    if (!result) return
+
+    const text = result.text.trim()
+    if (!text) return
+    return {
+      ocr_text: text.length > MAX_OCR_TEXT_CHARS ? text.slice(0, MAX_OCR_TEXT_CHARS) : text,
+      ocr_engine: `llm_vision:${picked.providerID}/${picked.id}`,
+    }
+  }
+
   export async function saveDataFile(input: {
     id?: string
     session_id: string
