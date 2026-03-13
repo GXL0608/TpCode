@@ -124,7 +124,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
   /** 中文注释：异步发送成功后主动补拉消息，避免仅靠事件流时乐观消息长期停留。 */
   const refreshSessionMessages = (directory: string, sessionID: string) => {
-    const run = () => sync.session.sync(sessionID).catch(() => undefined)
+    const run = () => sync.session.syncAt({ directory, sessionID }).catch(() => undefined)
     void run()
     if (typeof window === "undefined") return
     window.setTimeout(() => {
@@ -340,7 +340,13 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     const switchDirectory = async (directory: string) => {
+      const previousDirectory = sessionDirectory
       await registerWorkspace(directory)
+      sync.session.migrate({
+        from: previousDirectory,
+        to: directory,
+        sessionID,
+      })
       sessionDirectory = directory
       client =
         directory === projectDirectory

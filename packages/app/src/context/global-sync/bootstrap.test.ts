@@ -135,4 +135,32 @@ describe("bootstrapDirectory", () => {
     expect(store.status).toBe("partial")
     expect(toasts).toEqual([])
   })
+
+  test("does not show reload toast when the workspace was disposed before bootstrap failed", async () => {
+    toasts.length = 0
+    const [store, setStore] = state()
+    await bootstrapDirectory({
+      directory: "/repo/disposed-workspace",
+      sdk: {
+        app: {
+          agents: async () => {
+            throw new Error("Forbidden")
+          },
+        },
+        config: {
+          get: async () => ({ data: {} }),
+        },
+      } as never,
+      store,
+      setStore,
+      vcsCache: cache(),
+      loadSessions: async () => {},
+      unknownError: "unknown",
+      invalidConfigurationError: "invalid",
+      shouldIgnoreError: () => true,
+    })
+
+    expect(store.status).toBe("partial")
+    expect(toasts).toEqual([])
+  })
 })

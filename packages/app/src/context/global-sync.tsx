@@ -331,6 +331,8 @@ function createGlobalSync() {
         loadSessions,
         unknownError: language.t("error.chain.unknown"),
         invalidConfigurationError: language.t("error.server.invalidConfiguration"),
+        /** 中文注释：工作区在 bootstrap 请求返回前已被删除时，忽略随后返回的 403/不存在错误，避免误报 reload 失败。 */
+        shouldIgnoreError: () => !children.children[directory],
       })
     })()
 
@@ -535,9 +537,9 @@ function createGlobalSync() {
       return globalStore.error
     },
     child: children.child,
-    /** 中文注释：删除工作区后主动清理本地 child store，避免已删除目录继续 reload。 */
-    disposeDirectory(directory: string) {
-      return children.disposeDirectory(directory)
+    /** 中文注释：删除工作区后主动清理本地 child store，支持显式强制释放已删除目录。 */
+    disposeDirectory(directory: string, options?: { force?: boolean }) {
+      return children.disposeDirectory(directory, options)
     },
     bootstrap,
     loadProvider,

@@ -173,6 +173,7 @@ export async function bootstrapDirectory(input: {
   loadSessions: (directory: string) => Promise<void> | void
   unknownError: string
   invalidConfigurationError: string
+  shouldIgnoreError?: () => boolean
 }) {
   if (input.store.status !== "complete") input.setStore("status", "loading")
 
@@ -185,6 +186,10 @@ export async function bootstrapDirectory(input: {
     await Promise.all(Object.values(blockingRequests).map((p) => p()))
   } catch (err) {
     console.error("Failed to bootstrap instance", err)
+    if (input.shouldIgnoreError?.()) {
+      input.setStore("status", "partial")
+      return
+    }
     if (missingDirectory(err)) {
       input.setStore("status", "partial")
       return

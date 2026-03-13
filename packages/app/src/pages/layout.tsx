@@ -1328,8 +1328,8 @@ export default function Layout(props: ParentProps) {
       navigateWithSidebarReset(`/${base64Encode(root)}/session`)
     }
 
-    /** 中文注释：工作区删除成功后立即清理本地 child store，避免已删除目录继续触发 reload 错误。 */
-    globalSync.disposeDirectory(directory)
+    /** 中文注释：工作区删除成功后强制清理本地 child store，避免 booting/loading 中的已删除目录继续触发 reload。 */
+    globalSync.disposeDirectory(directory, { force: true })
     void accountProject.setWorkspaceExpanded(directory, false)
 
     globalSync.set(

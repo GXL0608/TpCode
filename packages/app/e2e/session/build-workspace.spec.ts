@@ -157,6 +157,36 @@ test("build workspace is created lazily on the first submitted prompt", async ({
   }
 })
 
+test("plan history remains visible after the session migrates into the first build workspace", async ({ page, directory }) => {
+  test.setTimeout(120_000)
+
+  await projectSession(directory)
+  const sdk = createSdk(directory)
+  const session = await sdk.session.create({ title: `e2e build history ${Date.now()}` }).then((r) => r.data)
+  if (!session?.id) throw new Error("Session create did not return an id")
+
+  const planText = `E2E_PLAN_HISTORY_${Date.now()}`
+  const buildText = `E2E_BUILD_HISTORY_${Date.now()}`
+
+  try {
+    await openProject(page, directory, session.id)
+    await sendFirstPrompt(page, planText)
+    await expect(page.getByText(planText)).toBeVisible()
+
+    await selectBuild(page)
+    const root = await currentDirectory(sdk, session.id)
+    await sendFirstPrompt(page, buildText)
+
+    const workspace = await waitForWorkspace({ sdk, sessionID: session.id, root })
+    await expect(page).toHaveURL(new RegExp(`/${dirSlug(workspace)}/session/${session.id}(?:[/?#]|$)`))
+    await expect(page.getByText(planText)).toBeVisible()
+    await expect(page.getByText(buildText)).toBeVisible()
+  } finally {
+    await sdk.session.abort({ sessionID: session.id }).catch(() => undefined)
+    await sdk.session.delete({ sessionID: session.id }).catch(() => undefined)
+  }
+})
+
 test("dirty build workspace warns before archiving and is deleted after confirmation", async ({ page, directory }) => {
   test.setTimeout(120_000)
 

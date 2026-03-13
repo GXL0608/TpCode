@@ -8,7 +8,17 @@ import { useGlobalSync } from "./global-sync"
 import { useGlobalSDK } from "./global-sdk"
 import { resolveProjectByDirectory } from "./project-resolver"
 import { useSDK } from "./sdk"
-import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import type {
+  FileDiff,
+  Message,
+  Part,
+  PermissionRequest,
+  QuestionRequest,
+  Session,
+  SessionStatus,
+  Todo,
+} from "@opencode-ai/sdk/v2/client"
+import type { State } from "./global-sync/types"
 
 function sortParts(parts: Part[]) {
   return parts.filter((part) => !!part?.id).sort((a, b) => cmp(a.id, b.id))
@@ -52,6 +62,88 @@ type FetchInput = {
   removed?: {
     message?: Set<string>
     part?: Map<string, Set<string>>
+  }
+}
+
+type SessionStateStore = Pick<
+  State,
+  "session" | "sessionTotal" | "session_status" | "session_diff" | "todo" | "permission" | "question" | "message" | "part"
+>
+
+type SessionSlice = {
+  session?: Session
+  status?: SessionStatus
+  diff?: FileDiff[]
+  todo?: Todo[]
+  permission?: PermissionRequest[]
+  question?: QuestionRequest[]
+  message?: Message[]
+  part: Record<string, Part[] | undefined>
+}
+
+/** 中文注释：读取单个会话在目录 child store 中的完整本地状态，用于切换到 build worktree 时整体迁移。 */
+export function readSessionSlice(store: SessionStateStore, sessionID: string): SessionSlice {
+  const match = Binary.search(store.session, sessionID, (item) => item.id)
+  const session = match.found ? store.session[match.index] : undefined
+  const message = store.message[sessionID]
+  const part = Object.fromEntries((message ?? []).map((item) => [item.id, store.part[item.id]]))
+  return {
+    session,
+    status: store.session_status[sessionID],
+    diff: store.session_diff[sessionID],
+    todo: store.todo[sessionID],
+    permission: store.permission[sessionID],
+    question: store.question[sessionID],
+    message,
+    part,
+  }
+}
+
+/** 中文注释：把会话切片写入目标目录 child store，保持会话和消息按 id 有序。 */
+export function applySessionSlice(store: SessionStateStore, slice: SessionSlice, sessionID: string) {
+  if (slice.session) {
+    const match = Binary.search(store.session, slice.session.id, (item) => item.id)
+    if (match.found) {
+      store.session[match.index] = slice.session
+    }
+    if (!match.found) {
+      store.session.splice(match.index, 0, slice.session)
+      if (!slice.session.parentID && !slice.session.time?.archived) {
+        store.sessionTotal += 1
+      }
+    }
+  }
+  if (slice.status) store.session_status[sessionID] = slice.status
+  if (slice.diff) store.session_diff[sessionID] = slice.diff
+  if (slice.todo) store.todo[sessionID] = slice.todo
+  if (slice.permission) store.permission[sessionID] = slice.permission
+  if (slice.question) store.question[sessionID] = slice.question
+  if (slice.message) store.message[sessionID] = slice.message.slice()
+  for (const [messageID, part] of Object.entries(slice.part)) {
+    if (!part) continue
+    store.part[messageID] = sortParts(part)
+  }
+}
+
+/** 中文注释：从旧目录 child store 移除会话切片，避免 build 切目录后同一会话残留在旧工作区列表与消息缓存中。 */
+export function removeSessionSlice(store: SessionStateStore, slice: SessionSlice, sessionID: string) {
+  if (slice.session) {
+    const match = Binary.search(store.session, slice.session.id, (item) => item.id)
+    if (match.found) {
+      store.session.splice(match.index, 1)
+      if (!slice.session.parentID && !slice.session.time?.archived) {
+        store.sessionTotal = Math.max(0, store.sessionTotal - 1)
+      }
+    }
+  }
+  delete store.session_status[sessionID]
+  delete store.session_diff[sessionID]
+  delete store.todo[sessionID]
+  delete store.permission[sessionID]
+  delete store.question[sessionID]
+  delete store.message[sessionID]
+  for (const messageID of Object.keys(slice.part)) {
+    delete store.part[messageID]
   }
 }
 
@@ -256,6 +348,57 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       touch(directory, sessionID)
     }
 
+    /** 中文注释：把按目录分片的同步元数据从旧目录迁到新目录，保证 build 切 worktree 后继续复用同一条会话的历史缓存。 */
+    const moveTracking = (input: { from: string; to: string; sessionID: string }) => {
+      if (input.from === input.to) return
+      const fromKey = keyFor(input.from, input.sessionID)
+      const toKey = keyFor(input.to, input.sessionID)
+      if (tracked.has(fromKey)) tracked.add(toKey)
+      tracked.delete(fromKey)
+      const nextVersion = version.get(fromKey)
+      if (nextVersion !== undefined) version.set(toKey, nextVersion)
+      version.delete(fromKey)
+      const nextRemovedMessage = removedMessage.get(fromKey)
+      if (nextRemovedMessage) removedMessage.set(toKey, new Set(nextRemovedMessage))
+      removedMessage.delete(fromKey)
+      const nextRemovedPart = removedPart.get(fromKey)
+      if (nextRemovedPart) {
+        removedPart.set(
+          toKey,
+          new Map([...nextRemovedPart.entries()].map(([messageID, ids]) => [messageID, new Set(ids)])),
+        )
+      }
+      removedPart.delete(fromKey)
+      inflight.delete(fromKey)
+      inflightDiff.delete(fromKey)
+      inflightTodo.delete(fromKey)
+      batch(() => {
+        setMeta(
+          "limit",
+          produce((draft) => {
+            const value = draft[fromKey]
+            delete draft[fromKey]
+            if (value !== undefined) draft[toKey] = value
+          }),
+        )
+        setMeta(
+          "complete",
+          produce((draft) => {
+            const value = draft[fromKey]
+            delete draft[fromKey]
+            if (value !== undefined) draft[toKey] = value
+          }),
+        )
+        setMeta(
+          "loading",
+          produce((draft) => {
+            delete draft[fromKey]
+            draft[toKey] = false
+          }),
+        )
+      })
+    }
+
     const stop = globalSDK.event.listen((event) => {
       if (event.name !== sdk.directory) return
       if (event.details.type === "message.updated") {
@@ -373,6 +516,57 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         })
     }
 
+    /** 中文注释：按指定目录同步会话，供切换 worktree 后按新目录补拉消息与状态。 */
+    const syncSessionAt = async (input: { directory: string; sessionID: string }) => {
+      const directory = input.directory
+      const scopedClient =
+        directory === sdk.directory ? sdk.client : sdk.createClient({ directory, throwOnError: true })
+      const [store, setStore] = globalSync.child(directory)
+      const key = keyFor(directory, input.sessionID)
+      const hasSession = (() => {
+        const match = Binary.search(store.session, input.sessionID, (s) => s.id)
+        return match.found
+      })()
+
+      const hasMessages = store.message[input.sessionID] !== undefined
+      const hydrated = meta.limit[key] !== undefined
+      if (hasSession && hasMessages && hydrated) return
+
+      const count = store.message[input.sessionID]?.length ?? 0
+      const limit = hydrated ? (meta.limit[key] ?? messagePageSize) : limitFor(count)
+
+      const sessionReq = hasSession
+        ? Promise.resolve()
+        : scopedClient.session.get({ sessionID: input.sessionID }).then((session) => {
+            const data = session.data
+            if (!data) return
+            setStore(
+              "session",
+              produce((draft) => {
+                const match = Binary.search(draft, input.sessionID, (s) => s.id)
+                if (match.found) {
+                  draft[match.index] = data
+                  return
+                }
+                draft.splice(match.index, 0, data)
+              }),
+            )
+          })
+
+      const messagesReq =
+        hasMessages && hydrated
+          ? Promise.resolve()
+          : loadMessages({
+              directory,
+              client: scopedClient,
+              setStore,
+              sessionID: input.sessionID,
+              limit,
+            })
+
+      return runInflight(inflight, key, () => Promise.all([sessionReq, messagesReq]).then(() => {}))
+    }
+
     return {
       get data() {
         return current()[0]
@@ -432,52 +626,40 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           touch(sdk.directory, input.sessionID)
         },
         async sync(sessionID: string) {
-          const directory = sdk.directory
-          const client = sdk.client
-          const [store, setStore] = globalSync.child(directory)
-          const key = keyFor(directory, sessionID)
-          const hasSession = (() => {
-            const match = Binary.search(store.session, sessionID, (s) => s.id)
-            return match.found
-          })()
-
-          const hasMessages = store.message[sessionID] !== undefined
-          const hydrated = meta.limit[key] !== undefined
-          if (hasSession && hasMessages && hydrated) return
-
-          const count = store.message[sessionID]?.length ?? 0
-          const limit = hydrated ? (meta.limit[key] ?? messagePageSize) : limitFor(count)
-
-          const sessionReq = hasSession
-            ? Promise.resolve()
-            : client.session.get({ sessionID }).then((session) => {
-                const data = session.data
-                if (!data) return
-                setStore(
-                  "session",
-                  produce((draft) => {
-                    const match = Binary.search(draft, sessionID, (s) => s.id)
-                    if (match.found) {
-                      draft[match.index] = data
-                      return
-                    }
-                    draft.splice(match.index, 0, data)
-                  }),
-                )
-              })
-
-          const messagesReq =
-            hasMessages && hydrated
-              ? Promise.resolve()
-              : loadMessages({
-                  directory,
-                  client,
-                  setStore,
-                  sessionID,
-                  limit,
-                })
-
-          return runInflight(inflight, key, () => Promise.all([sessionReq, messagesReq]).then(() => {}))
+          return syncSessionAt({ directory: sdk.directory, sessionID })
+        },
+        /** 中文注释：按指定目录同步会话，供 build 切到新 worktree 后立即补拉历史消息使用。 */
+        async syncAt(input: { directory: string; sessionID: string }) {
+          return syncSessionAt(input)
+        },
+        /** 中文注释：当同一 session 因 build 首次发言切到新 worktree 时，把旧目录中的消息和状态整体迁移到新目录。 */
+        migrate(input: { from: string; to: string; sessionID: string }) {
+          if (input.from === input.to) return
+          const [source, setSource] = globalSync.child(input.from)
+          const [, setTarget] = globalSync.child(input.to)
+          const slice = readSessionSlice(source, input.sessionID)
+          const hasState =
+            !!slice.session ||
+            !!slice.status ||
+            !!slice.diff ||
+            !!slice.todo ||
+            !!slice.permission ||
+            !!slice.question ||
+            !!slice.message
+          moveTracking(input)
+          if (!hasState) return
+          batch(() => {
+            setTarget(
+              produce((draft) => {
+                applySessionSlice(draft, slice, input.sessionID)
+              }),
+            )
+            setSource(
+              produce((draft) => {
+                removeSessionSlice(draft, slice, input.sessionID)
+              }),
+            )
+          })
         },
         async diff(sessionID: string) {
           const directory = sdk.directory

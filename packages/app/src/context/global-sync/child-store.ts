@@ -76,7 +76,24 @@ export function createChildStoreManager(input: {
     })
   }
 
-  function disposeDirectory(directory: string) {
+  /** 中文注释：显式删除工作区时允许强制清理本地 child store，避免 booting/loading 状态阻止已删除目录释放。 */
+  function disposeDirectory(directory: string, options?: { force?: boolean }) {
+    if (options?.force) {
+      vcsCache.delete(directory)
+      metaCache.delete(directory)
+      iconCache.delete(directory)
+      lifecycle.delete(directory)
+      pins.delete(directory)
+      const dispose = disposers.get(directory)
+      if (dispose) {
+        dispose()
+        disposers.delete(directory)
+      }
+      delete children[directory]
+      input.onDispose(directory)
+      return true
+    }
+
     if (
       !canDisposeDirectory({
         directory,

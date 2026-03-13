@@ -18,7 +18,8 @@ const promptAsyncCalls: Array<{
   model?: { providerID: string; modelID: string }
   variant?: string
 }> = []
-const syncCalls: string[] = []
+const syncCalls: Array<{ directory?: string; sessionID: string }> = []
+const migrateCalls: Array<{ from: string; to: string; sessionID: string }> = []
 const optimisticAdds: Array<{
   directory: string
   sessionID: string
@@ -185,7 +186,13 @@ beforeAll(async () => {
           remove: () => undefined,
         },
         sync: async (sessionID: string) => {
-          syncCalls.push(sessionID)
+          syncCalls.push({ sessionID })
+        },
+        syncAt: async (input: { directory: string; sessionID: string }) => {
+          syncCalls.push(input)
+        },
+        migrate: (input: { from: string; to: string; sessionID: string }) => {
+          migrateCalls.push(input)
         },
       },
       set: () => undefined,
@@ -253,6 +260,7 @@ beforeEach(() => {
   localModel = { id: "model", provider: { id: "provider" } }
   optimisticAdds.length = 0
   syncCalls.length = 0
+  migrateCalls.length = 0
   syncRuntimeModelCalls.length = 0
   syncRuntimeModelPending = undefined
   currentAgentName = "agent"
@@ -484,7 +492,7 @@ describe("prompt submit session resolution", () => {
     await submit.handleSubmit(event)
     await flush()
 
-    expect(syncCalls).toContain("session-route-refresh")
+    expect(syncCalls).toContainEqual({ directory: "/repo/main", sessionID: "session-route-refresh" })
   })
 
   test("waits for runtime model sync before sending prompt", async () => {
@@ -545,6 +553,13 @@ describe("prompt submit session resolution", () => {
     expect(prepareBuildCalls).toEqual([{ directory: "/repo/main", sessionID: "session-route-build" }])
     expect(createdClients).toContain("/repo/main/prepared/session-route-build")
     expect(syncedDirectories).toContain("/repo/main/prepared/session-route-build")
+    expect(migrateCalls).toEqual([
+      {
+        from: "/repo/main",
+        to: "/repo/main/prepared/session-route-build",
+        sessionID: "session-route-build",
+      },
+    ])
     expect(promptAsyncCalls).toEqual([
       {
         directory: "/repo/main/prepared/session-route-build",
@@ -553,6 +568,10 @@ describe("prompt submit session resolution", () => {
         variant: undefined,
       },
     ])
+    expect(syncCalls).toContainEqual({
+      directory: "/repo/main/prepared/session-route-build",
+      sessionID: "session-route-build",
+    })
     expect(projects[0]?.sandboxes).toContain("/repo/main/prepared/session-route-build")
     expect(setCalls).toEqual([{ path: "project" }])
     expect(workspaceModeCalls).toEqual([{ directory: "/repo/main", value: true }])
