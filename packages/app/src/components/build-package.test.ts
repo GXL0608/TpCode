@@ -149,4 +149,4 @@ describe("build package action", () => {
     expect(prompt).toContain("当前沙盒分支名称是：opencode/demo-single")
     expect(prompt).toContain("禁止推送到任何主分支")
   })
-}
+})
