@@ -185,11 +185,12 @@ describe("layout workspace helpers", () => {
     expect(displayName({ worktree: "/tmp/app", name: "My App" })).toBe("My App")
   })
 
-  test("enables workspaces by default for git projects only when not explicitly configured", () => {
+  test("always enables workspaces for supported projects", () => {
     expect(workspaceModeEnabled(undefined, { id: "git", vcs: "git", sandboxes: [] })).toBe(true)
-    expect(workspaceModeEnabled(false, { id: "git", vcs: "git", sandboxes: [] })).toBe(false)
+    expect(workspaceModeEnabled(false, { id: "git", vcs: "git", sandboxes: [] })).toBe(true)
     expect(workspaceModeEnabled(true, { id: "git", vcs: "git", sandboxes: [] })).toBe(true)
     expect(workspaceModeEnabled(undefined, { id: "batch_demo", sandboxes: [] })).toBe(true)
+    expect(workspaceModeEnabled(false, { id: "batch_demo", sandboxes: [] })).toBe(true)
     expect(workspaceModeEnabled(undefined, { id: "plain", sandboxes: [] })).toBe(false)
     expect(workspaceModeEnabled(undefined, undefined)).toBe(false)
   })

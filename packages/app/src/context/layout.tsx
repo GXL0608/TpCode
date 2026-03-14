@@ -497,6 +497,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           }
         },
         setWorkspaces(directory: string, value: boolean) {
+          if (!value) return
           const project = resolveProjectByDirectory(globalSync.data.project, directory)
           if (!project?.id) return
           void accountProject.setWorkspaceMode(project.id, value)
@@ -509,7 +510,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           const project = resolveProjectByDirectory(globalSync.data.project, directory)
           if (!project?.id) return
           const current = workspaceModeEnabled(accountProject.data().workspace_mode_by_project[project.id], project)
-          void accountProject.setWorkspaceMode(project.id, !current)
+          if (current) return
+          void accountProject.setWorkspaceMode(project.id, true)
         },
       },
       terminal: {

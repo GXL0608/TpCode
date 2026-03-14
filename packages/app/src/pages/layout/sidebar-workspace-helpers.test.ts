@@ -8,24 +8,21 @@ describe("sidebar workspace helpers", () => {
     expect(workspaceOpenState({ "/sandbox": true }, "/sandbox", false)).toBe(true)
   })
 
-  test("hides local branch details for ordinary users", () => {
+  test("shows local branch details", () => {
     expect(
       workspaceVisibleName({
         directory: "/repo/main",
         branch: "main",
         local: true,
-        superAdmin: false,
       }),
-    ).toBeUndefined()
+    ).toBe("main")
   })
 
-  test("shows local branch details for super admins", () => {
+  test("falls back to local directory name when branch is missing", () => {
     expect(
       workspaceVisibleName({
         directory: "/repo/main",
-        branch: "main",
         local: true,
-        superAdmin: true,
       }),
     ).toBe("main")
   })
@@ -37,18 +34,25 @@ describe("sidebar workspace helpers", () => {
         branch: "opencode/demo",
         alias: "演示沙盒",
         local: false,
-        superAdmin: false,
       }),
     ).toBe("演示沙盒")
   })
 
-  test("falls back to sandbox name instead of branch for ordinary users", () => {
+  test("shows sandbox branch when alias is missing", () => {
     expect(
       workspaceVisibleName({
         directory: "/repo/worktree/demo",
         branch: "opencode/demo",
         local: false,
-        superAdmin: false,
+      }),
+    ).toBe("opencode/demo")
+  })
+
+  test("falls back to sandbox directory name when alias and branch are missing", () => {
+    expect(
+      workspaceVisibleName({
+        directory: "/repo/worktree/demo",
+        local: false,
       }),
     ).toBe("demo")
   })

@@ -121,13 +121,13 @@ export const projectSupportsWorkspace = (
   return (project.sandboxes?.length ?? 0) > 0
 }
 
-/** 中文注释：支持工作区能力的项目在没有用户显式配置时默认开启工作区视图。 */
+/** 中文注释：支持工作区能力的项目统一强制开启工作区视图，不再允许用户关闭。 */
 export const workspaceModeEnabled = (
   value: boolean | undefined,
   project?: Partial<Pick<Project, "id" | "vcs" | "sandboxes">>,
 ) => {
   if (!projectSupportsWorkspace(project)) return false
-  return value ?? true
+  return true
 }
 
 export const syncWorkspaceOrder = (local: string, dirs: string[], existing?: string[]) => {

@@ -610,14 +610,13 @@ export default function Layout(props: ParentProps) {
     void accountProject.setWorkspaceAlias(projectId, branch, next)
   }
 
-  /** 中文注释：左侧工作区标签需要按角色隐藏分支来源，普通用户仅显示别名或目录名。 */
+  /** 中文注释：左侧工作区标签统一优先展示别名或分支，缺失时再回退到目录名。 */
   const workspaceLabel = (directory: string, branch?: string, projectId?: string) =>
     workspaceVisibleName({
       directory,
       branch,
       alias: workspaceName(directory, projectId, branch),
       local: projectRootByDirectory(globalSync.data.project, directory) === directory,
-      superAdmin: isSuperAdmin(),
     })
 
   /** 中文注释：统一判断项目是否具备工作区展示能力；批量沙盒项目即使自身非 git，只要已有沙盒也应允许展开。 */
@@ -1055,29 +1054,6 @@ export default function Layout(props: ParentProps) {
         },
       },
       {
-        id: "workspace.toggle",
-        title: language.t("command.workspace.toggle"),
-        description: language.t("command.workspace.toggle.description"),
-        category: language.t("command.category.workspace"),
-        slash: "workspace",
-        disabled: !workspaceCapable(currentProject()),
-        onSelect: () => {
-          const project = currentProject()
-          if (!project) return
-          if (!workspaceCapable(project)) return
-          const wasEnabled = layout.sidebar.workspaces(project.worktree)()
-          layout.sidebar.toggleWorkspaces(project.worktree)
-          showToast({
-            title: wasEnabled
-              ? language.t("toast.workspace.disabled.title")
-              : language.t("toast.workspace.enabled.title"),
-            description: wasEnabled
-              ? language.t("toast.workspace.disabled.description")
-              : language.t("toast.workspace.enabled.description"),
-          })
-        },
-      },
-      {
         id: "theme.cycle",
         title: language.t("command.theme.cycle"),
         category: language.t("command.category.theme"),
@@ -1261,16 +1237,6 @@ export default function Layout(props: ParentProps) {
         }),
       )
     }
-  }
-
-  function toggleProjectWorkspaces(project: LocalProject) {
-    const enabled = layout.sidebar.workspaces(project.worktree)()
-    if (enabled) {
-      layout.sidebar.toggleWorkspaces(project.worktree)
-      return
-    }
-    if (!workspaceCapable(project)) return
-    layout.sidebar.toggleWorkspaces(project.worktree)
   }
 
   const showEditProjectDialog = (project: LocalProject) => dialog.show(() => <DialogEditProject project={project} />)
@@ -1819,7 +1785,6 @@ export default function Layout(props: ParentProps) {
     clearHoverProjectSoon,
     prefetchSession,
     archiveSession,
-    isSuperAdmin,
     workspaceName,
     renameWorkspace,
     editorOpen,
@@ -1854,7 +1819,6 @@ export default function Layout(props: ParentProps) {
     openSidebar: () => layout.sidebar.open(),
     closeProject,
     showEditProjectDialog,
-    toggleProjectWorkspaces,
     workspacesEnabled: (project) => workspaceCapable(project) && layout.sidebar.workspaces(project.worktree)(),
     workspaceIds,
     workspaceLabel,
@@ -1917,22 +1881,20 @@ export default function Layout(props: ParentProps) {
                       stopPropagation
                     />
 
-                    <Show when={isSuperAdmin()}>
-                      <Tooltip
-                        placement="bottom"
-                        gutter={2}
-                        value={p().worktree}
-                        class="shrink-0"
-                        contentStyle={{
-                          "max-width": "640px",
-                          transform: "translate3d(52px, 0, 0)",
-                        }}
-                      >
-                        <span class="text-12-regular text-text-base truncate select-text">
-                          {p().worktree.replace(homedir(), "~")}
-                        </span>
-                      </Tooltip>
-                    </Show>
+                    <Tooltip
+                      placement="bottom"
+                      gutter={2}
+                      value={p().worktree}
+                      class="shrink-0"
+                      contentStyle={{
+                        "max-width": "640px",
+                        transform: "translate3d(52px, 0, 0)",
+                      }}
+                    >
+                      <span class="text-12-regular text-text-base truncate select-text">
+                        {p().worktree.replace(homedir(), "~")}
+                      </span>
+                    </Tooltip>
                   </div>
 
                   <DropdownMenu modal={!sidebarHovering()}>
@@ -1952,18 +1914,6 @@ export default function Layout(props: ParentProps) {
                       <DropdownMenu.Content class="mt-1">
                         <DropdownMenu.Item onSelect={() => showEditProjectDialog(p())}>
                           <DropdownMenu.ItemLabel>{language.t("common.edit")}</DropdownMenu.ItemLabel>
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          data-action="project-workspaces-toggle"
-                          data-project={base64Encode(p().worktree)}
-                          disabled={!workspaceCapable(p()) && !layout.sidebar.workspaces(p().worktree)()}
-                          onSelect={() => toggleProjectWorkspaces(p())}
-                        >
-                          <DropdownMenu.ItemLabel>
-                            {layout.sidebar.workspaces(p().worktree)()
-                              ? language.t("sidebar.workspaces.disable")
-                              : language.t("sidebar.workspaces.enable")}
-                          </DropdownMenu.ItemLabel>
                         </DropdownMenu.Item>
                         <DropdownMenu.Item
                           data-action="project-clear-notifications"

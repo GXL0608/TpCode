@@ -41,7 +41,6 @@ export type WorkspaceSidebarContext = {
   clearHoverProjectSoon: () => void
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   archiveSession: (session: Session) => Promise<void>
-  isSuperAdmin: Accessor<boolean>
   workspaceName: (directory: string, projectId?: string, branch?: string) => string | undefined
   renameWorkspace: (directory: string, next: string, projectId?: string, branch?: string) => void
   editorOpen: (id: string) => boolean
@@ -332,7 +331,6 @@ export const SortableWorkspace = (props: {
       branch,
       alias: props.ctx.workspaceName(props.directory, props.project.id, branch),
       local: local(),
-      superAdmin: props.ctx.isSuperAdmin(),
     })
   })
   const open = createMemo(() => props.ctx.workspaceExpanded(props.directory, local()))
