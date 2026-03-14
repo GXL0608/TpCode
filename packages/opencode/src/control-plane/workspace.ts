@@ -362,14 +362,11 @@ export namespace Workspace {
 
       try {
         for (const member of members) {
-          const created = await (
-            (await Worktree.hasBaseCommit(member.source_directory))
-              ? $`git worktree add --no-checkout -b ${member.branch} ${member.sandbox_directory}`
-              : $`git worktree add -b ${member.branch} ${member.sandbox_directory}`
-          )
-            .quiet()
-            .nothrow()
-            .cwd(member.source_directory)
+          const created = await Worktree.add({
+            cwd: member.source_directory,
+            branch: member.branch,
+            directory: member.sandbox_directory,
+          })
           if (created.exitCode !== 0) {
             throw new Error(created.stderr.toString().trim() || `Failed to create batch member ${member.name}`)
           }

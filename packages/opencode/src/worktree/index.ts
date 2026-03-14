@@ -242,10 +242,33 @@ export namespace Worktree {
     return message.includes("index.lock") && message.includes("File exists")
   }
 
+  /** 中文注释：识别 git 在 worktree 创建阶段把 `--no-checkout` 和自动推断的 orphan 组合到一起时的冲突报错。 */
+  function orphanCheckoutConflict(message: string) {
+    return message.includes("--orphan") && message.includes("--no-checkout")
+  }
+
   /** 中文注释：判断目标仓库是否已有可检出的提交；空仓库时不能配合 `--no-checkout` 创建 worktree。 */
   export async function hasBaseCommit(cwd: string) {
     const result = await $`git rev-parse --verify HEAD`.quiet().nothrow().cwd(cwd)
     return result.exitCode === 0
+  }
+
+  /** 中文注释：统一创建 git worktree；若首次命中 orphan 与 no-checkout 冲突，则自动回退为普通 checkout 创建。 */
+  export async function add(input: { cwd: string; branch: string; directory: string }) {
+    const first = await (
+      (await hasBaseCommit(input.cwd))
+        ? $`git worktree add --no-checkout -b ${input.branch} ${input.directory}`
+        : $`git worktree add -b ${input.branch} ${input.directory}`
+    )
+      .quiet()
+      .nothrow()
+      .cwd(input.cwd)
+    if (first.exitCode === 0) return first
+
+    const message = errorText(first)
+    if (!orphanCheckoutConflict(message)) return first
+
+    return $`git worktree add -b ${input.branch} ${input.directory}`.quiet().nothrow().cwd(input.cwd)
   }
 
   function failed(result: { stdout?: Uint8Array; stderr?: Uint8Array }) {
@@ -467,14 +490,11 @@ export namespace Worktree {
     const base = input?.name ? slug(input.name) : ""
     const info = await candidate(root, base || undefined)
 
-    const created = await (
-      (await hasBaseCommit(Instance.worktree))
-        ? $`git worktree add --no-checkout -b ${info.branch} ${info.directory}`
-        : $`git worktree add -b ${info.branch} ${info.directory}`
-    )
-      .quiet()
-      .nothrow()
-      .cwd(Instance.worktree)
+    const created = await add({
+      cwd: Instance.worktree,
+      branch: info.branch,
+      directory: info.directory,
+    })
     if (created.exitCode !== 0) {
       throw new CreateFailedError({ message: errorText(created) || "Failed to create git worktree" })
     }
