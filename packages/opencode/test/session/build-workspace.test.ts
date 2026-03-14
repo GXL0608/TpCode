@@ -84,6 +84,32 @@ describe("session build workspace", () => {
     })
   })
 
+  test("accepts equivalent current directory paths when claiming workspace ownership", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const owned = await Worktree.create({ name: "owned-path-variant" })
+        const session = await Instance.provide({
+          directory: owned.directory + path.sep,
+          fn: async () =>
+            Session.create({
+              title: "owned-variant",
+              workspace: {
+                directory: owned.directory,
+                branch: owned.branch,
+              },
+            }),
+        })
+
+        expect(session.directory).toBe(owned.directory)
+        expect(session.workspaceDirectory).toBe(owned.directory)
+        expect(session.workspaceBranch).toBe(owned.branch)
+      },
+    })
+  })
+
   test("rejects binding an existing shared workspace when the ownership marker is missing", async () => {
     await using tmp = await tmpdir({ git: true })
 

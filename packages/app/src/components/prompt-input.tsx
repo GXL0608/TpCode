@@ -275,7 +275,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return paths
   })
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
-  /** 中文注释：按当前会话绑定的 workspaceID 拉取工作区详情，供“编译打包”按钮在批量场景读取成员仓库元数据。 */
+  /** 中文注释：按当前会话绑定的 workspaceID 拉取批量工作区详情，供“编译打包”按钮读取成员仓库元数据。 */
   const [buildWorkspace, buildWorkspaceActions] = createResource(
     () => {
       const session = info()
@@ -310,7 +310,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const buildPackageReason = createMemo(() => {
     const session = info()
     if (buildWorkspace.loading && session?.workspaceID && session.workspaceKind === "batch_worktree") {
-      return "正在识别工作区详情"
+      return "正在识别批量工作区"
     }
     return buildPackageDisabledReason({
       agent: local.agent.current()?.name,
@@ -1619,13 +1619,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     } as const
   }
 
-  /** 中文注释：发送固定“编译打包”提示词，按当前会话的工作区上下文自动适配单仓、多仓或非 git 目录，不消费当前草稿与附件。 */
+  /** 中文注释：发送固定“编译打包”提示词，兼容单沙盒与批量沙盒，不消费当前草稿与附件。 */
   const handleBuildPackage = async () => {
     if (buildPackageSubmitting()) return
     setBuildPackageSubmitting(true)
     try {
       const session = info()
-      const workspace = (await buildWorkspaceActions.refetch()) ?? buildWorkspace()
+      const workspace = session?.workspaceID ? (await buildWorkspaceActions.refetch()) ?? buildWorkspace() : buildWorkspace()
       const reason = buildPackageDisabledReason({
         agent: local.agent.current()?.name,
         session,
@@ -1634,10 +1634,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       if (!canUseBuildPackage({ agent: local.agent.current()?.name, session, workspace })) {
         showToast({
           title: "编译打包暂不可用",
-          description: reason || "当前会话暂不可用",
+          description: reason || "当前会话还未进入可用的沙盒",
         })
         return
       }
+      if (!session) return
       await submitFixedText(
         buildPackagePrompt({
           session,

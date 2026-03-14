@@ -6,6 +6,7 @@ import { SyncProvider, useSync } from "@/context/sync"
 import { LocalProvider } from "@/context/local"
 import { useAccountAuth } from "@/context/account-auth"
 import { useAccountProject } from "@/context/account-project"
+import { useGlobalSync } from "@/context/global-sync"
 import { DialogPlanFeedback } from "@/components/dialog-plan-feedback"
 import { buildPlanFeedbackUrl, getPlanFeedbackPhoneIssue } from "@/components/plan-feedback"
 
@@ -14,6 +15,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { decode64 } from "@/utils/base64"
 import { showToast } from "@opencode-ai/ui/toast"
 import { useLanguage } from "@/context/language"
+import { resolveProjectByDirectory } from "@/context/project-resolver"
 
 /**
  * 为目录级上下文注入会话保存计划后的前端行为。
@@ -145,11 +147,30 @@ function DirectoryDataProvider(props: ParentProps<{ directory: string }>) {
 export default function Layout(props: ParentProps) {
   const params = useParams()
   const navigate = useNavigate()
+  const auth = useAccountAuth()
+  const accountProject = useAccountProject()
+  const globalSync = useGlobalSync()
   const language = useLanguage()
-  const [store, setStore] = createStore({ invalid: "" })
+  const [store, setStore] = createStore({ invalid: "", aligning: "" })
   const [last, setLast] = createSignal("")
   const decoded = createMemo(() => decode64(params.dir))
   const directory = createMemo(() => decoded() ?? last())
+  const target = createMemo(() => {
+    if (!globalSync.data.ready) return
+    const value = directory()
+    if (!value) return
+    return resolveProjectByDirectory(globalSync.data.project, value)
+  })
+  const contextReady = createMemo(() => {
+    if (!directory()) return false
+    if (!auth.enabled() || !auth.authenticated()) return true
+    if (!globalSync.data.ready) return false
+    const project = target()
+    if (!project?.id) return true
+    const current = accountProject.current()?.id ?? auth.user()?.context_project_id
+    if (current !== project.id) return false
+    return store.aligning !== project.id
+  })
 
   createEffect(() => {
     const next = decoded()
@@ -169,8 +190,34 @@ export default function Layout(props: ParentProps) {
     })
     navigate("/", { replace: true })
   })
+
+  createEffect(() => {
+    if (!auth.enabled() || !auth.authenticated()) return
+    if (!globalSync.data.ready) return
+    const project = target()
+    if (!project?.id) return
+    const current = accountProject.current()?.id ?? auth.user()?.context_project_id
+    if (current === project.id) return
+    if (store.aligning === project.id) return
+    setStore("aligning", project.id)
+    void accountProject
+      .activate(project.id, true)
+      .then((result) => {
+        if (result.ok) return
+        showToast({
+          variant: "error",
+          title: language.t("common.requestFailed"),
+          description: language.t("directory.error.invalidUrl"),
+        })
+        navigate("/", { replace: true })
+      })
+      .finally(() => {
+        setStore("aligning", (value) => (value === project.id ? "" : value))
+      })
+  })
+
   return (
-    <Show when={directory()}>
+    <Show when={contextReady()}>
       <SDKProvider directory={directory}>
         <SyncProvider>
           <DirectoryDataProvider directory={directory()}>{props.children}</DirectoryDataProvider>

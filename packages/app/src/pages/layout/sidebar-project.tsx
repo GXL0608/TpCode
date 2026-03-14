@@ -175,93 +175,103 @@ const ProjectPreviewPanel = (props: {
   setOpen: (value: boolean) => void
   ctx: ProjectSidebarContext
   language: ReturnType<typeof useLanguage>
-}): JSX.Element => (
-  <div class="-m-3 p-2 flex flex-col w-72">
-    <div class="px-4 pt-2 pb-1 flex items-center gap-2">
-      <div class="text-14-medium text-text-strong truncate grow">{displayName(props.project)}</div>
-      <Tooltip value={props.language.t("common.close")} placement="top" gutter={6}>
-        <IconButton
-          icon="circle-x"
-          variant="ghost"
-          class="shrink-0"
-          data-action="project-close-hover"
-          data-project={base64Encode(props.project.worktree)}
-          aria-label={props.language.t("common.close")}
-          onClick={(event) => {
-            event.stopPropagation()
-            props.setOpen(false)
-            props.ctx.closeProject(props.project.worktree)
-          }}
-        />
-      </Tooltip>
-    </div>
-    <div class="px-4 pb-2 text-12-medium text-text-weak">{props.language.t("sidebar.project.recentSessions")}</div>
-    <div class="px-2 pb-2 flex flex-col gap-2">
-      <Show
-        when={props.workspaceEnabled()}
-        fallback={
-          <For each={props.projectSessions()}>
-            {(session) => (
-              <SessionItem
-                {...props.ctx.sessionProps}
-                session={session}
-                slug={base64Encode(props.project.worktree)}
-                dense
-                mobile={props.mobile}
-                popover={false}
-                children={props.projectChildren()}
-              />
-            )}
-          </For>
-        }
-      >
-        <For each={props.workspaces()}>
-          {(directory) => {
-            const sessions = createMemo(() => props.workspaceSessions(directory))
-            const children = createMemo(() => props.workspaceChildren(directory))
-            return (
-              <div class="flex flex-col gap-1">
-                <div class="px-2 py-0.5 flex items-center gap-1 min-w-0">
-                  <div class="shrink-0 size-6 flex items-center justify-center">
-                    <Icon name="branch" size="small" class="text-icon-base" />
+}): JSX.Element => {
+  const open = () => {
+    props.ctx.openSidebar()
+    props.setOpen(false)
+    if (props.selected()) return
+    props.ctx.navigateToProject(props.project.worktree)
+  }
+
+  return (
+    <div class="-m-3 p-2 flex flex-col w-72">
+      <div class="px-4 pt-2 flex items-start gap-2">
+        <button
+          type="button"
+          class="min-w-0 grow text-left rounded-md px-2 py-1 -mx-2 -my-1 hover:bg-surface-base-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-border-strong-base"
+          onClick={open}
+        >
+          <div class="text-14-medium text-text-strong truncate">{displayName(props.project)}</div>
+          <div class="pt-1 text-12-medium text-text-weak">{props.language.t("sidebar.project.recentSessions")}</div>
+        </button>
+        <Tooltip value={props.language.t("common.close")} placement="top" gutter={6}>
+          <IconButton
+            icon="circle-x"
+            variant="ghost"
+            class="shrink-0"
+            data-action="project-close-hover"
+            data-project={base64Encode(props.project.worktree)}
+            aria-label={props.language.t("common.close")}
+            onClick={(event) => {
+              event.stopPropagation()
+              props.setOpen(false)
+              props.ctx.closeProject(props.project.worktree)
+            }}
+          />
+        </Tooltip>
+      </div>
+      <div class="px-2 pb-2 pt-2 flex flex-col gap-2">
+        <Show
+          when={props.workspaceEnabled()}
+          fallback={
+            <For each={props.projectSessions()}>
+              {(session) => (
+                <SessionItem
+                  {...props.ctx.sessionProps}
+                  session={session}
+                  slug={base64Encode(props.project.worktree)}
+                  dense
+                  mobile={props.mobile}
+                  popover={false}
+                  children={props.projectChildren()}
+                />
+              )}
+            </For>
+          }
+        >
+          <For each={props.workspaces()}>
+            {(directory) => {
+              const sessions = createMemo(() => props.workspaceSessions(directory))
+              const children = createMemo(() => props.workspaceChildren(directory))
+              return (
+                <div class="flex flex-col gap-1">
+                  <div class="px-2 py-0.5 flex items-center gap-1 min-w-0">
+                    <div class="shrink-0 size-6 flex items-center justify-center">
+                      <Icon name="branch" size="small" class="text-icon-base" />
+                    </div>
+                    <span class="truncate text-14-medium text-text-base">{props.label(directory)}</span>
                   </div>
-                  <span class="truncate text-14-medium text-text-base">{props.label(directory)}</span>
+                  <For each={sessions()}>
+                    {(session) => (
+                      <SessionItem
+                        {...props.ctx.sessionProps}
+                        session={session}
+                        slug={base64Encode(directory)}
+                        dense
+                        mobile={props.mobile}
+                        popover={false}
+                        children={children()}
+                      />
+                    )}
+                  </For>
                 </div>
-                <For each={sessions()}>
-                  {(session) => (
-                    <SessionItem
-                      {...props.ctx.sessionProps}
-                      session={session}
-                      slug={base64Encode(directory)}
-                      dense
-                      mobile={props.mobile}
-                      popover={false}
-                      children={children()}
-                    />
-                  )}
-                </For>
-              </div>
-            )
-          }}
-        </For>
-      </Show>
+              )
+            }}
+          </For>
+        </Show>
+      </div>
+      <div class="px-2 py-2 border-t border-border-weak-base">
+        <Button
+          variant="ghost"
+          class="flex w-full text-left justify-start text-text-base px-2 hover:bg-transparent active:bg-transparent"
+          onClick={open}
+        >
+          {props.language.t("sidebar.project.viewAllSessions")}
+        </Button>
+      </div>
     </div>
-    <div class="px-2 py-2 border-t border-border-weak-base">
-      <Button
-        variant="ghost"
-        class="flex w-full text-left justify-start text-text-base px-2 hover:bg-transparent active:bg-transparent"
-        onClick={() => {
-          props.ctx.openSidebar()
-          props.setOpen(false)
-          if (props.selected()) return
-          props.ctx.navigateToProject(props.project.worktree)
-        }}
-      >
-        {props.language.t("sidebar.project.viewAllSessions")}
-      </Button>
-    </div>
-  </div>
-)
+  )
+}
 
 export const SortableProject = (props: {
   project: LocalProject

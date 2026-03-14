@@ -1,6 +1,6 @@
 import type { Project } from "@opencode-ai/sdk/v2/client"
 
-type ProjectRef = Pick<Project, "worktree" | "sandboxes">
+type ProjectRef = Pick<Project, "worktree" | "sandboxes"> & { id?: string }
 
 export function directoryKey(input: string) {
   const drive = input.match(/^([A-Za-z]:)[\\/]+$/)
@@ -13,9 +13,18 @@ export function projectDirectories(project: ProjectRef) {
   return [project.worktree, ...(project.sandboxes ?? [])]
 }
 
+function derivedProjectID(directory: string) {
+  const match = directory.replace(/\\/g, "/").match(/(?:^|\/)(?:batch-)?worktree\/([^/]+)(?:\/|$)/i)
+  return match?.[1]?.toLowerCase()
+}
+
 export function resolveProjectByDirectory<T extends ProjectRef>(projects: readonly T[], directory: string) {
   const key = directoryKey(directory)
-  return projects.find((project) => projectDirectories(project).some((item) => directoryKey(item) === key))
+  const exact = projects.find((project) => projectDirectories(project).some((item) => directoryKey(item) === key))
+  if (exact) return exact
+  const inferred = derivedProjectID(directory)
+  if (!inferred) return
+  return projects.find((project) => project.id?.toLowerCase() === inferred)
 }
 
 export function projectRootByDirectory<T extends ProjectRef>(projects: readonly T[], directory: string) {

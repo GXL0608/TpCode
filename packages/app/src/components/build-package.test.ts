@@ -1,13 +1,25 @@
 import { describe, expect, test } from "bun:test"
-import type { Session, Workspace } from "@opencode-ai/sdk/v2/client"
-import { buildPackageDisabledReason, buildPackagePrompt, canUseBuildPackage } from "./build-package"
+import {
+  buildPackageDisabledReason,
+  buildPackagePrompt,
+  canUseBuildPackage,
+  type BuildSession,
+  type BuildWorkspace,
+} from "./build-package"
 
 const batchSession = {
   id: "session_123",
   workspaceID: "workspace_123",
   workspaceKind: "batch_worktree",
   workspaceBranch: "opencode/demo-batch",
-} satisfies Pick<Session, "id" | "workspaceID" | "workspaceKind" | "workspaceBranch">
+} satisfies BuildSession
+
+const singleSession = {
+  id: "session_single",
+  workspaceKind: "single_worktree",
+  workspaceDirectory: "/tmp/sandbox/app",
+  workspaceBranch: "opencode/demo-single",
+} satisfies BuildSession
 
 const batchWorkspace = {
   kind: "batch_worktree",
@@ -26,10 +38,10 @@ const batchWorkspace = {
       },
     ],
   },
-} satisfies Pick<Workspace, "kind" | "branch" | "meta">
+} satisfies BuildWorkspace
 
 describe("build package action", () => {
-  test("enables action for build sessions across batch single and plain directories", () => {
+  test("enables action for build sessions in batch and single sandboxes", () => {
     expect(
       canUseBuildPackage({
         agent: "build",
@@ -40,19 +52,7 @@ describe("build package action", () => {
     expect(
       canUseBuildPackage({
         agent: "build",
-        session: {
-          id: "session_456",
-          workspaceKind: "single_worktree",
-          workspaceBranch: "opencode/demo-single",
-        },
-      }),
-    ).toBeTrue()
-    expect(
-      canUseBuildPackage({
-        agent: "build",
-        session: {
-          id: "session_789",
-        },
+        session: singleSession,
       }),
     ).toBeTrue()
     expect(
@@ -64,22 +64,27 @@ describe("build package action", () => {
     ).toBeFalse()
   })
 
-  test("returns disabled reason only when build action truly cannot run", () => {
+  test("returns sandbox-only reason for non-sandbox sessions", () => {
     expect(
       buildPackageDisabledReason({
         agent: "build",
+        session: {
+          id: "session_123",
+        },
       }),
-    ).toBe("仅已有会话可用")
+    ).toBe("仅沙盒可用")
+  })
+
+  test("returns single sandbox reason when directory is missing", () => {
     expect(
       buildPackageDisabledReason({
         agent: "build",
         session: {
           id: "session_123",
           workspaceKind: "single_worktree",
-          workspaceBranch: "opencode/demo-single",
         },
       }),
-    ).toBe("")
+    ).toBe("未识别到沙盒工作区")
   })
 
   test("keeps batch sessions gated until workspace member details are available", () => {
@@ -94,13 +99,13 @@ describe("build package action", () => {
         agent: "build",
         session: batchSession,
       }),
-    ).toBe("未识别到批量工作区详情")
+    ).toBe("未识别到批量工作区")
   })
 
-  test("builds a fixed prompt with member repos and branch constraints for batch workspaces", () => {
+  test("builds a fixed batch prompt with existing push rules and the deployment packaging requirements", () => {
     const prompt = buildPackagePrompt({
-      session: batchSession as Session,
-      workspace: batchWorkspace as Workspace,
+      session: batchSession,
+      workspace: batchWorkspace,
     })
 
     expect(prompt).toContain("只处理下面这些 Git 子项目目录")
@@ -117,35 +122,31 @@ describe("build package action", () => {
     expect(prompt).toContain("不要为了查 remote、分支或提交状态切换到原始仓库目录")
     expect(prompt).toContain("如果 git status --porcelain 为空")
     expect(prompt).toContain("立即跳过该仓库后续的 add、commit、fetch、rebase、push")
+    expect(prompt).toContain("当前提交哈希")
+    expect(prompt).toContain("输出摘要完成后后 根据当前会话的git 提交信息编译打包用于部署的文件成压缩包")
+    expect(prompt).toContain("包里只保留包含更改内容对应的编译文件")
+    expect(prompt).toContain("压缩包放到程序根目录下 ai_build_zip文件夹下")
+    expect(prompt).toContain("如果有多个解决方案的话 按解决方案名称后缀生成各个包")
+    expect(prompt).toContain("编译失败如果是代码问题 则将错误返回 让用户继续修改 你不要直接改代码")
+    expect(prompt).toContain("编译失败如果是缺少依赖等 你自己自动迭代")
+    expect(prompt).toContain("最终要生成可部署的压缩包")
+    expect(prompt).not.toContain("auto-build.sh")
+    expect(prompt).not.toContain("ai_replace_build")
+    expect(prompt).not.toContain("build-config.json")
+    expect(prompt).not.toContain("DevExpress.XtraEditors.v23.1.dll")
   })
 
-  test("builds a fixed prompt for a single git workspace", () => {
+  test("builds a single sandbox prompt without requiring batch workspace metadata", () => {
     const prompt = buildPackagePrompt({
-      session: {
-        id: "session_single",
-        workspaceKind: "single_worktree",
-        workspaceBranch: "opencode/demo-single",
-      } as Session,
+      session: singleSession,
     })
 
-    expect(prompt).toContain("请在当前单仓工作区内执行“编译打包”流程")
-    expect(prompt).toContain("当前沙盒分支是：opencode/demo-single")
-    expect(prompt).toContain("只处理当前目录这一个 Git 项目")
-    expect(prompt).toContain("如果当前分支不是当前沙盒分支，先切换到该沙盒分支")
-    expect(prompt).toContain("最终只推送到当前远端同名沙盒分支")
+    expect(prompt).toContain("请在当前沙盒工作区内执行“编译打包”流程")
+    expect(prompt).toContain("只处理当前沙盒仓库目录")
+    expect(prompt).toContain("仓库路径：/tmp/sandbox/app")
+    expect(prompt).toContain("当前沙盒分支：opencode/demo-single")
+    expect(prompt).toContain("对当前沙盒仓库必须先进入对应的仓库路径目录")
+    expect(prompt).toContain("当前沙盒分支名称是：opencode/demo-single")
+    expect(prompt).toContain("禁止推送到任何主分支")
   })
-
-  test("builds a fixed prompt for non git directories", () => {
-    const prompt = buildPackagePrompt({
-      session: {
-        id: "session_plain",
-      } as Session,
-    })
-
-    expect(prompt).toContain("请在当前项目目录执行“编译打包”流程")
-    expect(prompt).toContain("当前项目可能不是 Git 仓库")
-    expect(prompt).toContain("优先识别项目内现有的构建脚本、任务编排和产物目录")
-    expect(prompt).not.toContain("rebase")
-    expect(prompt).not.toContain("push")
-  })
-})
+}

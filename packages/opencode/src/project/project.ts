@@ -47,6 +47,17 @@ export namespace Project {
     return `batch_${digest}`
   }
 
+  function sandboxKey(directory: string) {
+    return Filesystem.windowsPath(path.resolve(directory)).toLowerCase()
+  }
+
+  /** 中文注释：项目沙盒目录除了“存在”之外，还必须是可识别的 worktree/工作区目录；空壳残留目录需要在这里剔除。 */
+  function sandboxReady(directory: string, allowed: Set<string>) {
+    if (!existsSync(directory)) return false
+    if (existsSync(path.join(directory, ".git"))) return true
+    return allowed.has(sandboxKey(directory))
+  }
+
   /** 中文注释：批量父目录优先复用当前账号上下文项目或同 worktree 的正式项目，避免生成临时 batch 项目后切项目丢会话。 */
   async function preferredBatchProject(input: { directory: string; fallbackID: string }) {
     const rows = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.worktree, input.directory)).all())
@@ -145,18 +156,26 @@ export namespace Project {
 
   /** 中文注释：批量父项目只保留已注册的 batch_worktree 目录，顺手剔除不存在的旧沙盒，避免把遗留 single-worktree 显示成“沙盒main”。 */
   async function sanitizeSandboxes(info: Info) {
-    const existing = info.sandboxes.filter((item) => existsSync(item))
-    if (info.vcs === "git") return existing
-    if ((await workspaceMode(info.worktree)) !== "batch") return existing
     const rows = await Database.use((db) =>
       db.select({ directory: WorkspaceTable.directory, kind: WorkspaceTable.kind }).from(WorkspaceTable).where(eq(WorkspaceTable.project_id, info.id)).all(),
     )
+    const registered = new Set(rows.map((row) => sandboxKey(row.directory)))
+    const seen = new Set<string>()
+    const existing = info.sandboxes.filter((item) => {
+      if (!sandboxReady(item, registered)) return false
+      const key = sandboxKey(item)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    if (info.vcs === "git") return existing
+    if ((await workspaceMode(info.worktree)) !== "batch") return existing
     const allowed = new Set(
       rows
         .filter((row) => row.kind === "batch_worktree")
-        .map((row) => Filesystem.windowsPath(path.resolve(row.directory)).toLowerCase()),
+        .map((row) => sandboxKey(row.directory)),
     )
-    return existing.filter((directory) => allowed.has(Filesystem.windowsPath(path.resolve(directory)).toLowerCase()))
+    return existing.filter((directory) => allowed.has(sandboxKey(directory)))
   }
 
   /** 中文注释：读取项目后统一清洗沙盒列表，并把结果回写数据库，确保前端不会继续看到批量项目的遗留旧沙盒。 */
@@ -555,13 +574,8 @@ export namespace Project {
   export async function sandboxes(id: string) {
     const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
     if (!row) return []
-    const data = fromRow(row)
-    const valid: string[] = []
-    for (const dir of data.sandboxes) {
-      const s = Filesystem.stat(dir)
-      if (s?.isDirectory()) valid.push(dir)
-    }
-    return valid
+    const data = await normalize(fromRow(row))
+    return data.sandboxes
   }
 
   export async function addSandbox(id: string, directory: string) {

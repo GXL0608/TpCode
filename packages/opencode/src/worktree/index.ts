@@ -346,7 +346,8 @@ export namespace Worktree {
     }),
     async (input) => {
       const directory = await canonical(input.directory)
-      if (directory !== Instance.directory) {
+      const active = await canonical(Instance.directory)
+      if (directory !== active) {
         throw new OwnershipInvalidError({ message: "Workspace ownership can only be claimed from the current directory" })
       }
       const file = ownershipPath(directory)

@@ -34,7 +34,8 @@ subprocess.Popen(
 dev_out = open(os.path.join(root, ".opencode-dev.log"), "w")
 dev_err = open(os.path.join(root, ".opencode-dev.err.log"), "w")
 dev_env = os.environ.copy()
-dev_env["VITE_OPENCODE_SERVER_HOST"] = "192.168.1.102"
+dev_env["VITE_OPENCODE_SERVER_HOST"] = "127.0.0.1"
+dev_env["VITE_OPENCODE_SERVER_PORT"] = "4096"
 subprocess.Popen(
   [
     "bun",
@@ -44,7 +45,7 @@ subprocess.Popen(
     "--host",
     "0.0.0.0",
     "--port",
-    "3010",
+    "3000",
   ],
   stdout=dev_out,
   stderr=dev_err,
