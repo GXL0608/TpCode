@@ -1,8 +1,10 @@
 import type { Session } from "@opencode-ai/sdk/v2/client"
 
-type WorkspaceSession = Pick<
+type WorkspaceSession = Partial<
+  Pick<
   Session,
-  "workspaceDirectory" | "workspaceBranch" | "workspaceStatus" | "workspaceCleanupStatus"
+  "workspaceDirectory" | "workspaceBranch" | "workspaceKind" | "workspaceStatus" | "workspaceCleanupStatus" | "workspaceSummary"
+  >
 >
 
 type State = {
@@ -63,6 +65,8 @@ export function workspaceLines(input: { session: WorkspaceSession; directory: st
     directory: input.directory,
     projectRoot: root,
     branch: input.session.workspaceBranch,
+    kind: input.session.workspaceKind,
+    summary: input.session.workspaceSummary,
     status: input.session.workspaceStatus,
   }
 }

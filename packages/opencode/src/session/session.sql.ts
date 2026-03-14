@@ -8,6 +8,8 @@ import { TpDepartmentTable } from "@/user/department.sql"
 import { TpOrganizationTable } from "@/user/organization.sql"
 import { TpUserTable } from "@/user/user.sql"
 import { isNull } from "drizzle-orm"
+import { WorkspaceTable } from "@/control-plane/workspace.sql"
+import type { WorkspaceKind } from "@/control-plane/workspace-meta"
 
 type PartData = Omit<MessageV2.Part, "id" | "sessionID" | "messageID">
 type InfoData = Omit<MessageV2.Info, "id" | "sessionID">
@@ -41,8 +43,12 @@ export const SessionTable = table(
     runtime_provider_id: text(),
     runtime_model_id: text(),
     runtime_model_source: text(),
+    // 中文注释：当前 session 绑定的工作区记录标识，批量沙盒依赖该字段追踪生命周期。
+    workspace_id: text().references(() => WorkspaceTable.id, { onDelete: "set null" }),
     workspace_directory: text(),
     workspace_branch: text(),
+    // 中文注释：当前 session 绑定工作区的类型，供前后端快速分流单仓与批量逻辑。
+    workspace_kind: text().$type<WorkspaceKind>(),
     workspace_status: text(),
     workspace_cleanup_status: text(),
     ...Timestamps,

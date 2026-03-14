@@ -3,9 +3,14 @@ import { Project } from "../../src/project/project"
 import { Log } from "../../src/util/log"
 import { $ } from "bun"
 import path from "path"
+import fs from "fs/promises"
 import { tmpdir } from "../fixture/fixture"
 import { Filesystem } from "../../src/util/filesystem"
 import { GlobalBus } from "../../src/bus/global"
+import { Database, eq } from "../../src/storage/db"
+import { ProjectTable } from "../../src/project/project.sql"
+import { SessionTable } from "../../src/session/session.sql"
+import { WorkspaceTable } from "../../src/control-plane/workspace.sql"
 
 Log.init({ print: false })
 
@@ -63,6 +68,17 @@ async function withMode(next: Mode, run: () => Promise<void>) {
 
 async function loadProject() {
   return (await import("../../src/project/project")).Project
+}
+
+/** 中文注释：在测试临时目录下创建一个带初始提交的一级子 git 项目。 */
+async function createChildGit(root: string, name: string) {
+  const directory = path.join(root, name)
+  await fs.mkdir(directory, { recursive: true })
+  await $`git init`.cwd(directory).quiet()
+  await Bun.write(path.join(directory, "README.md"), `# ${name}\n`)
+  await $`git add README.md`.cwd(directory).quiet()
+  await $`git commit -m ${`init ${name}`}`.cwd(directory).quiet()
+  return directory
 }
 
 describe("Project.fromDirectory", () => {
@@ -198,6 +214,124 @@ describe("Project.fromDirectory with worktrees", () => {
         .quiet()
         .catch(() => {})
     }
+  })
+})
+
+describe("Project.workspaceMode", () => {
+  test("treats a non-git parent with immediate git children as batch workspace capable", async () => {
+    const p = await loadProject()
+    await using tmp = await tmpdir()
+
+    await createChildGit(tmp.path, "app")
+
+    await expect(p.workspaceMode(tmp.path)).resolves.toBe("batch")
+  })
+
+  test("reuses an existing project id for batch parents and migrates legacy batch sessions", async () => {
+    const p = await loadProject()
+    await using tmp = await tmpdir()
+    const sessionID = `session_batch_legacy_${Date.now()}`
+    const projectID = `project_batch_real_${Date.now()}`
+
+    await createChildGit(tmp.path, "app")
+    const legacy = await p.fromDirectory(tmp.path)
+
+    await Database.use((db) =>
+      db.insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: legacy.project.id,
+          directory: tmp.path,
+          slug: "session-batch-legacy",
+          title: "legacy",
+          version: "test",
+          time_created: Date.now(),
+          time_updated: Date.now(),
+          visibility: "private",
+        })
+        .run(),
+    )
+
+    await Database.use((db) =>
+      db.insert(ProjectTable)
+        .values({
+          id: projectID,
+          worktree: tmp.path,
+          vcs: null,
+          name: "real",
+          icon_url: null,
+          icon_color: null,
+          time_created: Date.now(),
+          time_updated: Date.now(),
+          time_initialized: null,
+          sandboxes: [],
+          commands: null,
+        })
+        .run(),
+    )
+
+    const resolved = await p.fromDirectory(tmp.path)
+    const migrated = await Database.use((db) =>
+      db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get(),
+    )
+
+    expect(resolved.project.id).toBe(projectID)
+    expect(migrated?.project_id).toBe(projectID)
+  })
+
+  test("filters legacy single-repo sandboxes out of batch parent projects", async () => {
+    const p = await loadProject()
+    await using tmp = await tmpdir()
+    const projectID = `project_batch_clean_${Date.now()}`
+    const batchDirectory = path.join(tmp.path, ".batch-clean")
+    const legacyDirectory = path.join(tmp.path, "..", `legacy-main-${Date.now()}`)
+
+    await createChildGit(tmp.path, "app")
+    await fs.mkdir(batchDirectory, { recursive: true })
+    await fs.mkdir(legacyDirectory, { recursive: true })
+    await $`git init`.cwd(legacyDirectory).quiet()
+
+    await Database.use((db) =>
+      db.insert(ProjectTable)
+        .values({
+          id: projectID,
+          worktree: tmp.path,
+          vcs: null,
+          name: "batch-clean",
+          icon_url: null,
+          icon_color: null,
+          time_created: Date.now(),
+          time_updated: Date.now(),
+          time_initialized: null,
+          sandboxes: [legacyDirectory, batchDirectory],
+          commands: null,
+        })
+        .run(),
+    )
+
+    await Database.use((db) =>
+      db.insert(WorkspaceTable)
+        .values({
+          id: `workspace_batch_clean_${Date.now()}`,
+          directory: batchDirectory,
+          branch: "opencode/batch-clean",
+          kind: "batch_worktree",
+          project_id: projectID,
+          config: {
+            type: "batch_worktree",
+            directory: batchDirectory,
+          },
+          meta: {
+            source_root: tmp.path,
+            members: [],
+          },
+        })
+        .run(),
+    )
+
+    const current = await p.get(projectID)
+
+    expect(current?.sandboxes).toEqual([batchDirectory])
   })
 })
 

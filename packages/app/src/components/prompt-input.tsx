@@ -1,5 +1,5 @@
 import { useFilteredList } from "@opencode-ai/ui/hooks"
-import { createEffect, on, Component, Show, onCleanup, Switch, Match, createMemo, createSignal } from "solid-js"
+import { createEffect, on, Component, Show, onCleanup, Switch, Match, createMemo, createSignal, createResource } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createFocusSignal } from "@solid-primitives/active-element"
 import { useLocal } from "@/context/local"
@@ -68,6 +68,9 @@ import {
   vhoFeedbackApplyFailure,
 } from "./vho-feedback"
 import { base64Encode } from "@opencode-ai/util/encode"
+import { buildPackageDisabledReason, buildPackagePrompt, canUseBuildPackage } from "./build-package"
+import { errorMessage } from "@/pages/layout/helpers"
+import type { Workspace } from "@opencode-ai/sdk/v2/client"
 
 interface PromptInputProps {
   class?: string
@@ -272,6 +275,24 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return paths
   })
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
+  /** 中文注释：按当前会话绑定的 workspaceID 拉取批量工作区详情，供“编译打包”按钮读取成员仓库元数据。 */
+  const [buildWorkspace, buildWorkspaceActions] = createResource(
+    () => {
+      const session = info()
+      if (!session?.workspaceID) return
+      return {
+        directory: sdk.directory,
+        workspaceID: session.workspaceID,
+      }
+    },
+    async (input) => {
+      const result = await sdk.client.experimental.workspace.list({
+        directory: input.directory,
+      })
+      return result.data?.find((item: Workspace) => item.id === input.workspaceID)
+    },
+  )
+  const [buildPackageSubmitting, setBuildPackageSubmitting] = createSignal(false)
   const canSelectRuntimeModel = createMemo(() =>
     canUseRuntimeModelSelector({
       hasBuild: canUseBuildCapability(auth.user()),
@@ -284,6 +305,24 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       agent: local.agent.current()?.name,
       session_id: params.id,
       can_select_runtime_model: canSelectRuntimeModel(),
+    }),
+  )
+  const buildPackageReason = createMemo(() => {
+    const session = info()
+    if (buildWorkspace.loading && session?.workspaceID && session.workspaceKind === "batch_worktree") {
+      return "正在识别批量工作区"
+    }
+    return buildPackageDisabledReason({
+      agent: local.agent.current()?.name,
+      session,
+      workspace: buildWorkspace(),
+    })
+  })
+  const canBuildPackage = createMemo(() =>
+    canUseBuildPackage({
+      agent: local.agent.current()?.name,
+      session: info(),
+      workspace: buildWorkspace(),
     }),
   )
   const [runtimeValue, setRuntimeValue] = createSignal("__auto__")
@@ -1359,7 +1398,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     clearVoiceStream()
   })
 
-  const { abort, handleSubmit } = createPromptSubmit({
+  const { abort, handleSubmit, submitFixedText } = createPromptSubmit({
     info,
     currentRuntimeModel: () => info()?.runtime_model,
     imageAttachments,
@@ -1578,6 +1617,41 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return {
       ok: true,
     } as const
+  }
+
+  /** 中文注释：发送固定“编译打包”提示词，只面向批量沙盒成员仓库，不消费当前草稿与附件。 */
+  const handleBuildPackage = async () => {
+    if (buildPackageSubmitting()) return
+    setBuildPackageSubmitting(true)
+    try {
+      const session = info()
+      const workspace = (await buildWorkspaceActions.refetch()) ?? buildWorkspace()
+      const reason = buildPackageDisabledReason({
+        agent: local.agent.current()?.name,
+        session,
+        workspace,
+      })
+      if (!canUseBuildPackage({ agent: local.agent.current()?.name, session, workspace })) {
+        showToast({
+          title: "编译打包暂不可用",
+          description: reason || "当前会话还未进入可用的批量沙盒",
+        })
+        return
+      }
+      if (!workspace) return
+      await submitFixedText(
+        buildPackagePrompt({
+          workspace,
+        }),
+      )
+    } catch (err) {
+      showToast({
+        title: "编译打包发送失败",
+        description: errorMessage(err, "发送编译打包提示词失败"),
+      })
+    } finally {
+      setBuildPackageSubmitting(false)
+    }
   }
 
   return (
@@ -1928,6 +2002,21 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               >
                 {language.t("prompt.action.selectFeedback")}
               </Button>
+            </Show>
+            <Show when={dockFlags().build_package}>
+              <Tooltip placement="top" gutter={8} value={buildPackageReason()} inactive={!buildPackageReason()}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  class="h-7 px-2 text-13-regular"
+                  disabled={!canBuildPackage() || buildPackageSubmitting()}
+                  onClick={() => {
+                    void handleBuildPackage()
+                  }}
+                >
+                  {buildPackageSubmitting() ? "发送中..." : "编译打包"}
+                </Button>
+              </Tooltip>
             </Show>
           </div>
         </div>

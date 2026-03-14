@@ -5,6 +5,10 @@ export const Config = z.discriminatedUnion("type", [
     directory: z.string(),
     type: z.literal("worktree"),
   }),
+  z.object({
+    directory: z.string(),
+    type: z.literal("batch_worktree"),
+  }),
 ])
 
 export type Config = z.infer<typeof Config>

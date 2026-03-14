@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import { $ } from "bun"
+import fs from "fs/promises"
 import { Instance } from "../../src/project/instance"
 import { Session } from "../../src/session"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
@@ -14,6 +15,17 @@ import {
 import { FileTime } from "../../src/file/time"
 import { SessionTable } from "../../src/session/session.sql"
 import { tmpdir } from "../fixture/fixture"
+
+/** 中文注释：创建一个带初始提交的一级子 git 项目，供批量 build 保护测试复用。 */
+async function createChildGit(root: string, name: string) {
+  const directory = path.join(root, name)
+  await fs.mkdir(directory, { recursive: true })
+  await $`git init`.cwd(directory).quiet()
+  await Bun.write(path.join(directory, "README.md"), `# ${name}\n`)
+  await $`git add README.md`.cwd(directory).quiet()
+  await $`git commit -m ${`init ${name}`}`.cwd(directory).quiet()
+  return directory
+}
 
 const ctx = {
   sessionID: "build-protection-test",
@@ -186,6 +198,83 @@ describe("session build protection", () => {
             ).rejects.toThrow("BuildMainWorktreeWriteDeniedError")
           },
         })
+      },
+    })
+  })
+
+  test("protects batch build sandboxes and blocks git at the aggregate root", async () => {
+    await using tmp = await tmpdir({
+      init: async (directory) => {
+        await createChildGit(directory, "app")
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "build-protect-batch" })
+        const prepared = await Session.prepareBuild({ sessionID: session.id })
+        const sourceFile = path.join(tmp.path, "app", "README.md")
+        const sandboxFile = path.join(prepared.directory, "app", "README.md")
+
+        await expect(
+          assertBuildWriteTarget({
+            sessionID: session.id,
+            agent: "build",
+            target: sourceFile,
+          }),
+        ).rejects.toThrow("BuildMainWorktreeWriteDeniedError")
+
+        await expect(
+          assertBuildWriteTarget({
+            sessionID: session.id,
+            agent: "build",
+            target: sandboxFile,
+          }),
+        ).resolves.toBeUndefined()
+
+        await expect(
+          assertBuildCommandAllowed({
+            sessionID: session.id,
+            agent: "build",
+            command: "git status",
+            cwd: prepared.directory,
+          }),
+        ).rejects.toThrow("BuildMainWorktreeWriteDeniedError")
+      },
+    })
+  })
+
+  test("allows git commands after changing into a batch member directory", async () => {
+    await using tmp = await tmpdir({
+      init: async (directory) => {
+        await createChildGit(directory, "app")
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "build-batch-member-cd" })
+        const prepared = await Session.prepareBuild({ sessionID: session.id })
+
+        await expect(
+          assertBuildCommandAllowed({
+            sessionID: session.id,
+            agent: "build",
+            command: "cd app && git checkout -b feature/test",
+            cwd: prepared.directory,
+          }),
+        ).resolves.toBeUndefined()
+
+        await expect(
+          assertBuildCommandAllowed({
+            sessionID: session.id,
+            agent: "build",
+            command: "cd app && git commit -am test",
+            cwd: prepared.directory,
+          }),
+        ).resolves.toBeUndefined()
       },
     })
   })

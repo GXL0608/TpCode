@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
+import path from "path"
 import { ToolRegistry } from "../../tool/registry"
 import { Worktree } from "../../worktree"
 import { Instance } from "../../project/instance"
@@ -11,6 +12,7 @@ import { zodToJsonSchema } from "zod-to-json-schema"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { WorkspaceRoutes } from "./workspace"
+import { Workspace } from "../../control-plane/workspace"
 
 export const ExperimentalRoutes = lazy(() =>
   new Hono()
@@ -109,6 +111,22 @@ export const ExperimentalRoutes = lazy(() =>
       validator("json", Worktree.create.schema),
       async (c) => {
         const body = c.req.valid("json")
+        const mode = await Project.workspaceMode(Instance.directory)
+        if (mode === "batch") {
+          /** 中文注释：非 git 父目录点击“新建工作区”时，统一创建一份批量沙盒，避免错误走单仓 git worktree 创建逻辑。 */
+          const workspace = await Workspace.createBatch({
+            projectID: Instance.project.id,
+            sourceRoot: Instance.directory,
+            name: body?.name ?? path.basename(Instance.directory),
+          })
+          return c.json(
+            Worktree.Info.parse({
+              name: path.basename(workspace.directory),
+              branch: workspace.branch ?? "",
+              directory: workspace.directory,
+            }),
+          )
+        }
         const worktree = await Worktree.create(body)
         return c.json(worktree)
       },
@@ -157,6 +175,11 @@ export const ExperimentalRoutes = lazy(() =>
       validator("json", Worktree.remove.schema),
       async (c) => {
         const body = c.req.valid("json")
+        const workspace = await Workspace.getByDirectory(body.directory)
+        if (workspace?.kind === "batch_worktree") {
+          await Workspace.removeBatch(workspace.id)
+          return c.json(true)
+        }
         await Worktree.remove(body)
         await Project.removeSandbox(Instance.project.id, body.directory)
         return c.json(true)
@@ -183,6 +206,11 @@ export const ExperimentalRoutes = lazy(() =>
       validator("json", Worktree.reset.schema),
       async (c) => {
         const body = c.req.valid("json")
+        const workspace = await Workspace.getByDirectory(body.directory)
+        if (workspace?.kind === "batch_worktree") {
+          await Workspace.resetBatch(workspace.id)
+          return c.json(true)
+        }
         await Worktree.reset(body)
         return c.json(true)
       },

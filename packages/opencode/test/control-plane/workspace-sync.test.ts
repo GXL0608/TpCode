@@ -60,13 +60,17 @@ describe("control-plane/workspace.startSyncing", () => {
         .values([
           {
             id: id1,
+            directory: id1,
             branch: "main",
+            kind: "single_worktree",
             project_id: project.id,
             config: remote,
           },
           {
             id: id2,
+            directory: tmp.path,
             branch: "main",
+            kind: "single_worktree",
             project_id: project.id,
             config: { type: "worktree", directory: tmp.path },
           },

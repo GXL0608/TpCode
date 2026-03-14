@@ -1278,6 +1278,186 @@
         ]
       }
     },
+    "/account/vho-feedback/list": {
+      "post": {
+        "operationId": "account.vhoFeedback.list",
+        "summary": "List VHO feedback tasks",
+        "description": "Proxy the VHO feedback task list API and normalize paged result items for build mode selection.",
+        "responses": {
+          "200": {
+            "description": "List result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountVhoFeedbackListSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountVhoFeedbackListFailure"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountVhoFeedbackListFailure"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountVhoFeedbackListFailure"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "feedback_id": {
+                    "type": "string"
+                  },
+                  "plan_id": {
+                    "type": "string"
+                  },
+                  "feedback_des": {
+                    "type": "string"
+                  },
+                  "resolution_status": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "0",
+                        "1",
+                        "9"
+                      ]
+                    }
+                  },
+                  "plan_start_date": {
+                    "type": "string"
+                  },
+                  "plan_end_date": {
+                    "type": "string"
+                  },
+                  "page_num": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "page_size": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.account.vhoFeedback.list({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/account/vho-feedback/resolve": {
+      "post": {
+        "operationId": "account.vhoFeedback.resolve",
+        "summary": "Resolve selected VHO feedback to saved plan prompt",
+        "description": "Resolve a selected VHO feedback row into local saved plan content and prebuilt prompt text.",
+        "responses": {
+          "200": {
+            "description": "Resolve result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountVhoFeedbackResolveSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountVhoFeedbackResolveFailure"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountVhoFeedbackResolveFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plan not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountVhoFeedbackResolveFailure"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "feedback_id": {
+                    "type": "string"
+                  },
+                  "plan_id": {
+                    "type": "string"
+                  },
+                  "feedback_des": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.account.vhoFeedback.resolve({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/account/plan/save": {
       "post": {
         "operationId": "account.plan.save",
@@ -5735,6 +5915,22 @@
                           "type": {
                             "type": "string",
                             "const": "worktree"
+                          }
+                        },
+                        "required": [
+                          "directory",
+                          "type"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "directory": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "const": "batch_worktree"
                           }
                         },
                         "required": [
@@ -13436,30 +13632,6 @@
           "properties"
         ]
       },
-      "Event.file.edited": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "const": "file.edited"
-          },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "file": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "file"
-            ]
-          }
-        },
-        "required": [
-          "type",
-          "properties"
-        ]
-      },
       "OutputFormatText": {
         "type": "object",
         "properties": {
@@ -15067,6 +15239,130 @@
           "properties"
         ]
       },
+      "Event.file.edited": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "file.edited"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "file"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "properties"
+        ]
+      },
+      "Event.worktree.ready": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "worktree.ready"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "branch"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "properties"
+        ]
+      },
+      "Event.worktree.failed": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "worktree.failed"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "properties"
+        ]
+      },
+      "Event.workspace.ready": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "workspace.ready"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "properties"
+        ]
+      },
+      "Event.workspace.failed": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "workspace.failed"
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "properties"
+        ]
+      },
       "PermissionRequest": {
         "type": "object",
         "properties": {
@@ -15805,58 +16101,6 @@
           "properties"
         ]
       },
-      "Event.worktree.ready": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "const": "worktree.ready"
-          },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "branch": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
-              "branch"
-            ]
-          }
-        },
-        "required": [
-          "type",
-          "properties"
-        ]
-      },
-      "Event.worktree.failed": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "const": "worktree.failed"
-          },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "message"
-            ]
-          }
-        },
-        "required": [
-          "type",
-          "properties"
-        ]
-      },
       "PermissionAction": {
         "type": "string",
         "enum": [
@@ -15906,11 +16150,40 @@
           "directory": {
             "type": "string"
           },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk.*"
+          },
           "workspaceDirectory": {
             "type": "string"
           },
           "workspaceBranch": {
             "type": "string"
+          },
+          "workspaceKind": {
+            "type": "string",
+            "enum": [
+              "single_worktree",
+              "batch_worktree"
+            ]
+          },
+          "workspaceSummary": {
+            "type": "object",
+            "properties": {
+              "memberCount": {
+                "type": "number"
+              },
+              "failedCount": {
+                "type": "number"
+              },
+              "branch": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "memberCount",
+              "failedCount"
+            ]
           },
           "workspaceStatus": {
             "type": "string",
@@ -16235,54 +16508,6 @@
           "properties"
         ]
       },
-      "Event.workspace.ready": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "const": "workspace.ready"
-          },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "type",
-          "properties"
-        ]
-      },
-      "Event.workspace.failed": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "const": "workspace.failed"
-          },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "message"
-            ]
-          }
-        },
-        "required": [
-          "type",
-          "properties"
-        ]
-      },
       "Event.server.degraded": {
         "type": "object",
         "properties": {
@@ -16493,9 +16718,6 @@
             "$ref": "#/components/schemas/Event.lsp.updated"
           },
           {
-            "$ref": "#/components/schemas/Event.file.edited"
-          },
-          {
             "$ref": "#/components/schemas/Event.message.updated"
           },
           {
@@ -16509,6 +16731,21 @@
           },
           {
             "$ref": "#/components/schemas/Event.message.part.removed"
+          },
+          {
+            "$ref": "#/components/schemas/Event.file.edited"
+          },
+          {
+            "$ref": "#/components/schemas/Event.worktree.ready"
+          },
+          {
+            "$ref": "#/components/schemas/Event.worktree.failed"
+          },
+          {
+            "$ref": "#/components/schemas/Event.workspace.ready"
+          },
+          {
+            "$ref": "#/components/schemas/Event.workspace.failed"
           },
           {
             "$ref": "#/components/schemas/Event.permission.asked"
@@ -16562,12 +16799,6 @@
             "$ref": "#/components/schemas/Event.command.executed"
           },
           {
-            "$ref": "#/components/schemas/Event.worktree.ready"
-          },
-          {
-            "$ref": "#/components/schemas/Event.worktree.failed"
-          },
-          {
             "$ref": "#/components/schemas/Event.session.created"
           },
           {
@@ -16584,12 +16815,6 @@
           },
           {
             "$ref": "#/components/schemas/Event.vcs.branch.updated"
-          },
-          {
-            "$ref": "#/components/schemas/Event.workspace.ready"
-          },
-          {
-            "$ref": "#/components/schemas/Event.workspace.failed"
           },
           {
             "$ref": "#/components/schemas/Event.server.degraded"
@@ -18059,6 +18284,191 @@
           "workspace_alias_by_project_branch"
         ]
       },
+      "AccountVhoFeedbackListSuccess": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "login_info": {
+            "type": "object",
+            "properties": {
+              "user_id": {
+                "type": "string"
+              },
+              "user_name": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": {}
+          },
+          "list": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "feedback_id": {
+                  "type": "string"
+                },
+                "plan_id": {
+                  "type": "string"
+                },
+                "feedback_des": {
+                  "type": "string"
+                },
+                "customer_name": {
+                  "type": "string"
+                },
+                "feedback_time": {
+                  "type": "string"
+                },
+                "resolution_status_name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "feedback_id"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page_num": {
+            "type": "number"
+          },
+          "page_size": {
+            "type": "number"
+          },
+          "feedback_meta": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "ok",
+          "login_info",
+          "list",
+          "total",
+          "page_num",
+          "page_size",
+          "feedback_meta"
+        ]
+      },
+      "AccountVhoFeedbackListFailure": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "vho_feedback_upstream_request_failed",
+              "vho_feedback_upstream_invalid",
+              "vho_feedback_upstream_failed",
+              "forbidden"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "code"
+        ]
+      },
+      "AccountVhoFeedbackResolveSuccess": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "feedback_id": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "feedback_des": {
+            "type": "string"
+          },
+          "saved_plan_id": {
+            "type": "string"
+          },
+          "plan_content": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "project_worktree": {
+            "type": "string"
+          },
+          "project_name": {
+            "type": "string"
+          },
+          "matched_by": {
+            "type": "string",
+            "enum": [
+              "plan_id",
+              "feedback_id"
+            ]
+          },
+          "prompt_text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "feedback_des",
+          "saved_plan_id",
+          "plan_content",
+          "project_id",
+          "project_worktree",
+          "matched_by",
+          "prompt_text"
+        ]
+      },
+      "AccountVhoFeedbackResolveFailure": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "vho_feedback_ref_missing",
+              "saved_plan_missing",
+              "saved_plan_project_missing",
+              "forbidden"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "code"
+        ]
+      },
       "AccountPlanSaveSuccess": {
         "type": "object",
         "properties": {
@@ -18994,6 +19404,9 @@
             "type": "string",
             "pattern": "^wrk.*"
           },
+          "directory": {
+            "type": "string"
+          },
           "branch": {
             "anyOf": [
               {
@@ -19002,6 +19415,13 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "single_worktree",
+              "batch_worktree"
             ]
           },
           "projectID": {
@@ -19024,13 +19444,87 @@
                   "directory",
                   "type"
                 ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "directory": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "batch_worktree"
+                  }
+                },
+                "required": [
+                  "directory",
+                  "type"
+                ]
               }
+            ]
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "source_root": {
+                "type": "string"
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "relative_path": {
+                      "type": "string"
+                    },
+                    "source_directory": {
+                      "type": "string"
+                    },
+                    "sandbox_directory": {
+                      "type": "string"
+                    },
+                    "branch": {
+                      "type": "string"
+                    },
+                    "base_ref": {
+                      "type": "string"
+                    },
+                    "default_branch": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "failed"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "relative_path",
+                    "source_directory",
+                    "sandbox_directory",
+                    "branch",
+                    "status"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "source_root",
+              "members"
             ]
           }
         },
         "required": [
           "id",
+          "directory",
           "branch",
+          "kind",
           "projectID",
           "config"
         ]
@@ -19091,11 +19585,40 @@
           "directory": {
             "type": "string"
           },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk.*"
+          },
           "workspaceDirectory": {
             "type": "string"
           },
           "workspaceBranch": {
             "type": "string"
+          },
+          "workspaceKind": {
+            "type": "string",
+            "enum": [
+              "single_worktree",
+              "batch_worktree"
+            ]
+          },
+          "workspaceSummary": {
+            "type": "object",
+            "properties": {
+              "memberCount": {
+                "type": "number"
+              },
+              "failedCount": {
+                "type": "number"
+              },
+              "branch": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "memberCount",
+              "failedCount"
+            ]
           },
           "workspaceStatus": {
             "type": "string",

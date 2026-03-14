@@ -2,11 +2,13 @@ import { describe, expect, test } from "bun:test"
 import { type Session } from "@opencode-ai/sdk/v2/client"
 import { collectOpenProjectDeepLinks, drainPendingDeepLinks, parseDeepLink } from "./deep-links"
 import {
+  buildDirectoryLoadPlan,
   displayName,
   errorMessage,
   getDraggableId,
   hasProjectPermissions,
   latestRootSession,
+  projectSupportsWorkspace,
   syncWorkspaceOrder,
   workspaceModeEnabled,
   workspaceKey,
@@ -184,16 +186,77 @@ describe("layout workspace helpers", () => {
   })
 
   test("enables workspaces by default for git projects only when not explicitly configured", () => {
-    expect(workspaceModeEnabled(undefined, "git")).toBe(true)
-    expect(workspaceModeEnabled(false, "git")).toBe(false)
-    expect(workspaceModeEnabled(true, "git")).toBe(true)
-    expect(workspaceModeEnabled(undefined, "none")).toBe(false)
+    expect(workspaceModeEnabled(undefined, { id: "git", vcs: "git", sandboxes: [] })).toBe(true)
+    expect(workspaceModeEnabled(false, { id: "git", vcs: "git", sandboxes: [] })).toBe(false)
+    expect(workspaceModeEnabled(true, { id: "git", vcs: "git", sandboxes: [] })).toBe(true)
+    expect(workspaceModeEnabled(undefined, { id: "batch_demo", sandboxes: [] })).toBe(true)
+    expect(workspaceModeEnabled(undefined, { id: "plain", sandboxes: [] })).toBe(false)
     expect(workspaceModeEnabled(undefined, undefined)).toBe(false)
+  })
+
+  test("recognizes batch projects as workspace capable before a sandbox exists", () => {
+    expect(projectSupportsWorkspace({ id: "batch_demo", sandboxes: [] })).toBe(true)
+    expect(projectSupportsWorkspace({ id: "plain", sandboxes: [] })).toBe(false)
   })
 
   test("extracts api error message and fallback", () => {
     expect(errorMessage({ data: { message: "boom" } }, "fallback")).toBe("boom")
     expect(errorMessage(new Error("broken"), "fallback")).toBe("broken")
     expect(errorMessage("unknown", "fallback")).toBe("fallback")
+  })
+
+  test("builds a workspace-aware load plan with one bootstrap target", () => {
+    const result = buildDirectoryLoadPlan({
+      project: {
+        worktree: "/root",
+        sandboxes: ["/root/a", "/root/b"],
+      },
+      currentDir: "/root/b",
+      workspaces: true,
+      expanded: {
+        "/root": true,
+        "/root/a": true,
+        "/root/b": false,
+      },
+    })
+
+    expect(result).toEqual({
+      bootstrap: "/root/b",
+      sessions: ["/root", "/root/a"],
+    })
+  })
+
+  test("keeps workspace-disabled projects on root session loading while bootstrapping the active sandbox", () => {
+    const result = buildDirectoryLoadPlan({
+      project: {
+        worktree: "/root",
+        sandboxes: ["/root/a"],
+      },
+      currentDir: "/root/a",
+      workspaces: false,
+      expanded: {},
+    })
+
+    expect(result).toEqual({
+      bootstrap: "/root/a",
+      sessions: ["/root"],
+    })
+  })
+
+  test("does not duplicate the root when it is already the bootstrap target", () => {
+    const result = buildDirectoryLoadPlan({
+      project: {
+        worktree: "/root",
+        sandboxes: ["/root/a"],
+      },
+      currentDir: "/root",
+      workspaces: false,
+      expanded: {},
+    })
+
+    expect(result).toEqual({
+      bootstrap: "/root",
+      sessions: [],
+    })
   })
 })

@@ -1,15 +1,28 @@
 import path from "path"
 import { $ } from "bun"
 import { describe, expect, test } from "bun:test"
+import fs from "fs/promises"
 import { Instance } from "../../src/project/instance"
 import { Project } from "../../src/project/project"
 import { Session } from "../../src/session"
 import { SessionTable } from "../../src/session/session.sql"
 import { SessionPrompt } from "../../src/session/prompt"
 import { Database, eq } from "../../src/storage/db"
+import { WorkspaceTable } from "../../src/control-plane/workspace.sql"
 import { Filesystem } from "../../src/util/filesystem"
 import { Worktree } from "../../src/worktree"
 import { tmpdir } from "../fixture/fixture"
+
+/** 中文注释：创建一个带初始提交的一级子 git 项目，供批量沙盒测试复用。 */
+async function createChildGit(root: string, name: string) {
+  const directory = path.join(root, name)
+  await fs.mkdir(directory, { recursive: true })
+  await $`git init`.cwd(directory).quiet()
+  await Bun.write(path.join(directory, "README.md"), `# ${name}\n`)
+  await $`git add README.md`.cwd(directory).quiet()
+  await $`git commit -m ${`init ${name}`}`.cwd(directory).quiet()
+  return directory
+}
 
 describe("session build workspace", () => {
   test("creates an isolated worktree only when build preparation is requested and reuses it", async () => {
@@ -99,7 +112,7 @@ describe("session build workspace", () => {
     })
   })
 
-  test("creates a fresh build worktree even when the session starts inside another workspace", async () => {
+  test("reuses the current single build workspace instead of nesting another workspace", async () => {
     await using tmp = await tmpdir({
       git: true,
       config: {
@@ -124,9 +137,9 @@ describe("session build workspace", () => {
 
         const prepared = await Session.prepareBuild({ sessionID: session.id })
 
-        expect(prepared.directory).not.toBe(tmp.path)
-        expect(prepared.directory).not.toBe(shared.directory)
+        expect(prepared.directory).toBe(shared.directory)
         expect(Reflect.get(prepared, "workspaceDirectory")).toBe(prepared.directory)
+        expect(prepared.workspaceKind).toBe("single_worktree")
       },
     })
   })
@@ -354,5 +367,93 @@ describe("session build workspace", () => {
     expect(
       errors.some((error) => (error instanceof Error ? error.message : String(error)).includes("Session not found")),
     ).toBe(false)
+  })
+
+  test("creates a batch build workspace for a non-git parent with git children", async () => {
+    await using tmp = await tmpdir({
+      init: async (directory) => {
+        await createChildGit(directory, "app")
+        await createChildGit(directory, "server")
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "batch-build" })
+        const prepared = await Session.prepareBuild({ sessionID: session.id })
+        const sandboxes = await Project.sandboxes(Instance.project.id)
+        const workspace = await Database.use((db) =>
+          db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, prepared.workspaceID!)).get(),
+        )
+
+        expect(prepared.directory).not.toBe(tmp.path)
+        expect(prepared.workspaceDirectory).toBe(prepared.directory)
+        expect(prepared.workspaceStatus).toBe("ready")
+        expect(prepared.workspaceKind).toBe("batch_worktree")
+        expect(sandboxes).toEqual([prepared.directory])
+        expect(workspace?.kind).toBe("batch_worktree")
+        expect(workspace?.directory).toBe(prepared.directory)
+        expect(workspace?.meta?.members).toHaveLength(2)
+        expect(await Filesystem.isDir(path.join(prepared.directory, "app"))).toBe(true)
+        expect(await Filesystem.isDir(path.join(prepared.directory, "server"))).toBe(true)
+      },
+    })
+  })
+
+  test("keeps a plain non-git directory on the main workspace during build preparation", async () => {
+    await using tmp = await tmpdir({
+      init: async (directory) => {
+        await Bun.write(path.join(directory, "README.md"), "# plain folder\n")
+        await fs.mkdir(path.join(directory, "docs"), { recursive: true })
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({ title: "plain-build" })
+        const prepared = await Session.prepareBuild({ sessionID: session.id })
+        const sandboxes = await Project.sandboxes(Instance.project.id)
+
+        expect(prepared.directory).toBe(tmp.path)
+        expect(prepared.workspaceDirectory).toBeUndefined()
+        expect(prepared.workspaceID).toBeUndefined()
+        expect(prepared.workspaceKind).toBeUndefined()
+        expect(sandboxes).toEqual([])
+      },
+    })
+  })
+
+  test("reuses the current batch workspace instead of nesting another batch workspace", async () => {
+    await using tmp = await tmpdir({
+      init: async (directory) => {
+        await createChildGit(directory, "app")
+        await createChildGit(directory, "server")
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const seed = await Session.create({ title: "batch-seed" })
+        const prepared = await Session.prepareBuild({ sessionID: seed.id })
+        const nested = await Instance.provide({
+          directory: prepared.directory,
+          fn: async () => Session.create({ title: "batch-nested" }),
+        })
+
+        const reused = await Session.prepareBuild({ sessionID: nested.id })
+        const rows = await Database.use((db) =>
+          db.select().from(WorkspaceTable).where(eq(WorkspaceTable.directory, prepared.directory)).all(),
+        )
+
+        expect(reused.directory).toBe(prepared.directory)
+        expect(reused.workspaceDirectory).toBe(prepared.directory)
+        expect(reused.workspaceKind).toBe("batch_worktree")
+        expect(reused.workspaceID).toBe(prepared.workspaceID)
+        expect(rows.filter((row) => row.kind === "batch_worktree")).toHaveLength(1)
+      },
+    })
   })
 })

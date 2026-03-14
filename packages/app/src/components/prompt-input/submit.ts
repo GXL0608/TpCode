@@ -1,4 +1,4 @@
-import type { Message } from "@opencode-ai/sdk/v2/client"
+import type { Message, Session } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate, useParams } from "@solidjs/router"
@@ -126,6 +126,15 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
     if (err instanceof Error) return err.message
     return language.t("common.requestFailed")
+  }
+
+  /** 中文注释：在本地 child store 里预写入新会话，避免首次 build 切目录时迁移不到 session 条目。 */
+  const upsertSession = (directory: string, session: Session) => {
+    const [store, setStore] = globalSync.child(directory)
+    const next = [...store.session.filter((item) => item.id !== session.id), session].sort((a, b) =>
+      a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+    )
+    setStore("session", reconcile(next, { key: "id" }))
   }
 
   /** 中文注释：异步发送成功后主动补拉消息，避免仅靠事件流时乐观消息长期停留。 */
@@ -313,6 +322,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           return undefined
         })
       if (created) {
+        upsertSession(sessionDirectory, created)
         if (createdWorkspace || ownedWorkspace) layout.handoff.clearWorkspace(sessionDirectory)
         sessionID = created.id
         layout.handoff.setTabs(base64Encode(sessionDirectory), created.id)
@@ -336,20 +346,20 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         resolveProjectByDirectory(globalSync.data.project, sessionDirectory) ??
         resolveProjectByDirectory(globalSync.data.project, projectDirectory)
       if (!project) return
+      if (project.worktree !== directory && !(project.sandboxes ?? []).includes(directory)) {
+        globalSync.set(
+          "project",
+          produce((draft) => {
+            const item = draft.find((entry) => entry.id === project.id)
+            if (!item) return
+            item.sandboxes = [...new Set([...(item.sandboxes ?? []), directory])]
+          }),
+        )
+      }
       layout.sidebar.setWorkspaces(project.worktree, true)
       layout.sidebar.setWorkspaceExpanded(directory, true)
       globalSync.child(directory)
       await globalSync.project.loadSessions(directory)
-      if (project.worktree === directory) return
-      if ((project.sandboxes ?? []).includes(directory)) return
-      globalSync.set(
-        "project",
-        produce((draft) => {
-          const item = draft.find((entry) => entry.id === project.id)
-          if (!item) return
-          item.sandboxes = [...new Set([...(item.sandboxes ?? []), directory])]
-        }),
-      )
     }
 
     const switchDirectory = async (directory: string) => {
@@ -360,6 +370,11 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         to: directory,
         sessionID,
       })
+      await sync.session.syncAt({
+        directory,
+        sessionID,
+      })
+      await globalSync.project.loadSessions(directory)
       sessionDirectory = directory
       client =
         directory === projectDirectory
@@ -637,8 +652,194 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     })
   }
 
+  /** 中文注释：发送一条固定系统提示词，不消费当前草稿与附件，专供“编译打包”等系统动作按钮复用。 */
+  const submitFixedText = async (text: string) => {
+    if (!text.trim()) return
+
+    const currentAgent = local.agent.current()
+    const currentModel = local.model.current()
+    const model =
+      currentModel &&
+      currentModel.provider.id &&
+      currentModel.id &&
+      !(currentModel.provider.id === "managed" && currentModel.id === "managed")
+        ? {
+            providerID: currentModel.provider.id,
+            modelID: currentModel.id,
+          }
+        : undefined
+    const variant = local.model.variant.current()
+    if (!model) {
+      showToast({
+        title: language.t("toast.model.unavailable.title"),
+        description: language.t("toast.model.unavailable.description"),
+      })
+      return
+    }
+
+    const agent = currentAgent?.name ?? "build"
+    const projectDirectory = routeDirectory() ?? decode(params.dir) ?? sdk.directory
+    const sessionID = params.id ?? input.info()?.id
+    if (!sessionID) {
+      showToast({
+        title: language.t("prompt.toast.promptSendFailed.title"),
+        description: language.t("prompt.toast.promptSendFailed.description"),
+      })
+      return
+    }
+
+    let sessionDirectory = projectDirectory
+    let client =
+      projectDirectory === sdk.directory
+        ? sdk.client
+        : sdk.createClient({
+            directory: projectDirectory,
+            throwOnError: true,
+          })
+
+    const registerWorkspace = async (directory: string) => {
+      const project =
+        resolveProjectByDirectory(globalSync.data.project, sessionDirectory) ??
+        resolveProjectByDirectory(globalSync.data.project, projectDirectory)
+      if (!project) return
+      if (project.worktree !== directory && !(project.sandboxes ?? []).includes(directory)) {
+        globalSync.set(
+          "project",
+          produce((draft) => {
+            const item = draft.find((entry) => entry.id === project.id)
+            if (!item) return
+            item.sandboxes = [...new Set([...(item.sandboxes ?? []), directory])]
+          }),
+        )
+      }
+      layout.sidebar.setWorkspaces(project.worktree, true)
+      layout.sidebar.setWorkspaceExpanded(directory, true)
+      globalSync.child(directory)
+      await globalSync.project.loadSessions(directory)
+    }
+
+    const switchDirectory = async (directory: string) => {
+      const previousDirectory = sessionDirectory
+      await registerWorkspace(directory)
+      sync.session.migrate({
+        from: previousDirectory,
+        to: directory,
+        sessionID,
+      })
+      await sync.session.syncAt({
+        directory,
+        sessionID,
+      })
+      await globalSync.project.loadSessions(directory)
+      sessionDirectory = directory
+      client =
+        directory === projectDirectory
+          ? sdk.client
+          : sdk.createClient({
+              directory,
+              throwOnError: true,
+            })
+      layout.handoff.setTabs(base64Encode(directory), sessionID)
+      navigate(`/${base64Encode(directory)}/session/${sessionID}`)
+    }
+
+    const prepareBuild = async () => {
+      if (agent !== "build") return true
+      const prepared = await sdk.client.session
+        .prepareBuild({ sessionID })
+        .then((x) => x.data)
+        .catch((err) => {
+          showToast({
+            title: language.t("prompt.toast.worktreeCreateFailed.title"),
+            description: errorMessage(err),
+          })
+          return undefined
+        })
+      const nextDirectory = prepared?.directory
+      if (!nextDirectory) return false
+      if (nextDirectory !== sessionDirectory) {
+        await switchDirectory(nextDirectory)
+      }
+      return true
+    }
+
+    if (!(await prepareBuild())) return
+
+    const messageID = Identifier.ascending("message")
+    const syntheticPrompt: Prompt = [
+      {
+        type: "text",
+        content: text,
+        start: 0,
+        end: text.length,
+      },
+    ]
+    const { requestParts, optimisticParts } = buildRequestParts({
+      prompt: syntheticPrompt,
+      context: [],
+      images: [],
+      text,
+      sessionID,
+      messageID,
+      sessionDirectory,
+    })
+
+    const optimisticMessage: Message = {
+      id: messageID,
+      sessionID,
+      role: "user",
+      time: { created: Date.now() },
+      agent,
+      model: optimisticModel() ?? model,
+    }
+
+    const addOptimisticMessage = () =>
+      sync.session.optimistic.add({
+        directory: sessionDirectory,
+        sessionID,
+        message: optimisticMessage,
+        parts: optimisticParts,
+      })
+
+    const removeOptimisticMessage = () =>
+      sync.session.optimistic.remove({
+        directory: sessionDirectory,
+        sessionID,
+        messageID,
+      })
+
+    addOptimisticMessage()
+
+    const send = async () => {
+      await input.syncRuntimeModel?.(sessionID)
+      await client.session.promptAsync({
+        sessionID,
+        agent,
+        messageID,
+        model,
+        variant,
+        parts: requestParts,
+      })
+      refreshSessionMessages(sessionDirectory, sessionID)
+      if (sessionDirectory !== projectDirectory) return
+      sync.set("session_status", sessionID, { type: "busy" })
+    }
+
+    void send().catch((err) => {
+      if (sessionDirectory === projectDirectory) {
+        sync.set("session_status", sessionID, { type: "idle" })
+      }
+      showToast({
+        title: language.t("prompt.toast.promptSendFailed.title"),
+        description: errorMessage(err),
+      })
+      removeOptimisticMessage()
+    })
+  }
+
   return {
     abort,
     handleSubmit,
+    submitFixedText,
   }
 }

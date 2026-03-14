@@ -7,6 +7,8 @@ import { ProjectTable } from "@/project/project.sql"
 import { Database, eq } from "@/storage/db"
 import { SessionTable } from "./session.sql"
 import { Filesystem } from "@/util/filesystem"
+import { WorkspaceTable } from "@/control-plane/workspace.sql"
+import { WorkspaceKind } from "@/control-plane/workspace-meta"
 
 /** 中文注释：build 模式下禁止向主工作区写入时抛出的统一错误。 */
 export const BuildMainWorktreeWriteDeniedError = NamedError.create(
@@ -25,22 +27,46 @@ export const BuildProtectedBranchPushDeniedError = NamedError.create(
 )
 
 type BuildContext = {
-  project: string
-  workspace?: string
+  blocked: string[]
+  allowed: string[]
+  aggregate?: string
+  members: {
+    directory: string
+    protectedBranch?: string
+  }[]
 }
 
 /** 中文注释：统一判断当前调用是否需要启用 build 主目录写保护。 */
-async function context(input: { sessionID: string; agent?: string }) {
+async function context(input: { sessionID: string; agent?: string }): Promise<BuildContext | undefined> {
   if (input.agent !== "build") return
   const row = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, input.sessionID)).get())
   if (!row?.project_id) return
+  if (row.workspace_id) {
+    const workspace = await Database.use((db) =>
+      db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, row.workspace_id!)).get(),
+    )
+    if (workspace && WorkspaceKind.safeParse(workspace.kind).data === "batch_worktree" && workspace.meta) {
+      return {
+        blocked: [workspace.meta.source_root, ...workspace.meta.members.map((member) => member.source_directory)],
+        allowed: [workspace.directory, ...workspace.meta.members.map((member) => member.sandbox_directory)],
+        aggregate: workspace.directory,
+        members: workspace.meta.members.map((member) => ({
+          directory: member.sandbox_directory,
+          protectedBranch: member.default_branch,
+        })),
+      } satisfies BuildContext
+    }
+  }
   const project = await Database.use((db) =>
     db.select().from(ProjectTable).where(eq(ProjectTable.id, row.project_id)).get(),
   )
   if (!project || project.vcs !== "git" || project.worktree === "/") return
   return {
-    project: path.resolve(project.worktree),
-    workspace: row.workspace_directory ? path.resolve(row.workspace_directory) : undefined,
+    blocked: [path.resolve(project.worktree)],
+    allowed: row.workspace_directory ? [path.resolve(row.workspace_directory)] : [],
+    members: row.workspace_directory
+      ? [{ directory: path.resolve(row.workspace_directory), protectedBranch: undefined }]
+      : [],
   } satisfies BuildContext
 }
 
@@ -67,6 +93,18 @@ function segments(command: string) {
 /** 中文注释：把命令片段切成基础 token，用于主目录写和 push 保护判断。 */
 function tokens(command: string) {
   return command.match(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s]+/g)?.map(unquote) ?? []
+}
+
+/** 中文注释：在逐段校验 shell 命令时，识别 cd 指令带来的工作目录变化，避免批量沙盒成员仓库被误判为聚合根目录。 */
+function nextCwd(command: string, cwd: string) {
+  const parts = tokens(command)
+  if (parts[0] !== "cd") return cwd
+  const target = parts[1]
+  if (!target) return cwd
+  if (target === "-") return cwd
+  if (target === "~") return os.homedir()
+  if (target.startsWith("~")) return path.resolve(os.homedir(), target.slice(1))
+  return path.resolve(cwd, target)
 }
 
 /** 中文注释：把路径参数解析成绝对路径，仅处理显式路径与重定向目标。 */
@@ -150,8 +188,8 @@ export async function assertBuildWriteTarget(input: { sessionID: string; agent?:
   const state = await context(input)
   if (!state || !input.target) return
   const target = path.resolve(input.target)
-  if (!Filesystem.contains(state.project, target)) return
-  if (state.workspace && Filesystem.contains(state.workspace, target)) return
+  if (!state.blocked.some((directory) => Filesystem.contains(directory, target))) return
+  if (state.allowed.some((directory) => Filesystem.contains(directory, target))) return
   throw writeDenied()
 }
 
@@ -165,49 +203,63 @@ export async function assertBuildCommandAllowed(input: {
   const state = await context(input)
   if (!state) return
 
+  let cwd = path.resolve(input.cwd)
   for (const item of segments(input.command)) {
-    for (const target of targets(item, input.cwd)) {
-      if (!Filesystem.contains(state.project, target)) continue
-      if (state.workspace && Filesystem.contains(state.workspace, target)) continue
+    if (
+      state.aggregate &&
+      Filesystem.windowsPath(cwd).toLowerCase() === Filesystem.windowsPath(path.resolve(state.aggregate)).toLowerCase()
+    ) {
+      const parts = tokens(item)
+      if (parts[0] === "git") throw writeDenied()
+    }
+
+    for (const target of targets(item, cwd)) {
+      if (!state.blocked.some((directory) => Filesystem.contains(directory, target))) continue
+      if (state.allowed.some((directory) => Filesystem.contains(directory, target))) continue
       throw writeDenied()
     }
 
     const parts = tokens(item)
-    if (parts[0] !== "git" || parts[1] !== "push") continue
-    const protectedBranch = await defaultBranch(input.cwd)
-    if (!protectedBranch) continue
-    const branch = await currentBranch(input.cwd)
-    const args = parts.slice(2).filter((part) => !part.startsWith("-"))
+    if (parts[0] === "git" && parts[1] === "push") {
+      const member = state.members.find((item) => Filesystem.contains(item.directory, cwd))
+      const protectedBranch = member?.protectedBranch ?? (await defaultBranch(cwd))
+      if (protectedBranch) {
+        const branch = await currentBranch(cwd)
+        const args = parts.slice(2).filter((part) => !part.startsWith("-"))
 
-    if (args.length === 0) {
-      if (branch === protectedBranch) {
-        throw new BuildProtectedBranchPushDeniedError({
-          message: `禁止推送到受保护主分支 ${protectedBranch}，请推送到其他分支`,
-        })
+        if (args.length === 0) {
+          if (branch === protectedBranch) {
+            throw new BuildProtectedBranchPushDeniedError({
+              message: `禁止推送到受保护主分支 ${protectedBranch}，请推送到其他分支`,
+            })
+          }
+        }
+
+        if (args.length === 1) {
+          const ref = args[0]
+          if (ref === protectedBranch || protectedRef({ ref, branch, protectedBranch })) {
+            throw new BuildProtectedBranchPushDeniedError({
+              message: `禁止推送到受保护主分支 ${protectedBranch}，请推送到其他分支`,
+            })
+          }
+          if (!ref.includes(":") && !ref.includes("/") && branch === protectedBranch) {
+            throw new BuildProtectedBranchPushDeniedError({
+              message: `禁止推送到受保护主分支 ${protectedBranch}，请推送到其他分支`,
+            })
+          }
+        }
+
+        if (args.length > 1) {
+          for (const ref of args.slice(1)) {
+            if (!protectedRef({ ref, branch, protectedBranch }) && ref !== protectedBranch) continue
+            throw new BuildProtectedBranchPushDeniedError({
+              message: `禁止推送到受保护主分支 ${protectedBranch}，请推送到其他分支`,
+            })
+          }
+        }
       }
-      continue
     }
 
-    if (args.length === 1) {
-      const ref = args[0]
-      if (ref === protectedBranch || protectedRef({ ref, branch, protectedBranch })) {
-        throw new BuildProtectedBranchPushDeniedError({
-          message: `禁止推送到受保护主分支 ${protectedBranch}，请推送到其他分支`,
-        })
-      }
-      if (!ref.includes(":") && !ref.includes("/") && branch === protectedBranch) {
-        throw new BuildProtectedBranchPushDeniedError({
-          message: `禁止推送到受保护主分支 ${protectedBranch}，请推送到其他分支`,
-        })
-      }
-      continue
-    }
-
-    for (const ref of args.slice(1)) {
-      if (!protectedRef({ ref, branch, protectedBranch }) && ref !== protectedBranch) continue
-      throw new BuildProtectedBranchPushDeniedError({
-        message: `禁止推送到受保护主分支 ${protectedBranch}，请推送到其他分支`,
-      })
-    }
+    cwd = nextCwd(item, cwd)
   }
 }

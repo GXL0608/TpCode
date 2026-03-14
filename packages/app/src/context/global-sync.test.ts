@@ -4,6 +4,7 @@ import {
   estimateRootSessionTotal,
   loadRootSessionsWithFallback,
   pickDirectoriesToEvict,
+  shouldRefreshDirectoriesForGlobalEvent,
 } from "./global-sync"
 
 describe("pickDirectoriesToEvict", () => {
@@ -120,6 +121,41 @@ describe("canDisposeDirectory", () => {
         pinned: false,
         booting: false,
         loadingSessions: false,
+      }),
+    ).toBe(true)
+  })
+})
+
+describe("shouldRefreshDirectoriesForGlobalEvent", () => {
+  test("skips directory rebootstrap for the first server reconnect after project context changes", () => {
+    expect(
+      shouldRefreshDirectoriesForGlobalEvent({
+        type: "server.connected",
+        contextChanged: true,
+      }),
+    ).toBe(false)
+  })
+
+  test("keeps normal reconnect refresh for non-context server reconnects", () => {
+    expect(
+      shouldRefreshDirectoriesForGlobalEvent({
+        type: "server.connected",
+        contextChanged: false,
+      }),
+    ).toBe(true)
+  })
+
+  test("always refreshes for degraded or disposed global events", () => {
+    expect(
+      shouldRefreshDirectoriesForGlobalEvent({
+        type: "server.degraded",
+        contextChanged: true,
+      }),
+    ).toBe(true)
+    expect(
+      shouldRefreshDirectoriesForGlobalEvent({
+        type: "global.disposed",
+        contextChanged: true,
       }),
     ).toBe(true)
   })

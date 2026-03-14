@@ -1,6 +1,7 @@
 import z from "zod"
 import { Filesystem } from "../util/filesystem"
 import path from "path"
+import fs from "fs/promises"
 import { Database, eq } from "../storage/db"
 import { ProjectTable } from "./project.sql"
 import { SessionTable } from "../session/session.sql"
@@ -15,6 +16,8 @@ import { existsSync } from "fs"
 import { git } from "../util/git"
 import { Glob } from "../util/glob"
 import { createHash } from "crypto"
+import { WorkspaceTable } from "@/control-plane/workspace.sql"
+import { AccountCurrent } from "@/user/current"
 
 export namespace Project {
   const log = Log.create({ service: "project" })
@@ -35,6 +38,52 @@ export namespace Project {
     const normalized = Filesystem.windowsPath(path.resolve(worktree)).toLowerCase()
     const digest = createHash("sha1").update(normalized).digest("hex").slice(0, 12)
     return `${base}_${digest}`
+  }
+
+  /** 中文注释：为批量父目录生成稳定的伪项目标识，避免所有非 git 目录都坍缩到 global。 */
+  function batchProjectID(directory: string) {
+    const normalized = Filesystem.windowsPath(path.resolve(directory)).toLowerCase()
+    const digest = createHash("sha1").update(normalized).digest("hex").slice(0, 12)
+    return `batch_${digest}`
+  }
+
+  /** 中文注释：批量父目录优先复用当前账号上下文项目或同 worktree 的正式项目，避免生成临时 batch 项目后切项目丢会话。 */
+  async function preferredBatchProject(input: { directory: string; fallbackID: string }) {
+    const rows = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.worktree, input.directory)).all())
+    if (rows.length === 0) return
+    const context_project_id = Flag.TPCODE_ACCOUNT_ENABLED ? AccountCurrent.optional()?.context_project_id : undefined
+    if (context_project_id) {
+      const exact = rows.find((row) => row.id === context_project_id)
+      if (exact) return exact
+    }
+    const named = rows.find((row) => !row.id.startsWith("batch_"))
+    if (named) return named
+    return rows.find((row) => row.id === input.fallbackID) ?? rows[0]
+  }
+
+  /** 中文注释：当批量父目录从临时 batch 项目切换到正式项目 ID 时，迁移已有会话归属，避免切项目后会话丢失。 */
+  async function migrateBatchProject(input: { fromID: string; toID: string }) {
+    if (input.fromID === input.toID) return
+    const source = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, input.fromID)).get())
+    const target = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, input.toID)).get())
+    if (!target) return
+
+    await Database.use((db) =>
+      db.update(SessionTable).set({ project_id: input.toID }).where(eq(SessionTable.project_id, input.fromID)).run(),
+    )
+
+    if (!source) return
+    const sandboxes = [...new Set([...(target.sandboxes ?? []), ...(source.sandboxes ?? [])])]
+    await Database.use((db) =>
+      db
+        .update(ProjectTable)
+        .set({
+          sandboxes,
+          time_updated: Date.now(),
+        })
+        .where(eq(ProjectTable.id, input.toID))
+        .run(),
+    )
   }
 
   export const Info = z
@@ -94,8 +143,75 @@ export namespace Project {
     }
   }
 
+  /** 中文注释：批量父项目只保留已注册的 batch_worktree 目录，顺手剔除不存在的旧沙盒，避免把遗留 single-worktree 显示成“沙盒main”。 */
+  async function sanitizeSandboxes(info: Info) {
+    const existing = info.sandboxes.filter((item) => existsSync(item))
+    if (info.vcs === "git") return existing
+    if ((await workspaceMode(info.worktree)) !== "batch") return existing
+    const rows = await Database.use((db) =>
+      db.select({ directory: WorkspaceTable.directory, kind: WorkspaceTable.kind }).from(WorkspaceTable).where(eq(WorkspaceTable.project_id, info.id)).all(),
+    )
+    const allowed = new Set(
+      rows
+        .filter((row) => row.kind === "batch_worktree")
+        .map((row) => Filesystem.windowsPath(path.resolve(row.directory)).toLowerCase()),
+    )
+    return existing.filter((directory) => allowed.has(Filesystem.windowsPath(path.resolve(directory)).toLowerCase()))
+  }
+
+  /** 中文注释：读取项目后统一清洗沙盒列表，并把结果回写数据库，确保前端不会继续看到批量项目的遗留旧沙盒。 */
+  async function normalize(info: Info) {
+    const sandboxes = await sanitizeSandboxes(info)
+    if (sandboxes.length === info.sandboxes.length && sandboxes.every((item, index) => item === info.sandboxes[index])) {
+      return info
+    }
+    const next = {
+      ...info,
+      sandboxes,
+      time: {
+        ...info.time,
+        updated: Date.now(),
+      },
+    }
+    await Database.use((db) =>
+      db
+        .update(ProjectTable)
+        .set({
+          sandboxes: next.sandboxes,
+          time_updated: next.time.updated,
+        })
+        .where(eq(ProjectTable.id, info.id))
+        .run(),
+    ).catch(() => undefined)
+    return next
+  }
+
   export async function fromDirectory(directory: string) {
     log.info("fromDirectory", { directory })
+    directory = path.resolve(directory)
+
+    const workspace = await Database.use((db) =>
+      db.select().from(WorkspaceTable).where(eq(WorkspaceTable.directory, directory)).get(),
+    )
+    if (workspace) {
+      const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, workspace.project_id)).get())
+      if (row) {
+        const project = fromRow(row)
+        const result = {
+          ...project,
+          sandboxes: [...project.sandboxes.filter((item) => existsSync(item)), workspace.directory]
+            .filter((item, index, list) => list.indexOf(item) === index),
+          time: {
+            ...project.time,
+            updated: Date.now(),
+          },
+        }
+        return {
+          project: result,
+          sandbox: workspace.directory,
+        }
+      }
+    }
 
     const data = await iife(async () => {
       const matches = Filesystem.up({ targets: [".git"], start: directory })
@@ -202,6 +318,15 @@ export namespace Project {
         }
       }
 
+      if ((await workspaceMode(directory)) === "batch") {
+        return {
+          id: batchProjectID(directory),
+          worktree: directory,
+          sandbox: directory,
+          vcs: undefined,
+        }
+      }
+
       return {
         id: "global",
         worktree: "/",
@@ -210,8 +335,22 @@ export namespace Project {
       }
     })
 
-    const legacy_id = data.id
-    const scoped_id = legacy_id === "global" ? legacy_id : scoped(legacy_id, data.worktree)
+    const batch_row = data.id.startsWith("batch_")
+      ? await preferredBatchProject({
+          directory: data.worktree,
+          fallbackID: data.id,
+        })
+      : undefined
+
+    if (batch_row && batch_row.id !== data.id) {
+      await migrateBatchProject({
+        fromID: data.id,
+        toID: batch_row.id,
+      })
+    }
+
+    const legacy_id = batch_row?.id ?? data.id
+    const scoped_id = legacy_id === "global" || legacy_id.startsWith("batch_") ? legacy_id : scoped(legacy_id, data.worktree)
     const legacy_row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, legacy_id)).get())
     const scoped_row =
       scoped_id === legacy_id
@@ -253,9 +392,11 @@ export namespace Project {
         updated: Date.now(),
       },
     }
-    if (data.sandbox !== result.worktree && !result.sandboxes.includes(data.sandbox))
-      result.sandboxes.push(data.sandbox)
-    result.sandboxes = result.sandboxes.filter((x) => existsSync(x))
+    if (data.sandbox !== result.worktree && !result.sandboxes.includes(data.sandbox)) result.sandboxes.push(data.sandbox)
+    result.sandboxes = await sanitizeSandboxes({
+      ...result,
+      sandboxes: result.sandboxes.filter((x) => existsSync(x)),
+    })
     const insert = {
       id: result.id,
       worktree: result.worktree,
@@ -316,6 +457,21 @@ export namespace Project {
     return
   }
 
+  /** 中文注释：识别目录是否支持工作区能力；非 git 父目录只要一级子目录存在 git 项目就进入 batch 模式。 */
+  export async function workspaceMode(directory: string) {
+    const root = path.resolve(directory)
+    if (await Filesystem.exists(path.join(root, ".git"))) return "single" as const
+
+    const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
+    const matches = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => Filesystem.exists(path.join(root, entry.name, ".git"))),
+    )
+    if (matches.some(Boolean)) return "batch" as const
+    return "none" as const
+  }
+
   async function migrateFromGlobal(id: string, worktree: string) {
     const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, "global")).get())
     if (!row) return
@@ -352,13 +508,13 @@ export namespace Project {
 
   export async function list() {
     const rows = await Database.use((db) => db.select().from(ProjectTable).all())
-    return rows.map((row) => fromRow(row))
+    return Promise.all(rows.map((row) => normalize(fromRow(row))))
   }
 
   export async function get(id: string): Promise<Info | undefined> {
     const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
     if (!row) return undefined
-    return fromRow(row)
+    return normalize(fromRow(row))
   }
 
   export const update = fn(

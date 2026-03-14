@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { nextOpenProjectIDs, repairProjectID, visibleProjectIDs } from "./account-project"
+import { nextOpenProjectIDs, repairProjectID, shouldSkipAccountProjectReload, visibleProjectIDs } from "./account-project"
 
 const projects = [{ id: "a" }, { id: "b" }, { id: "c" }]
 
@@ -88,5 +88,29 @@ describe("account project list", () => {
         current_project_id: "b",
       }),
     ).toBe("b")
+  })
+
+  test("skips the immediate reload after an explicit context switch to the same project", () => {
+    expect(
+      shouldSkipAccountProjectReload({
+        skip_for: "b",
+        context_project_id: "b",
+      }),
+    ).toBe(true)
+  })
+
+  test("does not skip reload when the context does not match the pending skip marker", () => {
+    expect(
+      shouldSkipAccountProjectReload({
+        skip_for: "b",
+        context_project_id: "c",
+      }),
+    ).toBe(false)
+    expect(
+      shouldSkipAccountProjectReload({
+        skip_for: undefined,
+        context_project_id: "b",
+      }),
+    ).toBe(false)
   })
 })

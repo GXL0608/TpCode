@@ -485,6 +485,11 @@ export function SessionHeader() {
                             {language.t("session.header.workspace.branch")}: {workspaceInfo()?.branch}
                           </div>
                         </Show>
+                        <Show when={workspaceInfo()?.summary?.memberCount}>
+                          <div class="text-text-invert-weak break-all">
+                            子项目沙盒: {workspaceInfo()?.summary?.memberCount}
+                          </div>
+                        </Show>
                         <Show when={workspaceInfo()?.status}>
                           <div class="text-text-invert-weak break-all">
                             {language.t("session.header.workspace.status")}: {workspaceInfo()?.status}
@@ -502,7 +507,10 @@ export function SessionHeader() {
                         "border-critical/30 bg-critical/10 text-text-danger": state().tone === "error",
                       }}
                     >
-                      {language.t(state().label)}
+                      <span>{language.t(state().label)}</span>
+                      <Show when={workspaceInfo()?.summary?.memberCount}>
+                        <span class="ml-1 opacity-80">· {workspaceInfo()?.summary?.memberCount} 子项目</span>
+                      </Show>
                     </div>
                   </Tooltip>
                 )}

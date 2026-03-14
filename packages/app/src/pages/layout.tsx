@@ -71,10 +71,12 @@ import {
 } from "@/context/project-resolver"
 import {
   childMapByParent,
+  buildDirectoryLoadPlan,
   displayName,
   errorMessage,
   getDraggableId,
   latestRootSession,
+  projectSupportsWorkspace,
   sortedRootSessions,
   syncWorkspaceOrder,
   workspaceKey,
@@ -215,7 +217,7 @@ export default function Layout(props: ParentProps) {
     active: () => state.hoverProject,
     el: () => state.nav,
     onActivate: (directory) => {
-      globalSync.child(directory)
+      globalSync.child(directory, { bootstrap: false })
       setState("hoverProject", directory)
       setState("hoverSession", undefined)
     },
@@ -618,10 +620,15 @@ export default function Layout(props: ParentProps) {
       superAdmin: isSuperAdmin(),
     })
 
+  /** 中文注释：统一判断项目是否具备工作区展示能力；批量沙盒项目即使自身非 git，只要已有沙盒也应允许展开。 */
+  function workspaceCapable(project: LocalProject | undefined) {
+    return projectSupportsWorkspace(project)
+  }
+
   const workspaceSetting = createMemo(() => {
     const project = currentProject()
+    if (!workspaceCapable(project)) return false
     if (!project) return false
-    if (project.vcs !== "git") return false
     return layout.sidebar.workspaces(project.worktree)()
   })
 
@@ -648,7 +655,7 @@ export default function Layout(props: ParentProps) {
       if (!expanded) continue
       const project = projects.find((item) => item.worktree === directory || item.sandboxes?.includes(directory))
       if (!project) continue
-      if (project.vcs === "git" && layout.sidebar.workspaces(project.worktree)()) continue
+      if (workspaceCapable(project) && layout.sidebar.workspaces(project.worktree)()) continue
       void accountProject.setWorkspaceExpanded(directory, false)
     }
   })
@@ -665,13 +672,13 @@ export default function Layout(props: ParentProps) {
         const expanded = workspaceExpandedMap()[dir] ?? dir === project.worktree
         const active = dir === activeDir
         if (!expanded && !active) continue
-        const [dirStore] = globalSync.child(dir, { bootstrap: true })
+        const [dirStore] = globalSync.child(dir, { bootstrap: false })
         const dirSessions = sortedRootSessions(dirStore, now)
         result.push(...dirSessions)
       }
       return result
     }
-    const [projectStore] = globalSync.child(project.worktree)
+    const [projectStore] = globalSync.child(project.worktree, { bootstrap: false })
     return sortedRootSessions(projectStore, now)
   })
 
@@ -1053,11 +1060,11 @@ export default function Layout(props: ParentProps) {
         description: language.t("command.workspace.toggle.description"),
         category: language.t("command.category.workspace"),
         slash: "workspace",
-        disabled: !currentProject() || currentProject()?.vcs !== "git",
+        disabled: !workspaceCapable(currentProject()),
         onSelect: () => {
           const project = currentProject()
           if (!project) return
-          if (project.vcs !== "git") return
+          if (!workspaceCapable(project)) return
           const wasEnabled = layout.sidebar.workspaces(project.worktree)()
           layout.sidebar.toggleWorkspaces(project.worktree)
           showToast({
@@ -1262,7 +1269,7 @@ export default function Layout(props: ParentProps) {
       layout.sidebar.toggleWorkspaces(project.worktree)
       return
     }
-    if (project.vcs !== "git") return
+    if (!workspaceCapable(project)) return
     layout.sidebar.toggleWorkspaces(project.worktree)
   }
 
@@ -1651,35 +1658,26 @@ export default function Layout(props: ParentProps) {
 
   createEffect(() => {
     const project = currentProject()
-    const workspaces = workspaceSetting()
-    const next = new Set<string>()
     if (!project) {
       loadedSessionDirs.clear()
       return
     }
-
-    if (workspaces) {
-      const activeDir = currentDir()
-      const dirs = [project.worktree, ...(project.sandboxes ?? [])]
-      for (const directory of dirs) {
-        const expanded = workspaceExpandedMap()[directory] ?? directory === project.worktree
-        const active = directory === activeDir
-        if (!expanded && !active) continue
-        next.add(directory)
-      }
+    const plan = buildDirectoryLoadPlan({
+      project,
+      currentDir: currentDir() || undefined,
+      workspaces: workspaceSetting(),
+      expanded: workspaceExpandedMap(),
+    })
+    if (plan.bootstrap) {
+      globalSync.child(plan.bootstrap, { bootstrap: true })
     }
-
-    if (!workspaces) {
-      next.add(project.worktree)
-    }
-
-    for (const directory of next) {
+    for (const directory of plan.sessions) {
       if (loadedSessionDirs.has(directory)) continue
       globalSync.project.loadSessions(directory)
     }
 
     loadedSessionDirs.clear()
-    for (const directory of next) {
+    for (const directory of plan.sessions) {
       loadedSessionDirs.add(directory)
     }
   })
@@ -1857,7 +1855,7 @@ export default function Layout(props: ParentProps) {
     closeProject,
     showEditProjectDialog,
     toggleProjectWorkspaces,
-    workspacesEnabled: (project) => project.vcs === "git" && layout.sidebar.workspaces(project.worktree)(),
+    workspacesEnabled: (project) => workspaceCapable(project) && layout.sidebar.workspaces(project.worktree)(),
     workspaceIds,
     workspaceLabel,
     sessionProps: {
@@ -1890,8 +1888,8 @@ export default function Layout(props: ParentProps) {
         .forEach((directory) => notification.project.markViewed(directory))
     const workspacesEnabled = createMemo(() => {
       const project = panelProps.project
+      if (!workspaceCapable(project)) return false
       if (!project) return false
-      if (project.vcs !== "git") return false
       return layout.sidebar.workspaces(project.worktree)()
     })
     const homedir = createMemo(() => globalSync.data.path.home)
@@ -1958,7 +1956,7 @@ export default function Layout(props: ParentProps) {
                         <DropdownMenu.Item
                           data-action="project-workspaces-toggle"
                           data-project={base64Encode(p().worktree)}
-                          disabled={p().vcs !== "git" && !layout.sidebar.workspaces(p().worktree)()}
+                          disabled={!workspaceCapable(p()) && !layout.sidebar.workspaces(p().worktree)()}
                           onSelect={() => toggleProjectWorkspaces(p())}
                         >
                           <DropdownMenu.ItemLabel>

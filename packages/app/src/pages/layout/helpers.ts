@@ -1,5 +1,7 @@
 import { getFilename } from "@opencode-ai/util/path"
-import { type Session } from "@opencode-ai/sdk/v2/client"
+import { type Project, type Session } from "@opencode-ai/sdk/v2/client"
+
+type ProjectRef = Pick<Project, "worktree" | "sandboxes">
 
 export const workspaceKey = (directory: string) => {
   const drive = directory.match(/^([A-Za-z]:)[\\/]+$/)
@@ -32,6 +34,41 @@ export const latestRootSession = (stores: { session: Session[]; path: { director
   stores
     .flatMap((store) => store.session.filter((session) => isRootVisibleSession(session, store.path.directory)))
     .sort(sortSessions(now))[0]
+
+/** 中文注释：根据当前项目、激活目录与工作区展开状态，生成唯一的目录加载计划，确保切换项目时只对激活目录做 bootstrap，其它可见目录只拉 session 列表。 */
+export function buildDirectoryLoadPlan(input: {
+  project?: ProjectRef
+  currentDir?: string
+  workspaces: boolean
+  expanded: Record<string, boolean | undefined>
+}) {
+  if (!input.project) {
+    return {
+      bootstrap: input.currentDir,
+      sessions: [] as string[],
+    }
+  }
+
+  const bootstrap = input.currentDir
+  const project = input.project
+  if (!input.workspaces) {
+    const root = project.worktree
+    return {
+      bootstrap,
+      sessions: bootstrap && workspaceKey(bootstrap) === workspaceKey(root) ? [] : [root],
+    }
+  }
+
+  const sessions = [project.worktree, ...(project.sandboxes ?? [])].filter((directory) => {
+    if (bootstrap && workspaceKey(directory) === workspaceKey(bootstrap)) return false
+    return input.expanded[directory] ?? directory === project.worktree
+  })
+
+  return {
+    bootstrap,
+    sessions,
+  }
+}
 
 export function hasProjectPermissions<T>(
   request: Record<string, T[] | undefined>,
@@ -75,8 +112,21 @@ export const errorMessage = (err: unknown, fallback: string) => {
 }
 
 /** 中文注释：Git 项目在没有用户显式配置时默认开启工作区模式，非 Git 项目默认关闭。 */
-export const workspaceModeEnabled = (value: boolean | undefined, vcs?: string) => {
-  if (vcs !== "git") return false
+export const projectSupportsWorkspace = (
+  project?: Partial<Pick<Project, "id" | "vcs" | "sandboxes">>,
+) => {
+  if (!project?.id) return false
+  if (project.vcs === "git") return true
+  if (project.id.startsWith("batch_")) return true
+  return (project.sandboxes?.length ?? 0) > 0
+}
+
+/** 中文注释：支持工作区能力的项目在没有用户显式配置时默认开启工作区视图。 */
+export const workspaceModeEnabled = (
+  value: boolean | undefined,
+  project?: Partial<Pick<Project, "id" | "vcs" | "sandboxes">>,
+) => {
+  if (!projectSupportsWorkspace(project)) return false
   return value ?? true
 }
 

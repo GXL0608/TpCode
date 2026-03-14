@@ -1,6 +1,6 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createStore } from "solid-js/store"
-import { createEffect, createMemo, onCleanup } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { useServer } from "./server"
 import { usePlatform } from "./platform"
 import { ACCOUNT_UNAUTHORIZED_EVENT, AccountToken } from "@/utils/account-auth"
@@ -253,16 +253,22 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
       return payload?.code ?? payload?.error
     }
 
+    /** 中文注释：登录态写入使用批量更新，避免 enabled/user 等字段分次变更时触发依赖 effect 重复执行。 */
     const writeSession = (result: LoginResult) => {
       AccountToken.setTokens(result)
-      setState("enabled", true)
-      setState("user", result.user)
-      setState("last_error", undefined)
+      batch(() => {
+        setState("enabled", true)
+        setState("user", result.user)
+        setState("last_error", undefined)
+      })
     }
 
+    /** 中文注释：清空登录态时合并状态写入，避免切项目或登出时触发重复的认证衍生副作用。 */
     const clearSession = () => {
       AccountToken.clear()
-      setState("user", undefined)
+      batch(() => {
+        setState("user", undefined)
+      })
     }
 
     const refresh = async () => {

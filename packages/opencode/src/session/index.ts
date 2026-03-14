@@ -1,5 +1,6 @@
 import { Slug } from "@opencode-ai/util/slug"
 import path from "path"
+import { existsSync, readdirSync } from "fs"
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Decimal } from "decimal.js"
@@ -37,6 +38,8 @@ import { Worktree } from "@/worktree"
 import { Filesystem } from "@/util/filesystem"
 import { $ } from "bun"
 import { NamedError } from "@opencode-ai/util/error"
+import { Workspace } from "@/control-plane/workspace"
+import { WorkspaceKind } from "@/control-plane/workspace-meta"
 
 export namespace Session {
   const log = Log.create({ service: "session" })
@@ -122,6 +125,12 @@ export namespace Session {
     return row.workspace_directory ?? undefined
   }
 
+  /** 中文注释：读取 session 当前绑定的工作区记录，供批量沙盒清理、脏检查与 build 模式复用。 */
+  async function workspaceRow(row: SessionRow) {
+    if (!row.workspace_id) return
+    return Workspace.get(row.workspace_id)
+  }
+
   /** 中文注释：统一识别 session 在并发删除场景下的缺失错误，便于 build/workspace 清理链路复用。 */
   function missingSession(error: unknown) {
     if (error instanceof NotFoundError) return true
@@ -145,23 +154,80 @@ export namespace Session {
     }
   }
 
+  /** 中文注释：当 session 已经创建在某个现成沙盒目录里时，优先认领当前沙盒，避免 build 首次发送消息时再套娃创建一层新工作区。 */
+  async function currentWorkspace(input: SessionRow) {
+    const registered = await Workspace.getByDirectory(input.directory)
+    if (registered) {
+      return {
+        workspaceID: registered.id,
+        workspaceDirectory: registered.directory,
+        activeDirectory: registered.directory,
+        branch: registered.branch,
+        kind: registered.kind,
+        status: "ready" as const,
+        cleanup: "none" as const,
+      }
+    }
+
+    const located = await Project.fromDirectory(input.directory)
+    const sandbox = path.resolve(located.sandbox)
+    const worktree = path.resolve(located.project.worktree)
+    if (sandbox !== path.resolve(input.directory)) return
+    if (sandbox === worktree) return
+
+    const branch = await $`git branch --show-current`
+      .quiet()
+      .nothrow()
+      .cwd(input.directory)
+      .then((result) => (result.exitCode === 0 ? result.stdout.toString().trim() || undefined : undefined))
+
+    return {
+      workspaceDirectory: input.directory,
+      activeDirectory: input.directory,
+      branch,
+      kind: "single_worktree" as const,
+      status: "ready" as const,
+      cleanup: "none" as const,
+    }
+  }
+
   async function projectRow(projectID: string) {
     const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get())
     if (!row) throw new NotFoundError({ message: `Project not found: ${projectID}` })
     return row
   }
 
+  /** 中文注释：检查单个 git 工作目录是否存在未提交改动。 */
   async function dirty(directory: string) {
     const result = await $`git status --porcelain=v1`.quiet().nothrow().cwd(directory)
     if (result.exitCode !== 0) return false
     return result.stdout.toString().trim().length > 0
   }
 
-  async function removeWorkspace(input: { projectID: string; directory: string }) {
+  /** 中文注释：按 session 绑定的工作区类型删除隔离工作区，批量模式委托给 Workspace 层处理。 */
+  async function removeWorkspace(input: { projectID: string; directory: string; workspaceID?: string | null }) {
+    if (input.workspaceID) {
+      const workspace = await Workspace.get(input.workspaceID)
+      if (workspace?.kind === "batch_worktree") {
+        await Workspace.removeBatch(workspace.id)
+        return
+      }
+    }
     await Worktree.remove({ directory: input.directory }).catch(async (error) => {
       if (await Filesystem.exists(input.directory)) throw error
     })
     await Project.removeSandbox(input.projectID, input.directory)
+  }
+
+  /** 中文注释：统一汇总 session 当前工作区的脏状态；批量模式只检查各成员 git 目录。 */
+  async function dirtyWorkspace(row: SessionRow) {
+    const directory = workspaceDirectory(row)
+    if (!directory) return false
+    const workspace = await workspaceRow(row)
+    if (workspace?.kind !== "batch_worktree") return dirty(directory)
+    return (
+      await Promise.all((workspace.meta?.members ?? []).map((member) => dirty(member.sandbox_directory)))
+    ).some(Boolean)
   }
 
   export const BuildWorkspacePreview = z.object({
@@ -342,13 +408,28 @@ export namespace Session {
     const share = row.share_url ? { url: row.share_url } : undefined
     const revert = row.revert ?? undefined
     const runtime_model = runtimeState(row)
+    const workspaceSummary =
+      WorkspaceKind.safeParse(row.workspace_kind).data === "batch_worktree" &&
+      row.workspace_directory &&
+      existsSync(row.workspace_directory)
+        ? {
+            memberCount: readdirSync(row.workspace_directory, { withFileTypes: true })
+              .filter((entry) => entry.isDirectory())
+              .filter((entry) => existsSync(path.join(row.workspace_directory!, entry.name, ".git"))).length,
+            failedCount: 0,
+            branch: row.workspace_branch ?? undefined,
+          }
+        : undefined
     return {
       id: row.id,
       slug: row.slug,
       projectID: row.project_id,
       directory: row.directory,
+      workspaceID: row.workspace_id ?? undefined,
       workspaceDirectory: row.workspace_directory ?? undefined,
       workspaceBranch: row.workspace_branch ?? undefined,
+      workspaceKind: WorkspaceKind.safeParse(row.workspace_kind).data,
+      workspaceSummary,
       workspaceStatus: WorkspaceStatus.safeParse(row.workspace_status).data,
       workspaceCleanupStatus: WorkspaceCleanupStatus.safeParse(row.workspace_cleanup_status).data,
       parentID: row.parent_id ?? undefined,
@@ -376,8 +457,10 @@ export namespace Session {
       parent_id: info.parentID,
       slug: info.slug,
       directory: info.directory,
+      workspace_id: info.workspaceID ?? null,
       workspace_directory: info.workspaceDirectory ?? null,
       workspace_branch: info.workspaceBranch ?? null,
+      workspace_kind: info.workspaceKind ?? null,
       workspace_status: info.workspaceStatus ?? null,
       workspace_cleanup_status: info.workspaceCleanupStatus ?? null,
       title: info.title,
@@ -416,8 +499,17 @@ export namespace Session {
       slug: z.string(),
       projectID: z.string(),
       directory: z.string(),
+      workspaceID: Identifier.schema("workspace").optional(),
       workspaceDirectory: z.string().optional(),
       workspaceBranch: z.string().optional(),
+      workspaceKind: WorkspaceKind.optional(),
+      workspaceSummary: z
+        .object({
+          memberCount: z.number(),
+          failedCount: z.number(),
+          branch: z.string().optional(),
+        })
+        .optional(),
       workspaceStatus: WorkspaceStatus.optional(),
       workspaceCleanupStatus: WorkspaceCleanupStatus.optional(),
       parentID: Identifier.schema("session").optional(),
@@ -604,8 +696,10 @@ export namespace Session {
     title?: string
     parentID?: string
     directory: string
+    workspaceID?: string
     workspaceDirectory?: string
     workspaceBranch?: string
+    workspaceKind?: z.infer<typeof WorkspaceKind>
     workspaceStatus?: z.infer<typeof WorkspaceStatus>
     workspaceCleanupStatus?: z.infer<typeof WorkspaceCleanupStatus>
     permission?: PermissionNext.Ruleset
@@ -622,8 +716,10 @@ export namespace Session {
       version: Installation.VERSION,
       projectID: Instance.project.id,
       directory: input.directory,
+      workspaceID: input.workspaceID,
       workspaceDirectory: input.workspaceDirectory,
       workspaceBranch: input.workspaceBranch,
+      workspaceKind: input.workspaceKind,
       workspaceStatus: input.workspaceStatus,
       workspaceCleanupStatus: input.workspaceCleanupStatus,
       parentID: input.parentID,
@@ -762,9 +858,11 @@ export namespace Session {
 
   async function setWorkspaceMeta(input: {
     sessionID: string
+    workspaceID?: string | null
     workspaceDirectory?: string | null
     activeDirectory?: string | null
     branch?: string | null
+    kind?: z.infer<typeof WorkspaceKind> | null
     status?: z.infer<typeof WorkspaceStatus> | null
     cleanup?: z.infer<typeof WorkspaceCleanupStatus> | null
   }) {
@@ -773,8 +871,10 @@ export namespace Session {
         .update(SessionTable)
         .set({
           directory: input.activeDirectory ?? undefined,
+          workspace_id: input.workspaceID ?? null,
           workspace_directory: input.workspaceDirectory ?? null,
           workspace_branch: input.branch ?? null,
+          workspace_kind: input.kind ?? null,
           workspace_status: input.status ?? null,
           workspace_cleanup_status: input.cleanup ?? null,
           time_updated: Date.now(),
@@ -796,19 +896,19 @@ export namespace Session {
     async (input) => {
       using _ = await Lock.write(`session-build:${input.sessionID}`)
       const row = await assertWritable(input.sessionID)
-      const project = await projectRow(row.project_id)
       const status = WorkspaceStatus.safeParse(row.workspace_status).data
       const cleanup = WorkspaceCleanupStatus.safeParse(row.workspace_cleanup_status).data ?? "none"
 
       const workspace = workspaceDirectory(row)
-      if (project.vcs !== "git") return fromRow(row)
       if (workspace && status !== "failed" && status !== "removed" && (await Filesystem.isDir(workspace))) {
         if (row.directory === workspace) return fromRow(row)
         return setWorkspaceMeta({
           sessionID: input.sessionID,
+          workspaceID: row.workspace_id,
           workspaceDirectory: workspace,
           activeDirectory: workspace,
           branch: row.workspace_branch,
+          kind: WorkspaceKind.safeParse(row.workspace_kind).data,
           status: status ?? "ready",
           cleanup,
         }).catch((error) => {
@@ -816,6 +916,51 @@ export namespace Session {
           throw error
         })
       }
+
+      const current = await currentWorkspace(row)
+      if (current) {
+        return setWorkspaceMeta({
+          sessionID: input.sessionID,
+          workspaceID: current.workspaceID,
+          workspaceDirectory: current.workspaceDirectory,
+          activeDirectory: current.activeDirectory,
+          branch: current.branch,
+          kind: current.kind,
+          status: current.status,
+          cleanup: current.cleanup,
+        }).catch((error) => {
+          if (missingSession(error)) throw error
+          throw error
+        })
+      }
+
+      const mode = await Project.workspaceMode(row.directory)
+
+      if (mode === "batch") {
+        const created = await Workspace.createBatch({
+          projectID: row.project_id,
+          sourceRoot: row.directory,
+          name: [row.slug, row.id].join("-"),
+        })
+
+        return setWorkspaceMeta({
+          sessionID: input.sessionID,
+          workspaceID: created.id,
+          workspaceDirectory: created.directory,
+          activeDirectory: created.directory,
+          branch: created.branch,
+          kind: created.kind,
+          status: "ready",
+          cleanup: "none",
+        }).catch(async (error) => {
+          if (!missingSession(error)) throw error
+          await Workspace.removeBatch(created.id).catch(() => undefined)
+          throw error
+        })
+      }
+
+      const project = await projectRow(row.project_id)
+      if (project.vcs !== "git") return fromRow(row)
 
       const created = await Worktree.createUnowned({
         name: [row.slug, row.id].join("-"),
@@ -835,6 +980,7 @@ export namespace Session {
         workspaceDirectory: created.directory,
         activeDirectory: created.directory,
         branch: created.branch,
+        kind: "single_worktree",
         status: "ready",
         cleanup: "none",
       }).catch(async (error) => {
@@ -842,6 +988,7 @@ export namespace Session {
         await removeWorkspace({
           projectID: row.project_id,
           directory: created.directory,
+          workspaceID: row.workspace_id,
         }).catch(() => undefined)
         throw error
       })
@@ -867,7 +1014,7 @@ export namespace Session {
     }
     return {
       has_workspace: true,
-      dirty: await dirty(directory),
+      dirty: await dirtyWorkspace(row),
       directory,
     } satisfies BuildWorkspacePreview
   })
@@ -911,6 +1058,7 @@ export namespace Session {
         await removeWorkspace({
           projectID: row.project_id,
           directory,
+          workspaceID: row.workspace_id,
         })
         await Database.use((db) =>
           db
@@ -1273,6 +1421,7 @@ export namespace Session {
       await removeWorkspace({
         projectID: row.project_id,
         directory: row.workspace_directory,
+        workspaceID: row.workspace_id,
       })
     }
     await Database.use(async (db) => {

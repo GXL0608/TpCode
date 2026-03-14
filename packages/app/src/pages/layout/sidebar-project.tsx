@@ -145,7 +145,7 @@ const ProjectTile = (props: {
           <ContextMenu.Item
             data-action="project-workspaces-toggle"
             data-project={base64Encode(props.project.worktree)}
-            disabled={props.project.vcs !== "git" && !props.workspacesEnabled(props.project)}
+            disabled={!props.workspacesEnabled(props.project)}
             onSelect={() => props.toggleProjectWorkspaces(props.project)}
           >
             <ContextMenu.ItemLabel>

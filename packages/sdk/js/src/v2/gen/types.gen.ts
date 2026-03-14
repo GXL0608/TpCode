@@ -91,13 +91,6 @@ export type EventLspUpdated = {
   }
 }
 
-export type EventFileEdited = {
-  type: "file.edited"
-  properties: {
-    file: string
-  }
-}
-
 export type OutputFormatText = {
   type: "text"
 }
@@ -560,6 +553,42 @@ export type EventMessagePartRemoved = {
   }
 }
 
+export type EventFileEdited = {
+  type: "file.edited"
+  properties: {
+    file: string
+  }
+}
+
+export type EventWorktreeReady = {
+  type: "worktree.ready"
+  properties: {
+    name: string
+    branch: string
+  }
+}
+
+export type EventWorktreeFailed = {
+  type: "worktree.failed"
+  properties: {
+    message: string
+  }
+}
+
+export type EventWorkspaceReady = {
+  type: "workspace.ready"
+  properties: {
+    name: string
+  }
+}
+
+export type EventWorkspaceFailed = {
+  type: "workspace.failed"
+  properties: {
+    message: string
+  }
+}
+
 export type PermissionRequest = {
   id: string
   sessionID: string
@@ -805,21 +834,6 @@ export type EventCommandExecuted = {
   }
 }
 
-export type EventWorktreeReady = {
-  type: "worktree.ready"
-  properties: {
-    name: string
-    branch: string
-  }
-}
-
-export type EventWorktreeFailed = {
-  type: "worktree.failed"
-  properties: {
-    message: string
-  }
-}
-
 export type PermissionAction = "allow" | "deny" | "ask"
 
 export type PermissionRule = {
@@ -835,8 +849,15 @@ export type Session = {
   slug: string
   projectID: string
   directory: string
+  workspaceID?: string
   workspaceDirectory?: string
   workspaceBranch?: string
+  workspaceKind?: "single_worktree" | "batch_worktree"
+  workspaceSummary?: {
+    memberCount: number
+    failedCount: number
+    branch?: string
+  }
   workspaceStatus?: "pending" | "ready" | "failed" | "removed"
   workspaceCleanupStatus?: "none" | "pending" | "failed" | "deleted"
   parentID?: string
@@ -923,20 +944,6 @@ export type EventVcsBranchUpdated = {
   }
 }
 
-export type EventWorkspaceReady = {
-  type: "workspace.ready"
-  properties: {
-    name: string
-  }
-}
-
-export type EventWorkspaceFailed = {
-  type: "workspace.failed"
-  properties: {
-    message: string
-  }
-}
-
 export type EventServerDegraded = {
   type: "server.degraded"
   properties: {
@@ -996,12 +1003,16 @@ export type Event =
   | EventGlobalDisposed
   | EventLspClientDiagnostics
   | EventLspUpdated
-  | EventFileEdited
   | EventMessageUpdated
   | EventMessageRemoved
   | EventMessagePartUpdated
   | EventMessagePartDelta
   | EventMessagePartRemoved
+  | EventFileEdited
+  | EventWorktreeReady
+  | EventWorktreeFailed
+  | EventWorkspaceReady
+  | EventWorkspaceFailed
   | EventPermissionAsked
   | EventPermissionReplied
   | EventSessionStatus
@@ -1019,16 +1030,12 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
-  | EventWorktreeReady
-  | EventWorktreeFailed
   | EventSessionCreated
   | EventSessionUpdated
   | EventSessionDeleted
   | EventSessionDiff
   | EventSessionError
   | EventVcsBranchUpdated
-  | EventWorkspaceReady
-  | EventWorkspaceFailed
   | EventServerDegraded
   | EventPtyCreated
   | EventPtyUpdated
@@ -1686,6 +1693,62 @@ export type AccountProjectState = {
   }
 }
 
+export type AccountVhoFeedbackListSuccess = {
+  ok: true
+  login_info: {
+    user_id?: string
+    user_name?: string
+    [key: string]: unknown | string | undefined
+  }
+  list: Array<{
+    feedback_id: string
+    plan_id?: string
+    feedback_des?: string
+    customer_name?: string
+    feedback_time?: string
+    resolution_status_name?: string
+    [key: string]: unknown | string | undefined
+  }>
+  total: number
+  page_num: number
+  page_size: number
+  feedback_meta: {
+    [key: string]: unknown
+  }
+}
+
+export type AccountVhoFeedbackListFailure = {
+  ok: false
+  code:
+    | "vho_feedback_upstream_request_failed"
+    | "vho_feedback_upstream_invalid"
+    | "vho_feedback_upstream_failed"
+    | "forbidden"
+  message?: string
+  permission?: string
+}
+
+export type AccountVhoFeedbackResolveSuccess = {
+  ok: true
+  feedback_id?: string
+  plan_id?: string
+  feedback_des: string
+  saved_plan_id: string
+  plan_content: string
+  project_id: string
+  project_worktree: string
+  project_name?: string
+  matched_by: "plan_id" | "feedback_id"
+  prompt_text: string
+}
+
+export type AccountVhoFeedbackResolveFailure = {
+  ok: false
+  code: "vho_feedback_ref_missing" | "saved_plan_missing" | "saved_plan_project_missing" | "forbidden"
+  message?: string
+  permission?: string
+}
+
 export type AccountPlanSaveSuccess = {
   ok: true
   id: string
@@ -1929,11 +1992,31 @@ export type WorktreeCreateInput = {
 
 export type Workspace = {
   id: string
+  directory: string
   branch: string | null
+  kind: "single_worktree" | "batch_worktree"
   projectID: string
-  config: {
-    directory: string
-    type: "worktree"
+  config:
+    | {
+        directory: string
+        type: "worktree"
+      }
+    | {
+        directory: string
+        type: "batch_worktree"
+      }
+  meta?: {
+    source_root: string
+    members: Array<{
+      name: string
+      relative_path: string
+      source_directory: string
+      sandbox_directory: string
+      branch: string
+      base_ref?: string
+      default_branch?: string
+      status: "ready" | "failed"
+    }>
   }
 }
 
@@ -1956,8 +2039,15 @@ export type GlobalSession = {
   slug: string
   projectID: string
   directory: string
+  workspaceID?: string
   workspaceDirectory?: string
   workspaceBranch?: string
+  workspaceKind?: "single_worktree" | "batch_worktree"
+  workspaceSummary?: {
+    memberCount: number
+    failedCount: number
+    branch?: string
+  }
   workspaceStatus?: "pending" | "ready" | "failed" | "removed"
   workspaceCleanupStatus?: "none" | "pending" | "failed" | "deleted"
   parentID?: string
@@ -2950,6 +3040,87 @@ export type PostAccountContextSelectData = {
 export type PostAccountContextSelectResponses = {
   200: unknown
 }
+
+export type AccountVhoFeedbackListData = {
+  body?: {
+    user_id?: string
+    feedback_id?: string
+    plan_id?: string
+    feedback_des?: string
+    resolution_status?: Array<"0" | "1" | "9">
+    plan_start_date?: string
+    plan_end_date?: string
+    page_num?: number
+    page_size?: number
+  }
+  path?: never
+  query?: never
+  url: "/account/vho-feedback/list"
+}
+
+export type AccountVhoFeedbackListErrors = {
+  /**
+   * Validation failed
+   */
+  400: AccountVhoFeedbackListFailure
+  /**
+   * Forbidden
+   */
+  403: AccountVhoFeedbackListFailure
+  /**
+   * Upstream failed
+   */
+  502: AccountVhoFeedbackListFailure
+}
+
+export type AccountVhoFeedbackListError = AccountVhoFeedbackListErrors[keyof AccountVhoFeedbackListErrors]
+
+export type AccountVhoFeedbackListResponses = {
+  /**
+   * List result
+   */
+  200: AccountVhoFeedbackListSuccess
+}
+
+export type AccountVhoFeedbackListResponse = AccountVhoFeedbackListResponses[keyof AccountVhoFeedbackListResponses]
+
+export type AccountVhoFeedbackResolveData = {
+  body?: {
+    feedback_id?: string
+    plan_id?: string
+    feedback_des?: string
+  }
+  path?: never
+  query?: never
+  url: "/account/vho-feedback/resolve"
+}
+
+export type AccountVhoFeedbackResolveErrors = {
+  /**
+   * Validation failed
+   */
+  400: AccountVhoFeedbackResolveFailure
+  /**
+   * Forbidden
+   */
+  403: AccountVhoFeedbackResolveFailure
+  /**
+   * Plan not found
+   */
+  404: AccountVhoFeedbackResolveFailure
+}
+
+export type AccountVhoFeedbackResolveError = AccountVhoFeedbackResolveErrors[keyof AccountVhoFeedbackResolveErrors]
+
+export type AccountVhoFeedbackResolveResponses = {
+  /**
+   * Resolve result
+   */
+  200: AccountVhoFeedbackResolveSuccess
+}
+
+export type AccountVhoFeedbackResolveResponse =
+  AccountVhoFeedbackResolveResponses[keyof AccountVhoFeedbackResolveResponses]
 
 export type AccountPlanSaveData = {
   body?: {
@@ -5163,10 +5334,15 @@ export type ExperimentalWorkspaceRemoveResponse =
 export type ExperimentalWorkspaceCreateData = {
   body?: {
     branch: string | null
-    config: {
-      directory: string
-      type: "worktree"
-    }
+    config:
+      | {
+          directory: string
+          type: "worktree"
+        }
+      | {
+          directory: string
+          type: "batch_worktree"
+        }
   }
   path: {
     id: string

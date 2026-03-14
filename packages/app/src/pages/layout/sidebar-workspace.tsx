@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from "@solidjs/router"
-import { createEffect, createMemo, For, Show, type Accessor, type JSX } from "solid-js"
+import { createMemo, For, Show, type Accessor, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createSortable } from "@thisbeyond/solid-dnd"
 import { createMediaQuery } from "@solid-primitives/media"
@@ -341,7 +341,8 @@ export const SortableWorkspace = (props: {
   const hasMore = createMemo(() => workspaceStore.sessionTotal > sessions().length)
   const busy = createMemo(() => props.ctx.isBusy(props.directory))
   const wasBusy = createMemo((prev) => prev || busy(), false)
-  const loading = createMemo(() => open() && !booted() && sessions().length === 0 && !wasBusy())
+  /** 中文注释：非激活工作区改为依赖页面统一加载入口，避免侧栏组件再次触发 bootstrap。 */
+  const loading = createMemo(() => active() && boot() && !booted() && sessions().length === 0 && !wasBusy())
   const touch = createMediaQuery("(hover: none)")
   const showNew = createMemo(() => !loading() && (touch() || sessions().length === 0 || (active() && !params.id)))
   const loadMore = async () => {
@@ -356,11 +357,6 @@ export const SortableWorkspace = (props: {
     if (value) return
     if (props.ctx.editorOpen(`workspace:${props.directory}`)) props.ctx.closeEditor()
   }
-
-  createEffect(() => {
-    if (!boot()) return
-    globalSync.child(props.directory, { bootstrap: true })
-  })
 
   return (
     <div
@@ -481,14 +477,16 @@ export const LocalWorkspace = (props: {
   const globalSync = useGlobalSync()
   const language = useLanguage()
   const workspace = createMemo(() => {
-    const [store, setStore] = globalSync.child(props.project.worktree)
+    const [store, setStore] = globalSync.child(props.project.worktree, { bootstrap: false })
     return { store, setStore }
   })
   const slug = createMemo(() => base64Encode(props.project.worktree))
   const sessions = createMemo(() => sortedRootSessions(workspace().store, props.sortNow()))
   const children = createMemo(() => childMapByParent(workspace().store.session))
+  const active = createMemo(() => props.ctx.currentDir() === props.project.worktree)
   const booted = createMemo((prev) => prev || workspace().store.status === "complete", false)
-  const loading = createMemo(() => !booted() && sessions().length === 0)
+  /** 中文注释：本地工作区的骨架屏只跟当前激活目录绑定，避免非激活目录因为未 bootstrap 而持续显示加载态。 */
+  const loading = createMemo(() => active() && !booted() && sessions().length === 0)
   const hasMore = createMemo(() => workspace().store.sessionTotal > sessions().length)
   const loadMore = async () => {
     workspace().setStore("limit", (limit) => (limit ?? 0) + 5)

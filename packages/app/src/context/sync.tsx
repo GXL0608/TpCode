@@ -287,10 +287,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     type Child = ReturnType<(typeof globalSync)["child"]>
     type Setter = Child[1]
 
-    const current = createMemo(() => globalSync.child(sdk.directory))
+    const current = createMemo(() => globalSync.child(sdk.directory, { bootstrap: false }))
     const target = (directory?: string) => {
       if (!directory || directory === sdk.directory) return current()
-      return globalSync.child(directory)
+      return globalSync.child(directory, { bootstrap: false })
     }
     const absolute = (path: string) => (current()[0].path.directory + "/" + path).replace("//", "/")
     const messagePageSize = 400
@@ -521,7 +521,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const directory = input.directory
       const scopedClient =
         directory === sdk.directory ? sdk.client : sdk.createClient({ directory, throwOnError: true })
-      const [store, setStore] = globalSync.child(directory)
+      const [store, setStore] = globalSync.child(directory, { bootstrap: false })
       const key = keyFor(directory, input.sessionID)
       const hasSession = (() => {
         const match = Binary.search(store.session, input.sessionID, (s) => s.id)
@@ -635,8 +635,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         /** 中文注释：当同一 session 因 build 首次发言切到新 worktree 时，把旧目录中的消息和状态整体迁移到新目录。 */
         migrate(input: { from: string; to: string; sessionID: string }) {
           if (input.from === input.to) return
-          const [source, setSource] = globalSync.child(input.from)
-          const [, setTarget] = globalSync.child(input.to)
+          const [source, setSource] = globalSync.child(input.from, { bootstrap: false })
+          const [, setTarget] = globalSync.child(input.to, { bootstrap: false })
           const slice = readSessionSlice(source, input.sessionID)
           const hasState =
             !!slice.session ||
@@ -664,7 +664,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         async diff(sessionID: string) {
           const directory = sdk.directory
           const client = sdk.client
-          const [store, setStore] = globalSync.child(directory)
+          const [store, setStore] = globalSync.child(directory, { bootstrap: false })
           if (store.session_diff[sessionID] !== undefined) return
 
           const key = keyFor(directory, sessionID)
@@ -677,7 +677,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         async todo(sessionID: string) {
           const directory = sdk.directory
           const client = sdk.client
-          const [store, setStore] = globalSync.child(directory)
+          const [store, setStore] = globalSync.child(directory, { bootstrap: false })
           const existing = store.todo[sessionID]
           if (existing !== undefined) {
             if (globalSync.data.session_todo[sessionID] === undefined) {
@@ -716,7 +716,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           async loadMore(sessionID: string, count = messagePageSize) {
             const directory = sdk.directory
             const client = sdk.client
-            const [, setStore] = globalSync.child(directory)
+            const [, setStore] = globalSync.child(directory, { bootstrap: false })
             const key = keyFor(directory, sessionID)
             if (meta.loading[key]) return
             if (meta.complete[key]) return
@@ -734,7 +734,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         fetch: async (count = 10) => {
           const directory = sdk.directory
           const client = sdk.client
-          const [store, setStore] = globalSync.child(directory)
+          const [store, setStore] = globalSync.child(directory, { bootstrap: false })
           setStore("limit", (x) => x + count)
           await client.session.list().then((x) => {
             const sessions = (x.data ?? [])
@@ -748,7 +748,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         archive: async (sessionID: string) => {
           const directory = sdk.directory
           const client = sdk.client
-          const [, setStore] = globalSync.child(directory)
+          const [, setStore] = globalSync.child(directory, { bootstrap: false })
           const ok = await archiveWithConfirm({
             t: language.t,
             preview: () =>

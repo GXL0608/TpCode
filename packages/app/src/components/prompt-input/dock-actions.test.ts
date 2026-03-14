@@ -12,6 +12,7 @@ describe("buildPromptDockFlags", () => {
     ).toEqual({
       runtime_model: false,
       vho_feedback: true,
+      build_package: true,
     })
   })
 
@@ -25,6 +26,7 @@ describe("buildPromptDockFlags", () => {
     ).toEqual({
       runtime_model: true,
       vho_feedback: false,
+      build_package: false,
     })
   })
 })

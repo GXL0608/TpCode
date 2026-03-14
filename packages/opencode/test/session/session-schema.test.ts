@@ -35,6 +35,19 @@ describe("session schema", () => {
     expect(sql).toContain('ALTER TABLE "session" ADD COLUMN "runtime_model_source"')
   })
 
+  test("declares workspace binding columns for batch sandboxes", async () => {
+    const schema = await fs.readFile(path.join(root, "src/session/session.sql.ts"), "utf-8")
+    const migrations = await fs.readdir(path.join(root, "migration"))
+
+    const match = migrations.find((item) => item.includes("batch_workspace"))
+    const sql = match ? await fs.readFile(path.join(root, "migration", match, "migration.sql"), "utf-8") : ""
+
+    expect(schema).toContain("workspace_id: text().references(() => WorkspaceTable.id, { onDelete: \"set null\" })")
+    expect(schema).toContain("workspace_kind: text().$type<WorkspaceKind>()")
+    expect(sql).toContain('ALTER TABLE "session" ADD COLUMN "workspace_id" text REFERENCES "workspace"("id") ON DELETE SET NULL;')
+    expect(sql).toContain('ALTER TABLE "session" ADD COLUMN "workspace_kind" text;')
+  })
+
   test("declares unified model call record table and removes the mirror table migration", async () => {
     const schema = await fs.readFile(path.join(root, "src/session/session.sql.ts"), "utf-8")
     const migrations = await fs.readdir(path.join(root, "migration"))

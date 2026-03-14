@@ -14,5 +14,6 @@ export function buildPromptDockFlags(input: {
       agent: input.agent,
       session_id: input.session_id,
     }),
+    build_package: input.agent === "build",
   }
 }

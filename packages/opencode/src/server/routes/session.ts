@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono"
 import { stream } from "hono/streaming"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
+import path from "path"
 import { Session } from "../../session"
 import { MessageV2 } from "../../session/message-v2"
 import { SessionPrompt } from "../../session/prompt"
@@ -26,6 +27,7 @@ import { AccountProviderState } from "@/provider/account-provider-state"
 import { UserRbac } from "@/user/rbac"
 import { NotFoundError } from "@/storage/db"
 import { SessionPrototypeRoutes } from "./session-prototype"
+import { Instance } from "@/project/instance"
 
 const log = Log.create({ service: "server" })
 
@@ -37,6 +39,16 @@ function missingPrompt(error: unknown) {
     error.message.startsWith("Message not found:") ||
     error.message.includes('violates foreign key constraint "fk_message_session_id_session_id_fk"')
   )
+}
+
+/** 中文注释：对已存在的会话操作统一切回会话自己的目录执行，避免目录切换竞态把回复和事件错误地发到父目录。 */
+async function inSessionDirectory<R>(sessionID: string, fn: () => Promise<R>) {
+  const info = await Session.get(sessionID)
+  if (path.resolve(Instance.directory) === path.resolve(info.directory)) return fn()
+  return Instance.provide({
+    directory: info.directory,
+    fn,
+  })
 }
 
 function requirePermission(c: Context, code: string) {
@@ -949,26 +961,28 @@ export const SessionRoutes = lazy(() =>
         if (!Flag.TPCODE_ACCOUNT_ENABLED && (!body.providerID || !body.modelID)) {
           return c.json({ error: "provider_model_required" }, 400)
         }
-        const session = await Session.get(sessionID)
-        await SessionRevert.cleanup(session)
-        const msgs = await Session.messages({ sessionID })
-        let currentAgent = await Agent.defaultAgent()
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          const info = msgs[i].info
-          if (info.role === "user") {
-            currentAgent = info.agent || (await Agent.defaultAgent())
-            break
+        await inSessionDirectory(sessionID, async () => {
+          const session = await Session.get(sessionID)
+          await SessionRevert.cleanup(session)
+          const msgs = await Session.messages({ sessionID })
+          let currentAgent = await Agent.defaultAgent()
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const info = msgs[i].info
+            if (info.role === "user") {
+              currentAgent = info.agent || (await Agent.defaultAgent())
+              break
+            }
           }
-        }
-        await SessionCompaction.create({
-          sessionID,
-          agent: currentAgent,
-          model: Flag.TPCODE_ACCOUNT_ENABLED
-            ? await Session.runtimeModel(sessionID)
-            : { providerID: body.providerID!, modelID: body.modelID! },
-          auto: body.auto,
+          await SessionCompaction.create({
+            sessionID,
+            agent: currentAgent,
+            model: Flag.TPCODE_ACCOUNT_ENABLED
+              ? await Session.runtimeModel(sessionID)
+              : { providerID: body.providerID!, modelID: body.modelID! },
+            auto: body.auto,
+          })
+          await SessionPrompt.loop({ sessionID })
         })
-        await SessionPrompt.loop({ sessionID })
         return c.json(true)
       },
     )
@@ -1204,7 +1218,7 @@ export const SessionRoutes = lazy(() =>
         c.status(200)
         c.header("Content-Type", "application/json")
         return stream(c, async (stream) => {
-          const msg = await SessionPrompt.prompt({ ...body, sessionID })
+          const msg = await inSessionDirectory(sessionID, () => SessionPrompt.prompt({ ...body, sessionID }))
           stream.write(JSON.stringify(msg))
         })
       },
@@ -1245,7 +1259,7 @@ export const SessionRoutes = lazy(() =>
         c.status(204)
         c.header("Content-Type", "application/json")
         return stream(c, async () => {
-          void SessionPrompt.prompt({ ...body, sessionID }).catch((error) => {
+          void inSessionDirectory(sessionID, () => SessionPrompt.prompt({ ...body, sessionID })).catch((error) => {
             const extra = {
               event: "session.prompt_async",
               session_id: sessionID,
@@ -1300,7 +1314,7 @@ export const SessionRoutes = lazy(() =>
         })
         if (denied) return denied
         auditExecution(c, { action: "session.command", sessionID })
-        const msg = await SessionPrompt.command({ ...body, sessionID })
+        const msg = await inSessionDirectory(sessionID, () => SessionPrompt.command({ ...body, sessionID }))
         return c.json(msg)
       },
     )
@@ -1339,7 +1353,7 @@ export const SessionRoutes = lazy(() =>
         })
         if (denied) return denied
         auditExecution(c, { action: "session.shell", sessionID })
-        const msg = await SessionPrompt.shell({ ...body, sessionID })
+        const msg = await inSessionDirectory(sessionID, () => SessionPrompt.shell({ ...body, sessionID }))
         return c.json(msg)
       },
     )

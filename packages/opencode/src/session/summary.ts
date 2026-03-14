@@ -1,4 +1,6 @@
 import { fn } from "@/util/fn"
+import path from "path"
+import { $ } from "bun"
 import z from "zod"
 import { Session } from "."
 
@@ -9,6 +11,8 @@ import { Snapshot } from "@/snapshot"
 import { Storage } from "@/storage/storage"
 import { Bus } from "@/bus"
 import { NotFoundError } from "@/storage/db"
+import { Workspace } from "@/control-plane/workspace"
+import type { BatchMember } from "@/control-plane/workspace-meta"
 
 export namespace SessionSummary {
   function missing(error: unknown) {
@@ -95,7 +99,7 @@ export namespace SessionSummary {
   )
 
   async function summarizeSession(input: { sessionID: string; messages: MessageV2.WithParts[] }) {
-    const diffs = await computeDiff({ messages: input.messages })
+    const diffs = await computeDiff({ sessionID: input.sessionID, messages: input.messages })
     await Session.setSummary({
       sessionID: input.sessionID,
       summary: {
@@ -122,7 +126,7 @@ export namespace SessionSummary {
     if (!msgWithParts) return
     if (msgWithParts.info.role !== "user") return
     const userMsg = msgWithParts.info as MessageV2.User
-    const diffs = await computeDiff({ messages })
+    const diffs = await computeDiff({ sessionID: msgWithParts.info.sessionID, messages })
     userMsg.summary = {
       ...userMsg.summary,
       diffs,
@@ -155,7 +159,112 @@ export namespace SessionSummary {
     },
   )
 
-  export async function computeDiff(input: { messages: MessageV2.WithParts[] }) {
+  /** 中文注释：统计文本的近似行数，供 batch 模式无 numstat 时回退使用。 */
+  function lineCount(input: string) {
+    if (!input) return 0
+    return input.split("\n").length
+  }
+
+  /** 中文注释：按 git porcelain 结果把文件统一映射成 added/deleted/modified。 */
+  function statusFromPorcelain(code: string) {
+    if (code === "??") return "added" as const
+    if (code.includes("D")) return "deleted" as const
+    if (code.includes("A")) return "added" as const
+    return "modified" as const
+  }
+
+  /** 中文注释：读取 batch 成员在当前会话中的累计 diff，并把路径前缀回成员相对路径。 */
+  async function batchMemberDiff(member: BatchMember) {
+    const base = member.base_ref ?? "HEAD"
+    const cwd = member.sandbox_directory
+    const status = new Map<string, "added" | "deleted" | "modified">()
+    const counts = new Map<string, { additions: number; deletions: number }>()
+
+    const changed = await $`git -c core.quotepath=false diff --name-status --no-renames ${base} -- .`
+      .quiet()
+      .nothrow()
+      .cwd(cwd)
+      .text()
+    for (const line of changed.trim().split("\n")) {
+      if (!line) continue
+      const [code, file] = line.split("\t")
+      if (!code || !file) continue
+      status.set(unquoteGitPath(file), code.startsWith("A") ? "added" : code.startsWith("D") ? "deleted" : "modified")
+    }
+
+    const numstat = await $`git -c core.quotepath=false diff --numstat --no-renames ${base} -- .`
+      .quiet()
+      .nothrow()
+      .cwd(cwd)
+      .text()
+    for (const line of numstat.trim().split("\n")) {
+      if (!line) continue
+      const [additions, deletions, file] = line.split("\t")
+      if (!file) continue
+      counts.set(unquoteGitPath(file), {
+        additions: additions === "-" ? 0 : Number.parseInt(additions || "0", 10) || 0,
+        deletions: deletions === "-" ? 0 : Number.parseInt(deletions || "0", 10) || 0,
+      })
+    }
+
+    const porcelain = await $`git -c core.quotepath=false status --porcelain=v1 --untracked-files=all`
+      .quiet()
+      .nothrow()
+      .cwd(cwd)
+      .text()
+    for (const line of porcelain.trim().split("\n")) {
+      if (!line) continue
+      const code = line.slice(0, 2)
+      const file = unquoteGitPath(line.slice(3).trim())
+      if (!file) continue
+      status.set(file, statusFromPorcelain(code))
+    }
+
+    const files = [...status.keys()].sort()
+    return Promise.all(
+      files.map(async (file) => {
+        const kind = status.get(file) ?? "modified"
+        const before =
+          kind === "added"
+            ? ""
+            : await $`git show ${base}:${file}`
+                .quiet()
+                .nothrow()
+                .cwd(cwd)
+                .text()
+                .catch(() => "")
+        const after =
+          kind === "deleted"
+            ? ""
+            : await Bun.file(path.join(cwd, file))
+                .text()
+                .catch(() => "")
+        const stat = counts.get(file) ?? {
+          additions: kind === "added" ? lineCount(after) : kind === "modified" ? lineCount(after) : 0,
+          deletions: kind === "deleted" ? lineCount(before) : kind === "modified" ? lineCount(before) : 0,
+        }
+        return {
+          file: path.join(member.relative_path, file).replaceAll("\\", "/"),
+          before,
+          after,
+          additions: stat.additions,
+          deletions: stat.deletions,
+          status: kind,
+        } satisfies Snapshot.FileDiff
+      }),
+    )
+  }
+
+  /** 中文注释：批量沙盒模式下基于各成员仓库基线提交汇总累计 diff，供 review 与 summary 复用。 */
+  async function batchDiff(sessionID: string) {
+    const session = await Session.get(sessionID)
+    if (session.workspaceKind !== "batch_worktree" || !session.workspaceID) return []
+    const workspace = await Workspace.get(session.workspaceID)
+    if (!workspace?.meta) return []
+    return (await Promise.all(workspace.meta.members.map((member) => batchMemberDiff(member)))).flat()
+  }
+
+  export async function computeDiff(input: { sessionID?: string; messages: MessageV2.WithParts[] }) {
     let from: string | undefined
     let to: string | undefined
 
@@ -179,6 +288,7 @@ export namespace SessionSummary {
     }
 
     if (from && to) return Snapshot.diffFull(from, to)
+    if (input.sessionID) return batchDiff(input.sessionID)
     return []
   }
 }

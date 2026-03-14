@@ -47,6 +47,14 @@ export function repairProjectID(input: {
   return input.current_project_id
 }
 
+/** 中文注释：主动切换项目上下文后，跳过同一 project_id 触发的那次 effect 补拉，避免 account/context/state 重复请求。 */
+export function shouldSkipAccountProjectReload(input: {
+  skip_for?: string
+  context_project_id?: string
+}) {
+  return !!input.skip_for && input.skip_for === input.context_project_id
+}
+
 function empty(current_project_id?: string): AccountProjectState {
   return {
     current_project_id,
@@ -104,6 +112,8 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
     )
 
     const current = createMemo(() => projects().find((project) => project.id === currentID()))
+    let reloading: Promise<AccountProjectState> | undefined
+    let skipReloadForContext: string | undefined
 
     const replace = (next?: AccountProjectState) => {
       setStore("data", next ?? empty(auth.user()?.context_project_id))
@@ -114,24 +124,33 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       return next
     }
 
+    /** 中文注释：账号项目状态只允许一个 in-flight 拉取，避免切项目时 account/context/state 并发重复请求。 */
     const reload = async () => {
-      if (!auth.ready()) return store.data
-      if (!auth.enabled() || !auth.authenticated()) {
-        replace(empty(auth.user()?.context_project_id))
-        setHydrated(false)
+      const pending = reloading
+      if (pending) return pending
+      const task = (async () => {
+        if (!auth.ready()) return store.data
+        if (!auth.enabled() || !auth.authenticated()) {
+          replace(empty(auth.user()?.context_project_id))
+          setHydrated(false)
+          setReady(true)
+          return store.data
+        }
+        const next = await auth.contextState()
+        if (next) {
+          replace(next)
+          setHydrated(true)
+        }
+        if (!next) {
+          setHydrated(false)
+        }
         setReady(true)
-        return store.data
-      }
-      const next = await auth.contextState()
-      if (next) {
-        replace(next)
-        setHydrated(true)
-      }
-      if (!next) {
-        setHydrated(false)
-      }
-      setReady(true)
-      return next ?? store.data
+        return next ?? store.data
+      })().finally(() => {
+        reloading = undefined
+      })
+      reloading = task
+      return task
     }
 
     const patch = async (input: AccountProjectStatePatch) => {
@@ -215,19 +234,33 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
 
     /** 中文注释：工作区展开状态先做本地乐观更新，确保新 worktree 加入侧边栏后能立即展开显示 session。 */
     const setWorkspaceExpanded = async (directory: string, value: boolean) => {
-      apply({
+      const optimistic = {
         ...store.data,
         workspace_expanded_by_directory: {
           ...store.data.workspace_expanded_by_directory,
           [directory]: value,
         },
-      })
-      return patch({
+      }
+      apply(optimistic)
+      const next = await patch({
         workspace_expanded_by_directory: {
           ...store.data.workspace_expanded_by_directory,
           [directory]: value,
         },
       })
+      const project = resolveProjectByDirectory(projects(), directory)
+      if (!project) return next
+      if (!projectDirectories(project).some((item) => item === directory)) return next
+      if (next.workspace_expanded_by_directory[directory] === value) return next
+      const merged = {
+        ...next,
+        workspace_expanded_by_directory: {
+          ...next.workspace_expanded_by_directory,
+          [directory]: value,
+        },
+      }
+      apply(merged)
+      return merged
     }
 
     const setWorkspaceAlias = async (project_id: string, branch: string, value?: string) => {
@@ -262,9 +295,11 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       })
 
     const activate = async (project_id: string, ensure_open = true) => {
-      if (auth.user()?.context_project_id !== project_id) {
+      const contextChanged = auth.user()?.context_project_id !== project_id
+      if (contextChanged) {
         const result = await auth.selectContext(project_id)
         if (!result.ok) return { ok: false as const }
+        skipReloadForContext = project_id
       }
       const state = apply(
         optimisticState({
@@ -274,7 +309,7 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
         }),
       )
       const sync = (async () => {
-        void globalSync.bootstrap()
+        void globalSync.refreshProjects()
         const next = await reload()
         if (!ensure_open) return next
         const open_project_ids = nextOpenProjectIDs({
@@ -298,7 +333,16 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       if (!auth.ready()) return
       auth.enabled()
       auth.authenticated()
-      auth.user()?.context_project_id
+      const context_project_id = auth.user()?.context_project_id
+      if (
+        shouldSkipAccountProjectReload({
+          skip_for: skipReloadForContext,
+          context_project_id,
+        })
+      ) {
+        skipReloadForContext = undefined
+        return
+      }
       void reload()
     })
 

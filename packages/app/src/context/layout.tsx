@@ -387,12 +387,6 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       }
     })
 
-    createEffect(() => {
-      const project = accountProject.current()
-      if (!project) return
-      void globalSync.project.loadSessions(project.worktree)
-    })
-
     return {
       ready: createMemo(() => ready() && accountProject.ready()),
       handoff: {
@@ -499,7 +493,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           return () => {
             const project = resolveProjectByDirectory(globalSync.data.project, directory)
             if (!project?.id) return false
-            return workspaceModeEnabled(accountProject.data().workspace_mode_by_project[project.id], project.vcs)
+            return workspaceModeEnabled(accountProject.data().workspace_mode_by_project[project.id], project)
           }
         },
         setWorkspaces(directory: string, value: boolean) {
@@ -514,7 +508,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         toggleWorkspaces(directory: string) {
           const project = resolveProjectByDirectory(globalSync.data.project, directory)
           if (!project?.id) return
-          const current = workspaceModeEnabled(accountProject.data().workspace_mode_by_project[project.id], project.vcs)
+          const current = workspaceModeEnabled(accountProject.data().workspace_mode_by_project[project.id], project)
           void accountProject.setWorkspaceMode(project.id, !current)
         },
       },

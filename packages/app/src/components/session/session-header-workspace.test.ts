@@ -97,6 +97,8 @@ describe("workspaceLines", () => {
       directory: "/repo/.ws/ses_123",
       projectRoot: "/repo",
       branch: "feat/demo",
+      kind: undefined,
+      summary: undefined,
       status: "ready",
     })
   })

@@ -41,6 +41,16 @@ type GlobalStore = {
   reload: undefined | "pending" | "complete"
 }
 
+/** 中文注释：判断全局事件是否应该触发目录级重刷；项目上下文切换引发的首次 server.connected 只恢复事件流，不重复 bootstrap 各目录。 */
+export function shouldRefreshDirectoriesForGlobalEvent(input: {
+  type: "server.connected" | "global.disposed" | "server.degraded"
+  contextChanged: boolean
+}) {
+  if (input.type === "global.disposed") return true
+  if (input.type === "server.degraded") return true
+  return !input.contextChanged
+}
+
 function createGlobalSync() {
   const auth = useAccountAuth()
   const globalSDK = useGlobalSDK()
@@ -64,6 +74,7 @@ function createGlobalSync() {
   const STALLED_BUSY_MS = 60_000
   const STALLED_POLL_MS = 15_000
   let seenConnected = false
+  let contextChanged = false
 
   const [globalStore, setGlobalStore] = createStore<GlobalStore>({
     ready: false,
@@ -97,6 +108,17 @@ function createGlobalSync() {
     bootstrap,
     bootstrapInstance,
   })
+
+  /** 中文注释：只刷新全局项目列表，避免切项目时再走一轮完整全局 bootstrap。 */
+  const refreshProjects = async () => {
+    const result = await globalSDK.client.project.list().catch(() => undefined)
+    const projects = (result?.data ?? [])
+      .filter((p) => !!p?.id)
+      .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
+      .slice()
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    setGlobalStore("project", projects)
+  }
 
   const children = createChildStoreManager({
     owner,
@@ -352,6 +374,16 @@ function createGlobalSync() {
     if (directory === "global") {
       const initialConnected = type === "server.connected" && !seenConnected
       if (type === "server.connected" && !seenConnected) seenConnected = true
+      const shouldRefreshDirectories =
+        type === "server.connected" || type === "global.disposed" || type === "server.degraded"
+          ? shouldRefreshDirectoriesForGlobalEvent({
+              type,
+              contextChanged,
+            })
+          : false
+      if (type === "server.connected" && contextChanged) {
+        contextChanged = false
+      }
       if (!initialConnected) {
         applyGlobalEvent({
           event,
@@ -368,16 +400,17 @@ function createGlobalSync() {
       }
       if (initialConnected) return
       if (type === "server.connected" || type === "global.disposed" || type === "server.degraded") {
-        if (type === "server.connected" || type === "global.disposed") {
+        if ((type === "server.connected" || type === "global.disposed") && shouldRefreshDirectories) {
           void reloadProvider()
         }
         for (const [directory, child] of Object.entries(children.children)) {
           const [, setStore] = child
-          if (type === "global.disposed" || type === "server.connected") {
+          if ((type === "global.disposed" || type === "server.connected") && shouldRefreshDirectories) {
             queue.push(directory)
             if (child[0].provider.all.length > 0) void reloadProvider(directory)
           }
           if (type === "global.disposed") continue
+          if (!shouldRefreshDirectories && type === "server.connected") continue
           if (type === "server.degraded") {
             const now = Date.now()
             const last = degradedPullAt.get(directory) ?? 0
@@ -440,6 +473,19 @@ function createGlobalSync() {
   })
 
   const stalledWatch = setInterval(refreshStalledBusy, STALLED_POLL_MS)
+
+  let lastContext = auth.user()?.context_project_id
+  createEffect(() => {
+    const next = auth.user()?.context_project_id
+    if (lastContext === undefined) {
+      lastContext = next
+      return
+    }
+    if (lastContext === next) return
+    lastContext = next
+    if (!seenConnected) return
+    contextChanged = true
+  })
 
   onCleanup(unsub)
   onCleanup(() => {
@@ -542,6 +588,7 @@ function createGlobalSync() {
       return children.disposeDirectory(directory, options)
     },
     bootstrap,
+    refreshProjects,
     loadProvider,
     updateConfig,
     project: projectApi,
