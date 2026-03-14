@@ -1,9 +1,18 @@
 import { createMiddleware } from "@solidjs/start/middleware"
 import { LOCALE_HEADER, cookie, fromPathname, strip } from "~/lib/language"
 
+function delta(path: string) {
+  const next = strip(path)
+  return next === "/delta-test" || next === "/api/delta"
+}
+
 export default createMiddleware({
   onRequest(event) {
     const url = new URL(event.request.url)
+    if (process.env.ENABLE_DELTA_TEST !== "1" && delta(url.pathname)) {
+      return new Response(null, { status: 404 })
+    }
+
     const locale = fromPathname(url.pathname)
     if (!locale) return
 
