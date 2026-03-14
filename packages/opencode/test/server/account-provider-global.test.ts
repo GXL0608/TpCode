@@ -230,6 +230,190 @@ describe("account global provider management", () => {
     }
   })
 
+  test.skipIf(!accountEnabled)("provider control persists mirror model and exposes it from managed endpoints", async () => {
+    const admin = await login("admin", "TpCode@2026")
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+          "gpt-4.1-mini": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderAuth("anthropic", {
+        type: "api",
+        key: "sk-anthropic",
+      })
+      await AccountSystemSettingService.setProviderConfig("anthropic", {
+        models: {
+          "claude-sonnet-4-20250514": {},
+        },
+      })
+
+      const update = await req({
+        path: "/account/admin/provider-control/global",
+        method: "PUT",
+        token: admin,
+        body: {
+          model: "openai/gpt-5.2-chat-latest",
+          small_model: "openai/gpt-4.1-mini",
+          enabled_providers: ["openai", "anthropic"],
+          mirror_model: {
+            provider_id: "anthropic",
+            model_id: "claude-sonnet-4-20250514",
+          },
+        },
+      })
+
+      expect(update.status).toBe(200)
+      expect(await update.json()).toBe(true)
+
+      const [controlResponse, catalogResponse, selfCatalogResponse, configResponse] = await Promise.all([
+        req({
+          path: "/account/admin/provider-control/global",
+          token: admin,
+        }),
+        req({
+          path: "/account/admin/providers/catalog/global",
+          token: admin,
+        }),
+        req({
+          path: "/account/me/providers/catalog",
+          token: admin,
+        }),
+        req({
+          path: "/config",
+          token: admin,
+        }),
+      ])
+
+      expect(controlResponse.status).toBe(200)
+      expect(catalogResponse.status).toBe(200)
+      expect(selfCatalogResponse.status).toBe(200)
+      expect(configResponse.status).toBe(200)
+
+      const controlBody = (await controlResponse.json()) as {
+        mirror_model?: unknown
+      }
+      const catalogBody = (await catalogResponse.json()) as {
+        control?: {
+          mirror_model?: unknown
+        }
+      }
+      const selfCatalogBody = (await selfCatalogResponse.json()) as {
+        global_control?: {
+          mirror_model?: unknown
+        }
+      }
+      const configBody = (await configResponse.json()) as {
+        mirror_model?: unknown
+      }
+
+      expect(controlBody.mirror_model).toEqual({
+        provider_id: "anthropic",
+        model_id: "claude-sonnet-4-20250514",
+      })
+      expect(catalogBody.control?.mirror_model).toEqual({
+        provider_id: "anthropic",
+        model_id: "claude-sonnet-4-20250514",
+      })
+      expect(selfCatalogBody.global_control?.mirror_model).toEqual({
+        provider_id: "anthropic",
+        model_id: "claude-sonnet-4-20250514",
+      })
+      expect(configBody.mirror_model).toEqual({
+        provider_id: "anthropic",
+        model_id: "claude-sonnet-4-20250514",
+      })
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
+  })
+
+  test.skipIf(!accountEnabled)("provider control rejects mirror model on disabled provider", async () => {
+    const admin = await login("admin", "TpCode@2026")
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderAuth("anthropic", {
+        type: "api",
+        key: "sk-anthropic",
+      })
+      await AccountSystemSettingService.setProviderConfig("anthropic", {
+        models: {
+          "claude-sonnet-4-20250514": {},
+        },
+      })
+
+      const response = await req({
+        path: "/account/admin/provider-control/global",
+        method: "PUT",
+        token: admin,
+        body: {
+          model: "openai/gpt-5.2-chat-latest",
+          enabled_providers: ["openai"],
+          disabled_providers: ["anthropic"],
+          mirror_model: {
+            provider_id: "anthropic",
+            model_id: "claude-sonnet-4-20250514",
+          },
+        },
+      })
+
+      expect(response.status).toBe(400)
+      const body = (await response.json()) as { code?: string }
+      expect(body.code).toBe("provider_not_configured")
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
+  })
+
   test.skipIf(!accountEnabled)("provider control rejects invalid session model pool weights and duplicates", async () => {
     const admin = await login("admin", "TpCode@2026")
     const control = await AccountSystemSettingService.providerControl()
@@ -477,7 +661,7 @@ describe("account global provider management", () => {
           expect(selectedBody.access_token).toBeTruthy()
           if (!selectedBody.access_token) throw new Error("context_token_missing")
 
-          random.mockReturnValueOnce(0.1).mockReturnValueOnce(0.1)
+          random.mockReturnValue(0.1)
           const created = await req({
             path: `/session?directory=${encodeURIComponent(project.worktree)}`,
             method: "POST",

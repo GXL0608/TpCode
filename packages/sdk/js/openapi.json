@@ -2421,6 +2421,23 @@
                   "small_model": {
                     "type": "string"
                   },
+                  "mirror_model": {
+                    "type": "object",
+                    "properties": {
+                      "provider_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "model_id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "provider_id",
+                      "model_id"
+                    ]
+                  },
                   "session_model_pool": {
                     "type": "array",
                     "items": {
@@ -4717,6 +4734,21 @@
                       },
                       "required": [
                         "endpoint"
+                      ]
+                    },
+                    "mirror_model": {
+                      "type": "object",
+                      "properties": {
+                        "provider_id": {
+                          "type": "string"
+                        },
+                        "model_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "provider_id",
+                        "model_id"
                       ]
                     },
                     "session_model_pool": {

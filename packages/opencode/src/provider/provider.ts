@@ -49,6 +49,7 @@ import { UserRbac } from "@/user/rbac"
 import { State } from "@/project/state"
 import { AccountSystemSettingService } from "@/user/system-setting"
 import { AccountProviderState } from "./account-provider-state"
+import { SessionModelCall } from "@/session/model-call"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -113,6 +114,41 @@ export namespace Provider {
       const val = env(String(key)) ?? vars?.[String(key) as keyof typeof vars]
       return val ?? match
     })
+  }
+
+  /** 中文注释：把最终 fetch 入参解析成 URL，供协议识别与采集使用。 */
+  function requestURL(input: RequestInfo | URL) {
+    if (input instanceof URL) return input
+    if (input instanceof Request) return new URL(input.url)
+    return new URL(String(input))
+  }
+
+  /** 中文注释：从真实上游请求路径中识别渠道商协议，避免用 provider_id 粗暴推断。 */
+  function requestProtocol(model: Model, input: RequestInfo | URL) {
+    try {
+      const path = requestURL(input).pathname.toLowerCase()
+      if (path.includes("/chat/completions")) return "openai_chat_completions"
+      if (path.includes("/responses")) return "openai_responses"
+      if (path.includes("/messages")) return "anthropic_messages"
+      if (path.includes("generatecontent")) return "google_gemini"
+      if (path.includes("/converse")) return "bedrock_converse"
+    } catch {}
+    if (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/google-vertex/anthropic")
+      return "anthropic_messages"
+    if (model.api.npm === "@ai-sdk/google" || model.api.npm === "@ai-sdk/google-vertex") return "google_gemini"
+    if (model.api.npm === "@ai-sdk/amazon-bedrock") return "bedrock_converse"
+    return "openai_chat_completions"
+  }
+
+  /** 中文注释：把最终请求体尽量还原成文本，保证记录表中的 request_text 可直接对照。 */
+  async function requestText(body: BodyInit | null | undefined) {
+    if (!body) return
+    if (typeof body === "string") return body
+    if (body instanceof URLSearchParams) return body.toString()
+    if (body instanceof Blob) return body.text()
+    if (body instanceof ArrayBuffer) return Buffer.from(body).toString("utf8")
+    if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString("utf8")
+    return
   }
 
   async function scopedAuth(providerID: string) {
@@ -795,6 +831,10 @@ export namespace Provider {
 
   /** 中文注释：收集控制项里显式引用到的 provider，避免自动加载 provider 在严格账号模式下被提前裁剪。 */
   function controlledProviders(input?: {
+    mirror_model?: {
+      provider_id: string
+      model_id: string
+    }
     enabled_providers?: string[]
     disabled_providers?: string[]
     model?: string
@@ -802,6 +842,7 @@ export namespace Provider {
     session_model_pool?: Array<{ provider_id: string }>
   }) {
     const ids = new Set<string>()
+    if (input?.mirror_model?.provider_id) ids.add(input.mirror_model.provider_id)
     for (const providerID of input?.enabled_providers ?? []) ids.add(providerID)
     for (const providerID of input?.disabled_providers ?? []) ids.add(providerID)
     if (input?.model) ids.add(parseModel(input.model).providerID)
@@ -1233,6 +1274,13 @@ export namespace Provider {
             }
             opts.body = JSON.stringify(body)
           }
+        }
+
+        if (opts.method === "POST") {
+          SessionModelCall.captureRequest({
+            protocol: requestProtocol(model, input),
+            requestText: await requestText(opts.body),
+          })
         }
 
         return fetchFn(input, {

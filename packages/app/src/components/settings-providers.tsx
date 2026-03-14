@@ -18,7 +18,7 @@ import { getManagedCatalogState } from "./settings-providers-catalog"
 import { canViewReadonlySystemCandidates } from "./settings-provider-access"
 import { draftPool, normalizePool, type PoolRow, validatePoolControl } from "./settings-provider-pool"
 import { canUseBuildCapability } from "@/utils/account-build-access"
-import { buildProviderControl, parseProviderList } from "./settings-provider-control"
+import { buildProviderControl, draftProviderControl, parseProviderList } from "./settings-provider-control"
 
 type ManagedRow = {
   provider_id: string
@@ -70,6 +70,17 @@ function icon(id: string): IconName {
 
 function note(id: string) {
   return PROVIDER_NOTES.find((item) => item.match(id))?.key
+}
+
+/** 中文注释：解析 provider/model 组合值，便于模型选择器复用。 */
+function parseManagedValue(value: string) {
+  const [provider_id, ...rest] = value.split("/")
+  const model_id = rest.join("/")
+  if (!provider_id || !model_id) return
+  return {
+    provider_id,
+    model_id,
+  }
 }
 
 const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind: "global" | "self" }> }> = (props) => {
@@ -130,6 +141,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     globalModel: "",
     globalSmallModel: "",
     globalSessionModelPool: [] as PoolRow[],
+    mirrorModel: "",
     model: "",
     smallModel: "",
     sessionModelPool: [] as PoolRow[],
@@ -191,6 +203,21 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
   const selectedProviderKnown = createMemo(() => managedCatalog().selectedProviderKnown)
   const selectedModelKnown = createMemo(() => managedCatalog().selectedModelKnown)
   const currentModelText = createMemo(() => managedCatalog().currentModelText)
+  const mirrorProviderID = createMemo(() => parseManagedValue(state.mirrorModel)?.provider_id ?? "")
+  const mirrorModelID = createMemo(() => parseManagedValue(state.mirrorModel)?.model_id ?? "")
+  const mirrorProviderModels = createMemo(() => poolProviderMap().get(mirrorProviderID())?.models ?? [])
+  const mirrorProviderKnown = createMemo(() => !mirrorProviderID() || !!poolProviderMap().get(mirrorProviderID()))
+  const mirrorModelKnown = createMemo(
+    () => !mirrorProviderID() || !mirrorModelID() || mirrorProviderModels().some((item) => item.model_id === mirrorModelID()),
+  )
+  const mirrorCurrentText = createMemo(() => {
+    if (!state.mirrorModel.trim()) return "未开启"
+    const parsed = parseManagedValue(state.mirrorModel.trim())
+    if (!parsed) return state.mirrorModel.trim()
+    const provider = poolProviderMap().get(parsed.provider_id)
+    const model = provider?.models.find((item) => item.model_id === parsed.model_id)
+    return model ? `${provider?.provider_name} / ${model.model_name}` : state.mirrorModel.trim()
+  })
   const popular = createMemo(() =>
     popularProviders
       .map((id) => catalogMap().get(id))
@@ -226,6 +253,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     return buildProviderControl({
       model: state.model,
       smallModel: state.smallModel,
+      mirrorModel: self() ? undefined : state.mirrorModel,
       sessionModelPool: state.sessionModelPool,
       enabledProviders: state.enabledProviders,
       disabledProviders,
@@ -279,6 +307,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
     const catalogBody = (await catalogResponse.json().catch(() => undefined)) as
       | {
           control?: {
+            mirror_model?: unknown
             model?: unknown
             small_model?: unknown
             session_model_pool?: unknown
@@ -292,6 +321,7 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
             disabled_providers?: unknown
           }
           global_control?: {
+            mirror_model?: unknown
             model?: unknown
             small_model?: unknown
             session_model_pool?: unknown
@@ -351,15 +381,18 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       "selectableModels",
       list<SelectableModelRow>(catalogBody?.selectable_models).filter((item) => !!item?.value && !!item?.source),
     )
-    setState("globalModel", typeof globalControl?.model === "string" ? globalControl.model : "")
-    setState("globalSmallModel", typeof globalControl?.small_model === "string" ? globalControl.small_model : "")
-    setState("globalSessionModelPool", draftPool(globalControl?.session_model_pool))
+    const globalDraft = draftProviderControl(globalControl)
+    const controlDraft = draftProviderControl(control)
+    setState("globalModel", globalDraft.model)
+    setState("globalSmallModel", globalDraft.smallModel)
+    setState("globalSessionModelPool", globalDraft.sessionModelPool)
+    setState("mirrorModel", globalDraft.mirrorModel)
     setState("providerID", providerID)
-    setState("model", typeof control?.model === "string" ? control.model : "")
-    setState("smallModel", typeof control?.small_model === "string" ? control.small_model : "")
-    setState("sessionModelPool", self() ? [] : draftPool(catalogBody?.control?.session_model_pool))
-    setState("enabledProviders", list<string>(control?.enabled_providers).join(", "))
-    setState("disabledProviders", list<string>(control?.disabled_providers).join(", "))
+    setState("model", controlDraft.model)
+    setState("smallModel", controlDraft.smallModel)
+    setState("sessionModelPool", self() ? [] : controlDraft.sessionModelPool)
+    setState("enabledProviders", controlDraft.enabledProviders)
+    setState("disabledProviders", controlDraft.disabledProviders)
     setState("loading", false)
     await loadConfig(providerID)
   }
@@ -391,6 +424,48 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
       return
     }
     await complete(self() ? "个人模型控制已更新" : "全局模型控制已更新")
+  }
+
+  const saveMirrorControl = async () => {
+    if (!canManage() || self()) return
+    setState("pending", true)
+    setState("error", "")
+    setState("message", "")
+    const latestResponse = await accountRequest({
+      path: paths().control,
+    }).catch(() => undefined)
+    if (!latestResponse?.ok) {
+      setState("pending", false)
+      setState("error", await parseAccountError(latestResponse))
+      return
+    }
+    const latestBody = (await latestResponse.json().catch(() => undefined)) as
+      | {
+          mirror_model?: unknown
+          model?: unknown
+          small_model?: unknown
+          session_model_pool?: unknown
+          enabled_providers?: unknown
+          disabled_providers?: unknown
+        }
+      | undefined
+    const latest = draftProviderControl(latestBody)
+    const response = await accountRequest({
+      method: "PUT",
+      path: paths().control,
+      body: buildProviderControl({
+        ...latest,
+        mirrorModel: state.mirrorModel,
+      }),
+    }).catch(() => undefined)
+    setState("pending", false)
+    if (!response?.ok) {
+      setState("error", await parseAccountError(response))
+      return
+    }
+    await globalSDK.client.global.dispose().catch(() => undefined)
+    setState("message", "学生模型镜像配置已更新")
+    setState("error", "")
   }
 
   const addPoolProvider = () => {
@@ -764,6 +839,69 @@ const ManagedProviders: Component<{ scope: Extract<ProviderSettingsScope, { kind
         </Show>
 
         <Show when={!self()}>
+          <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-3">
+            <div class="text-14-medium text-text-strong">学生模型镜像配置</div>
+            <div class="text-12-regular text-text-weak">
+              这里配置后台异步采样使用的学生模型，不会改变当前教师模型的选择与路由。
+            </div>
+            <div class="text-12-regular text-text-weak">
+              单独保存镜像配置时，不会提交当前页面其他尚未保存的全局模型控制修改。
+            </div>
+            <div class="text-12-regular text-text-weak">
+              保存成功后会保留你当前页面里其他尚未提交的编辑内容，便于继续调整。
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <select
+                class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                value={mirrorProviderID()}
+                onChange={(event) => {
+                  const providerID = event.currentTarget.value.trim()
+                  if (!providerID) {
+                    setState("mirrorModel", "")
+                    return
+                  }
+                  const first = poolProviderMap().get(providerID)?.models[0]?.model_id
+                  setState("mirrorModel", first ? `${providerID}/${first}` : "")
+                }}
+              >
+                <option value="">关闭镜像采样</option>
+                <Show when={mirrorProviderID() && !mirrorProviderKnown()}>
+                  <option value={mirrorProviderID()}>{mirrorProviderID()}（当前已设置）</option>
+                </Show>
+                <For each={poolProviderOptions()}>
+                  {(item) => <option value={item.provider_id}>{item.provider_name}</option>}
+                </For>
+              </select>
+              <select
+                class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                value={mirrorModelID()}
+                disabled={!mirrorProviderID()}
+                onChange={(event) => {
+                  const modelID = event.currentTarget.value.trim()
+                  if (!mirrorProviderID() || !modelID) {
+                    setState("mirrorModel", "")
+                    return
+                  }
+                  setState("mirrorModel", `${mirrorProviderID()}/${modelID}`)
+                }}
+              >
+                <option value="">{mirrorProviderID() ? "选择学生模型" : "请先选择学生渠道"}</option>
+                <Show when={mirrorModelID() && !mirrorModelKnown()}>
+                  <option value={mirrorModelID()}>{mirrorModelID()}（当前已设置）</option>
+                </Show>
+                <For each={mirrorProviderModels()}>
+                  {(item) => <option value={item.model_id}>{item.model_name}</option>}
+                </For>
+              </select>
+            </div>
+            <div class="text-12-regular text-text-weak">当前设置：{mirrorCurrentText()}</div>
+            <div class="flex items-center gap-2">
+              <Button type="button" onClick={() => void saveMirrorControl()} disabled={state.pending}>
+                {state.pending ? "保存中..." : "保存镜像配置"}
+              </Button>
+            </div>
+          </div>
+
           <div class="rounded-xl border border-border-weak-base bg-surface-raised-base p-4 flex flex-col gap-4">
           <div class="flex items-center justify-between gap-3">
             <div class="flex flex-col gap-1">

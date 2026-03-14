@@ -1,16 +1,18 @@
 import path from "path"
-import { describe, expect, spyOn, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
+import * as AI from "ai"
 import { fileURLToPath } from "url"
 import { Instance } from "../../src/project/instance"
 import { Session } from "../../src/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
+import { SessionModelCall } from "../../src/session/model-call"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionSummary } from "../../src/session/summary"
-import { SessionVoiceTable, TpSessionPictureTable } from "../../src/session/session.sql"
+import { SessionVoiceTable, TpSessionModelCallRecordTable, TpSessionPictureTable } from "../../src/session/session.sql"
 import { SessionStatus } from "../../src/session/status"
 import { Provider } from "../../src/provider/provider"
-import { Database, eq } from "../../src/storage/db"
+import { Database, asc, eq } from "../../src/storage/db"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
 import { AccountSystemSettingService } from "../../src/user/system-setting"
@@ -18,6 +20,63 @@ import { Flag } from "../../src/flag/flag"
 import BUILD_CONFIDENTIALITY from "../../src/session/prompt/build-confidentiality.txt"
 
 Log.init({ print: false })
+
+let strictAccountPromptBaseline:
+  | {
+      control: Awaited<ReturnType<typeof AccountSystemSettingService.providerControl>>
+      auths: Awaited<ReturnType<typeof AccountSystemSettingService.providerAuths>>
+      configs: Awaited<ReturnType<typeof AccountSystemSettingService.providerConfigs>>
+    }
+  | undefined
+
+async function restoreStrictAccountPromptBaseline() {
+  if (!strictAccountPromptBaseline) return
+  await AccountSystemSettingService.setProviderControl(strictAccountPromptBaseline.control)
+  for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+    if (strictAccountPromptBaseline.auths[providerID]) continue
+    await AccountSystemSettingService.removeProviderAuth(providerID)
+  }
+  for (const [providerID, auth] of Object.entries(strictAccountPromptBaseline.auths)) {
+    await AccountSystemSettingService.setProviderAuth(providerID, auth)
+  }
+  for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+    if (strictAccountPromptBaseline.configs[providerID]) continue
+    await AccountSystemSettingService.removeProviderConfig(providerID)
+  }
+  for (const [providerID, config] of Object.entries(strictAccountPromptBaseline.configs)) {
+    await AccountSystemSettingService.setProviderConfig(providerID, config)
+  }
+}
+
+beforeAll(async () => {
+  if (!Flag.TPCODE_ACCOUNT_ENABLED) return
+  strictAccountPromptBaseline = {
+    control: await AccountSystemSettingService.providerControl(),
+    auths: await AccountSystemSettingService.providerAuths(),
+    configs: await AccountSystemSettingService.providerConfigs(),
+  }
+  await AccountSystemSettingService.setProviderAuth("openai", {
+    type: "api",
+    key: "sk-global-openai",
+  })
+  await AccountSystemSettingService.setProviderConfig("openai", {
+    models: {
+      "gpt-5.2-chat-latest": {},
+      "gpt-4.1-mini": {},
+    },
+  })
+  await AccountSystemSettingService.setProviderControl({
+    ...strictAccountPromptBaseline.control,
+    model: "openai/gpt-5.2-chat-latest",
+    small_model: strictAccountPromptBaseline.control.small_model ?? "openai/gpt-4.1-mini",
+    enabled_providers: [...new Set([...(strictAccountPromptBaseline.control.enabled_providers ?? []), "openai"])],
+    disabled_providers: strictAccountPromptBaseline.control.disabled_providers?.filter((item) => item !== "openai"),
+  })
+})
+
+afterAll(async () => {
+  await restoreStrictAccountPromptBaseline()
+})
 
 /** 中文注释：构造最小流式响应，专用于系统提示词装配测试。 */
 function mockLLMStream(text = "ok") {
@@ -525,6 +584,573 @@ describe("session.prompt managed model", () => {
           expect(message.info.variant).toBeUndefined()
 
           await Session.remove(session.id)
+        },
+      })
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
+  })
+
+  test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("creates unified model call records for build prompts", async () => {
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+    let mainCalls = 0
+    let studentCalls = 0
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-global-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderAuth("anthropic", {
+        type: "api",
+        key: "sk-global-anthropic",
+      })
+      await AccountSystemSettingService.setProviderConfig("anthropic", {
+        models: {
+          "claude-sonnet-4-20250514": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderControl({
+        model: "openai/gpt-5.2-chat-latest",
+        small_model: "openai/gpt-5.2-chat-latest",
+        enabled_providers: ["openai", "anthropic"],
+        mirror_model: {
+          provider_id: "anthropic",
+          model_id: "claude-sonnet-4-20250514",
+        },
+      })
+
+      await using tmp = await tmpdir({
+        git: true,
+        config: {
+          agent: {
+            build: {
+              model: "openai/gpt-5.2-chat-latest",
+            },
+          },
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const stream = spyOn(LLM, "stream").mockImplementation(async () => {
+            mainCalls += 1
+            await SessionModelCall.captureRequest({
+              protocol: "openai_responses",
+              requestText: JSON.stringify({
+                model: "gpt-5.2-chat-latest",
+                input: [
+                  {
+                    role: "user",
+                    content: `teacher-request-${mainCalls}`,
+                  },
+                ],
+              }),
+            })
+            return {
+              fullStream: (async function* () {
+                yield { type: "start" }
+                yield { type: "reasoning-start", id: `reasoning-${mainCalls}` }
+                yield { type: "reasoning-delta", id: `reasoning-${mainCalls}`, text: `teacher-reasoning-${mainCalls}` }
+                yield { type: "reasoning-end", id: `reasoning-${mainCalls}` }
+                yield { type: "text-start" }
+                yield { type: "text-delta", text: `main-reply-${mainCalls}` }
+                yield { type: "text-end" }
+                yield {
+                  type: "finish-step",
+                  finishReason: "stop",
+                  usage: {
+                    inputTokens: 2,
+                    outputTokens: 3,
+                    totalTokens: 5,
+                  },
+                }
+                yield { type: "finish" }
+              })(),
+              text: Promise.resolve(`main-reply-${mainCalls}`),
+              totalUsage: Promise.resolve(undefined),
+              providerMetadata: Promise.resolve(undefined),
+            } as unknown as Awaited<ReturnType<typeof LLM.stream>>
+          })
+          const mirror = spyOn(AI as any, "generateText").mockImplementation((async () => {
+            studentCalls += 1
+            await SessionModelCall.captureRequest({
+              protocol: "anthropic_messages",
+              requestText: JSON.stringify({
+                model: "claude-sonnet-4-20250514",
+                messages: [
+                  {
+                    role: "user",
+                    content: `student-request-${studentCalls}`,
+                  },
+                ],
+              }),
+            })
+            return {
+              text: `student-reply-${studentCalls}`,
+              reasoning: `student-reasoning-${studentCalls}`,
+              usage: {
+                inputTokens: 3,
+                outputTokens: 4,
+                totalTokens: 7,
+              },
+            }
+          }) as any)
+          const session = await Session.create({ title: "mirror-record-test" })
+
+          try {
+            await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "first question" }],
+            })
+            await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "second question" }],
+            })
+            let rows: Array<typeof TpSessionModelCallRecordTable.$inferSelect> = []
+            for (let attempt = 0; attempt < 40; attempt++) {
+              rows = await Database.use((db) =>
+                db
+                  .select()
+                  .from(TpSessionModelCallRecordTable)
+                  .where(eq(TpSessionModelCallRecordTable.session_id, session.id))
+                  .orderBy(asc(TpSessionModelCallRecordTable.time_created))
+                  .all(),
+              )
+              if (
+                rows.length === 2 &&
+                rows.every(
+                  (item) =>
+                    item.status === "succeeded" &&
+                    item.request_protocol === "openai_responses" &&
+                    !!item.request_text &&
+                    !!item.response_text &&
+                    !!item.reasoning_text &&
+                    item.student_status === "succeeded" &&
+                    item.student_request_protocol === "anthropic_messages" &&
+                    !!item.student_response_text,
+                )
+              )
+                break
+              await Bun.sleep(25)
+            }
+
+            expect(rows).toHaveLength(2)
+            expect(rows[0]?.student_provider_id).toBe("anthropic")
+            expect(rows[0]?.student_model_id).toBe("claude-sonnet-4-20250514")
+            expect(rows[0]?.request_protocol).toBe("openai_responses")
+            expect(rows[0]?.request_text).toContain("teacher-request-1")
+            expect(rows[0]?.response_text).toContain("main-reply-1")
+            expect(rows[0]?.reasoning_text).toContain("teacher-reasoning-1")
+            expect(rows[0]?.student_request_protocol).toBe("anthropic_messages")
+            expect(rows[0]?.student_response_text).toContain("student-reply-1")
+            expect(rows[0]?.student_reasoning_text).toContain("student-reasoning-1")
+            expect(rows[1]?.request_text).toContain("teacher-request-2")
+            expect(rows[1]?.response_text).toContain("main-reply-2")
+            expect(rows[1]?.reasoning_text).toContain("teacher-reasoning-2")
+          } finally {
+            mirror.mockRestore()
+            stream.mockRestore()
+            await Session.remove(session.id)
+          }
+        },
+      })
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
+  })
+
+  test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("does not create model call records for noReply prompts", async () => {
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-global-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderAuth("anthropic", {
+        type: "api",
+        key: "sk-global-anthropic",
+      })
+      await AccountSystemSettingService.setProviderConfig("anthropic", {
+        models: {
+          "claude-sonnet-4-20250514": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderControl({
+        model: "openai/gpt-5.2-chat-latest",
+        small_model: "openai/gpt-5.2-chat-latest",
+        enabled_providers: ["openai", "anthropic"],
+        mirror_model: {
+          provider_id: "anthropic",
+          model_id: "claude-sonnet-4-20250514",
+        },
+      })
+
+      await using tmp = await tmpdir({
+        git: true,
+        config: {
+          agent: {
+            build: {
+              model: "openai/gpt-5.2-chat-latest",
+            },
+          },
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const mirror = spyOn(AI as any, "generateText").mockImplementation((async () => ({
+            text: "unexpected-student-reply",
+          })) as any)
+          const session = await Session.create({ title: "mirror-no-reply-test" })
+
+          try {
+            await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              noReply: true,
+              parts: [{ type: "text", text: "silent question" }],
+            })
+            await Bun.sleep(100)
+
+            const rows = await Database.use((db) =>
+              db
+                .select()
+                .from(TpSessionModelCallRecordTable)
+                .where(eq(TpSessionModelCallRecordTable.session_id, session.id))
+                .all(),
+            )
+
+            expect(rows).toHaveLength(0)
+            expect(mirror).not.toHaveBeenCalled()
+          } finally {
+            mirror.mockRestore()
+            await Session.remove(session.id)
+          }
+        },
+      })
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
+  })
+
+  test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("does not block prompt when model call writes are slow", async () => {
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+    let calls = 0
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-global-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderControl({
+        model: "openai/gpt-5.2-chat-latest",
+        small_model: "openai/gpt-5.2-chat-latest",
+        enabled_providers: ["openai"],
+      })
+
+      await using tmp = await tmpdir({
+        git: true,
+        config: {
+          agent: {
+            build: {
+              model: "openai/gpt-5.2-chat-latest",
+            },
+          },
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const stream = spyOn(LLM, "stream").mockImplementation(async () => {
+            calls += 1
+            SessionModelCall.captureRequest({
+              protocol: "openai_responses",
+              requestText: JSON.stringify({
+                model: "gpt-5.2-chat-latest",
+                input: [{ role: "user", content: `slow-${calls}` }],
+              }),
+            })
+            return mockLLMStream(`reply-${calls}`)
+          })
+          const measure = async (title: string) => {
+            const session = await Session.create({ title })
+            const started = Date.now()
+            await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: title }],
+            })
+            return {
+              sessionID: session.id,
+              duration: Date.now() - started,
+            }
+          }
+
+          try {
+            const baseline = await measure("baseline-model-call-speed")
+            await SessionModelCall.waitForIdle()
+            await Session.remove(baseline.sessionID)
+
+            SessionModelCall.setTestHook(async () => {
+              await Bun.sleep(300)
+            })
+
+            const delayed = await measure("delayed-model-call-speed")
+            expect(delayed.duration - baseline.duration).toBeLessThan(350)
+            await SessionModelCall.waitForIdle()
+            await Session.remove(delayed.sessionID)
+          } finally {
+            SessionModelCall.setTestHook()
+            await SessionModelCall.resetForTest()
+            stream.mockRestore()
+          }
+        },
+      })
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
+  })
+
+  test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("does not fail prompt when model call writes throw", async () => {
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-global-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderControl({
+        model: "openai/gpt-5.2-chat-latest",
+        small_model: "openai/gpt-5.2-chat-latest",
+        enabled_providers: ["openai"],
+      })
+
+      await using tmp = await tmpdir({
+        git: true,
+        config: {
+          agent: {
+            build: {
+              model: "openai/gpt-5.2-chat-latest",
+            },
+          },
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const stream = spyOn(LLM, "stream").mockImplementation(async () => {
+            SessionModelCall.captureRequest({
+              protocol: "openai_responses",
+              requestText: JSON.stringify({
+                model: "gpt-5.2-chat-latest",
+                input: [{ role: "user", content: "error-case" }],
+              }),
+            })
+            return mockLLMStream("writer-failure-does-not-break")
+          })
+          const session = await Session.create({ title: "writer failure" })
+
+          try {
+            SessionModelCall.setTestHook(async () => {
+              throw new Error("model call writer exploded")
+            })
+            const message = await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "continue even if writer fails" }],
+            })
+            expect(message.info.role).toBe("assistant")
+            if (message.info.role !== "assistant") throw new Error("expected assistant message")
+            expect(message.parts.some((part) => part.type === "text" && part.text.includes("writer-failure"))).toBe(true)
+          } finally {
+            SessionModelCall.setTestHook()
+            await SessionModelCall.resetForTest()
+            stream.mockRestore()
+            await Session.remove(session.id)
+          }
+        },
+      })
+    } finally {
+      await AccountSystemSettingService.setProviderControl(control)
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+        if (auths[providerID]) continue
+        await AccountSystemSettingService.removeProviderAuth(providerID)
+      }
+      for (const [providerID, auth] of Object.entries(auths)) {
+        await AccountSystemSettingService.setProviderAuth(providerID, auth)
+      }
+      for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+        if (configs[providerID]) continue
+        await AccountSystemSettingService.removeProviderConfig(providerID)
+      }
+      for (const [providerID, config] of Object.entries(configs)) {
+        await AccountSystemSettingService.setProviderConfig(providerID, config)
+      }
+    }
+  })
+
+  test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("keeps model call queue order stable per record", async () => {
+    const control = await AccountSystemSettingService.providerControl()
+    const auths = await AccountSystemSettingService.providerAuths()
+    const configs = await AccountSystemSettingService.providerConfigs()
+    const ops: string[] = []
+
+    try {
+      await AccountSystemSettingService.setProviderAuth("openai", {
+        type: "api",
+        key: "sk-global-openai",
+      })
+      await AccountSystemSettingService.setProviderConfig("openai", {
+        models: {
+          "gpt-5.2-chat-latest": {},
+        },
+      })
+      await AccountSystemSettingService.setProviderControl({
+        model: "openai/gpt-5.2-chat-latest",
+        small_model: "openai/gpt-5.2-chat-latest",
+        enabled_providers: ["openai"],
+      })
+
+      await using tmp = await tmpdir({
+        git: true,
+        config: {
+          agent: {
+            build: {
+              model: "openai/gpt-5.2-chat-latest",
+            },
+          },
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const stream = spyOn(LLM, "stream").mockImplementation(async () => {
+            SessionModelCall.captureRequest({
+              protocol: "openai_responses",
+              requestText: JSON.stringify({
+                model: "gpt-5.2-chat-latest",
+                input: [{ role: "user", content: "ordered" }],
+              }),
+            })
+            return mockLLMStream("ordered-reply")
+          })
+          const session = await Session.create({ title: "queue order" })
+
+          try {
+            SessionModelCall.setTestHook((input) => {
+              ops.push(input.operation)
+            })
+            await SessionPrompt.prompt({
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "check queue order" }],
+            })
+            await SessionModelCall.waitForIdle()
+            expect(ops.slice(0, 4)).toEqual([
+              "begin",
+              "bind_teacher_assistant",
+              "capture_teacher_request",
+              "finish_teacher",
+            ])
+          } finally {
+            SessionModelCall.setTestHook()
+            await SessionModelCall.resetForTest()
+            stream.mockRestore()
+            await Session.remove(session.id)
+          }
         },
       })
     } finally {

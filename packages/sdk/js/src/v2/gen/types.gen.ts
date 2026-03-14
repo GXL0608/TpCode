@@ -3459,6 +3459,10 @@ export type PutAccountAdminProviderControlGlobalData = {
     disabled_providers?: Array<string>
     model?: string
     small_model?: string
+    mirror_model?: {
+      provider_id: string
+      model_id: string
+    }
     session_model_pool?: Array<{
       provider_id: string
       weight: number
@@ -4495,6 +4499,10 @@ export type ConfigGetResponses = {
        * Number of sessions per history backfill batch (default: 25)
        */
       backfillBatchSize?: number
+    }
+    mirror_model?: {
+      provider_id: string
+      model_id: string
     }
     session_model_pool?: Array<{
       provider_id: string

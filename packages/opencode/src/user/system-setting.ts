@@ -11,6 +11,12 @@ import { ModelsDev } from "@/provider/models"
 
 const ProviderControl = z
   .object({
+    mirror_model: z
+      .object({
+        provider_id: z.string().min(1),
+        model_id: z.string().min(1),
+      })
+      .optional(),
     enabled_providers: z.array(z.string()).optional(),
     disabled_providers: z.array(z.string()).optional(),
     model: z.string().optional(),
@@ -149,6 +155,7 @@ function parseModel(value?: string) {
 /** 中文注释：提取控制项中直接引用到的 provider 列表，用于补齐自动加载 provider 的校验范围。 */
 function controlProviderIDs(input: z.output<typeof ProviderControl>) {
   const ids = new Set<string>()
+  if (input.mirror_model?.provider_id) ids.add(input.mirror_model.provider_id)
   for (const provider_id of input.enabled_providers ?? []) ids.add(provider_id)
   for (const provider_id of input.disabled_providers ?? []) ids.add(provider_id)
   const model = parseModel(input.model)
@@ -424,6 +431,14 @@ export namespace AccountSystemSettingService {
       if (!isAllowed(parsed.provider_id)) return providerError(parsed.provider_id, field)
       if (!models.has(parsed.model_id)) return modelError(raw!, field)
     }
+    if (value.mirror_model) {
+      const models = providerMap.get(value.mirror_model.provider_id)
+      if (!models) return providerError(value.mirror_model.provider_id, "mirror_model")
+      if (!isAllowed(value.mirror_model.provider_id)) return providerError(value.mirror_model.provider_id, "mirror_model")
+      if (!models.has(value.mirror_model.model_id)) {
+        return modelError(`${value.mirror_model.provider_id}/${value.mirror_model.model_id}`, "mirror_model")
+      }
+    }
     if ((value.session_model_pool?.length ?? 0) > 0 && !value.model?.trim()) {
       return invalidError("model", "不能为空，作为 session_model_pool 不可用时的全局回退模型")
     }
@@ -499,6 +514,7 @@ export namespace AccountSystemSettingService {
 
     const nextControl = {
       ...control,
+      mirror_model: control.mirror_model?.provider_id === provider_id ? undefined : control.mirror_model,
       enabled_providers: control.enabled_providers?.filter((item) => item !== provider_id),
       disabled_providers: control.disabled_providers?.filter((item) => item !== provider_id),
       model: parseModel(control.model)?.provider_id === provider_id ? undefined : control.model,

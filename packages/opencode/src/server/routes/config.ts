@@ -27,7 +27,14 @@ const ManagedSessionModelPool = z
     }),
   )
   .optional()
+const ManagedMirrorModel = z
+  .object({
+    provider_id: z.string(),
+    model_id: z.string(),
+  })
+  .optional()
 const ManagedConfig = Config.Info.extend({
+  mirror_model: ManagedMirrorModel,
   session_model_pool: ManagedSessionModelPool,
 })
 const ConfigPatchBody = Config.Info.catchall(z.unknown())
@@ -68,6 +75,7 @@ export const ConfigRoutes = lazy(() =>
         } = config
         return c.json({
           ...rest,
+          mirror_model: control.mirror_model,
           enabled_providers: control.enabled_providers,
           disabled_providers: control.disabled_providers,
           model,
@@ -108,7 +116,15 @@ export const ConfigRoutes = lazy(() =>
         const raw = c.req.valid("json")
         if (Flag.TPCODE_ACCOUNT_ENABLED) {
           const managed = (
-            ["provider", "model", "small_model", "enabled_providers", "disabled_providers", "session_model_pool"] as const
+            [
+              "provider",
+              "model",
+              "small_model",
+              "enabled_providers",
+              "disabled_providers",
+              "session_model_pool",
+              "mirror_model",
+            ] as const
           ).some((key) => key in raw)
           if (managed) {
             return c.json(

@@ -150,6 +150,50 @@ export const TpSessionPictureTable = table(
   ],
 )
 
+export const TpSessionModelCallRecordTable = table(
+  "tp_session_model_call_record",
+  {
+    id: text().primaryKey(),
+    session_id: text()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    teacher_user_message_id: text()
+      .notNull()
+      .references(() => MessageTable.id, { onDelete: "cascade" }),
+    teacher_assistant_message_id: text().references(() => MessageTable.id, { onDelete: "set null" }),
+    teacher_provider_id: text().notNull(),
+    teacher_model_id: text().notNull(),
+    teacher_agent: text().notNull(),
+    request_protocol: text(),
+    request_text: text(),
+    response_text: text(),
+    reasoning_text: text(),
+    usage_text: text(),
+    meta_text: text(),
+    student_provider_id: text(),
+    student_model_id: text(),
+    student_request_protocol: text(),
+    student_status: text(),
+    student_error_code: text(),
+    student_error_message: text(),
+    student_response_text: text(),
+    student_reasoning_text: text(),
+    student_usage_text: text(),
+    status: text().notNull(),
+    error_code: text(),
+    error_message: text(),
+    finished_at: integer(),
+    student_finished_at: integer(),
+    ...Timestamps,
+  },
+  (table) => [
+    index("tp_session_model_call_record_session_time_idx").on(table.session_id, table.time_created),
+    index("tp_session_model_call_record_user_message_idx").on(table.teacher_user_message_id),
+    index("tp_session_model_call_record_assistant_message_idx").on(table.teacher_assistant_message_id),
+    index("tp_session_model_call_record_status_time_idx").on(table.status, table.time_created),
+  ],
+)
+
 export const TodoTable = table(
   "todo",
   {

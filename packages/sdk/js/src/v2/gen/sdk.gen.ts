@@ -6278,6 +6278,10 @@ export class OpencodeClient extends HeyApiClient {
       disabled_providers?: Array<string>
       model?: string
       small_model?: string
+      mirror_model?: {
+        provider_id: string
+        model_id: string
+      }
       session_model_pool?: Array<{
         provider_id: string
         weight: number
@@ -6298,6 +6302,7 @@ export class OpencodeClient extends HeyApiClient {
             { in: "body", key: "disabled_providers" },
             { in: "body", key: "model" },
             { in: "body", key: "small_model" },
+            { in: "body", key: "mirror_model" },
             { in: "body", key: "session_model_pool" },
           ],
         },

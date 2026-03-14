@@ -43,11 +43,13 @@ import { Tool } from "@/tool/tool"
 import { PermissionNext } from "@/permission/next"
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
+import { SessionModelCall } from "./model-call"
 import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
 import { TokenUsageService } from "@/usage/service"
 import { SessionVoice } from "./voice"
 import { SessionPicture } from "./picture"
+import { SessionMirror } from "./mirror"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { NotFoundError } from "@/storage/db"
 import { assertBuildCommandAllowed } from "./build-protection"
@@ -317,7 +319,6 @@ export namespace SessionPrompt {
         user_part_count: created.parts.length,
       }),
     )
-
     // this is backwards compatibility for allowing `tools` to be specified when
     // prompting
     const permissions: PermissionNext.Ruleset = []
@@ -336,6 +337,27 @@ export namespace SessionPrompt {
     if (input.noReply === true) {
       return message
     }
+
+    const record = SessionModelCall.createTeacherDraft({
+      sessionID: input.sessionID,
+      userMessageID: message.info.id,
+      teacherProviderID: message.info.model.providerID,
+      teacherModelID: message.info.model.modelID,
+      teacherAgent: message.info.agent,
+    })
+
+    void SessionMirror.schedule({
+      recordID: record?.id,
+      sessionID: input.sessionID,
+      message,
+    }).catch((error) => {
+      if (missing(error)) return
+      log.warn("mirror schedule failed", {
+        sessionID: input.sessionID,
+        messageID: message.info.id,
+        error,
+      })
+    })
 
     return loop({ sessionID: input.sessionID })
   }
@@ -897,6 +919,27 @@ export namespace SessionPrompt {
             model,
             abort,
           })
+          const call = SessionModelCall.getByUserMessageID(lastUser.id)
+          if (call) {
+            SessionModelCall.setTeacherAssistant({
+              recordID: call.id,
+              assistantMessageID: processor.message.id,
+            })
+          }
+          const syncTeacher = () => {
+            if (!call) return
+            SessionModelCall.completeTeacher({
+              recordID: call.id,
+              messageID: processor.message.id,
+              usage: {
+                tokens: processor.message.tokens,
+                cost: processor.message.cost,
+                finish: processor.message.finish,
+              },
+              finish: processor.message.finish,
+              error: processor.message.error,
+            })
+          }
           using _ = defer(() => InstructionPrompt.clear(processor.message.id))
 
           // Check if user explicitly invoked an agent via @ in this turn
@@ -1010,17 +1053,26 @@ export namespace SessionPrompt {
             },
             async () => {
               const user = { ...runtimeUser, system: undefined }
-              return processor.process({
-                user,
-                agent,
-                abort,
-                sessionID,
-                system,
-                messages: modelMessages,
-                tools,
-                model,
-                toolChoice: format.type === "json_schema" ? "required" : undefined,
-              })
+              const execute = () =>
+                processor.process({
+                  user,
+                  agent,
+                  abort,
+                  sessionID,
+                  system,
+                  messages: modelMessages,
+                  tools,
+                  model,
+                  toolChoice: format.type === "json_schema" ? "required" : undefined,
+                })
+              if (!call) return execute()
+              return SessionModelCall.provideCapture(
+                {
+                  recordID: call.id,
+                  role: "teacher",
+                },
+                execute,
+              )
             },
             (value) => ({
               result: value,
@@ -1036,6 +1088,7 @@ export namespace SessionPrompt {
             processor.message.structured = structuredOutput
             processor.message.finish = processor.message.finish ?? "stop"
             await Session.updateMessage(processor.message)
+            syncTeacher()
             break
           }
 
@@ -1050,9 +1103,12 @@ export namespace SessionPrompt {
                 retries: 0,
               }).toObject()
               await Session.updateMessage(processor.message)
+              syncTeacher()
               break
             }
           }
+
+          syncTeacher()
 
           if (result === "stop") break
           if (result === "compact") {

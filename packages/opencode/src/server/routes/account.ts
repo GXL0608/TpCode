@@ -261,6 +261,12 @@ const UserProviderControlBody = z.object({
 })
 
 const ProviderControlBody = UserProviderControlBody.extend({
+  mirror_model: z
+    .object({
+      provider_id: z.string().min(1),
+      model_id: z.string().min(1),
+    })
+    .optional(),
   session_model_pool: z
     .array(
       z.object({
