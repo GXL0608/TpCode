@@ -9,10 +9,14 @@ import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { useLocal } from "@/context/local"
+import { usePlatform } from "@/context/platform"
 import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { type ImageAttachmentPart, type Prompt, type VoiceAttachmentPart, usePrompt } from "@/context/prompt"
 import { useSDK } from "@/context/sdk"
+import { useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
+import { useAccountAuth } from "@/context/account-auth"
+import { AccountToken } from "@/utils/account-auth"
 import { Identifier } from "@/utils/id"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 import { buildRequestParts } from "./build-request-parts"
@@ -95,11 +99,15 @@ export function createPromptSubmit(input: PromptSubmitInput) {
   const sync = useSync()
   const globalSync = useGlobalSync()
   const local = useLocal()
+  const auth = useAccountAuth()
+  const platform = usePlatform()
   const prompt = usePrompt()
   const layout = useLayout()
   const language = useLanguage()
+  const server = useServer()
   const params = useParams()
   const statusCompensationTimers = new Map<string, number>()
+  const fetcher = platform.fetch ?? globalThis.fetch
 
   /** 中文注释：账号模式下优先展示当前 session 已锁定的运行模型，避免乐观消息误显示为 managed/managed。 */
   const optimisticModel = () => {
@@ -126,6 +134,53 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
     if (err instanceof Error) return err.message
     return language.t("common.requestFailed")
+  }
+
+  /** 中文注释：直接调用后端 build job 闭环接口，并在完成后返回构建会话目录，供前端跳转到执行会话。 */
+  const runBuildPipeline = async (prompt_text: string) => {
+    const current = server.current
+    const user = auth.user()
+    if (!current || !user) return
+    if (!user.permissions.includes("agent:use_build")) return
+    const payload = await auth.contextProducts()
+    const product = payload?.products?.find((item) => item.project_id === user.context_project_id)
+    if (!product) return
+    const token = AccountToken.access()
+    if (!token) return
+    const response = await fetcher(new URL("/build/job", current.http.url).toString(), {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        product_id: product.id,
+        source_type: "prompt",
+        prompt_text,
+        run_mode: "sync",
+      }),
+    })
+    const body = (await response.json().catch(() => undefined)) as
+      | {
+          ok?: boolean
+          code?: string
+          error?: string
+          detail?: {
+            job?: {
+              session_id?: string
+            }
+            session_directory?: string
+          }
+        }
+      | undefined
+    if (!response.ok || body?.ok !== true) {
+      throw new Error(body?.code ?? body?.error ?? "build_pipeline_failed")
+    }
+    return {
+      session_id: body.detail?.job?.session_id,
+      session_directory: body.detail?.session_directory,
+    }
   }
 
   /** 中文注释：在本地 child store 里预写入新会话，避免首次 build 切目录时迁移不到 session 条目。 */
@@ -225,6 +280,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     const currentAgent = local.agent.current()
+    const agent = currentAgent?.name ?? "build"
     const currentModel = local.model.current()
     const model =
       currentModel &&
@@ -238,6 +294,35 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         : undefined
     const variant = local.model.variant.current()
 
+    if (mode === "normal" && agent === "build" && images.length === 0 && voices.length === 0 && input.commentCount() === 0) {
+      try {
+        const created = await runBuildPipeline(text)
+        if (!created) {
+          // 中文注释：非账号模式或上下文尚未准备好时，回退到原有会话式 build 流程。
+        } else {
+        input.addToHistory(currentPrompt, mode)
+        input.resetHistoryNavigation()
+        input.clearDraft?.()
+        prompt.reset()
+        input.setMode("normal")
+        input.setPopover(null)
+        if (created?.session_id && created.session_directory) {
+          navigate(`/${base64Encode(created.session_directory)}/session/${created.session_id}`)
+        }
+        showToast({
+          title: "构建闭环已完成",
+          description: "系统已完成计划、改码、编译与打包，你可以在会话或构建中心继续查看结果。",
+        })
+        return
+        }
+      } catch (error) {
+        showToast({
+          title: "构建闭环执行失败",
+          description: errorMessage(error),
+        })
+      }
+    }
+
     if (!model) {
       showToast({
         title: language.t("toast.model.unavailable.title"),
@@ -248,8 +333,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     input.addToHistory(currentPrompt, mode)
     input.resetHistoryNavigation()
-
-    const agent = currentAgent?.name ?? "build"
     const projectDirectory = routeDirectory() ?? decode(params.dir) ?? sdk.directory
     const routeID = params.id
     const isNewSession = !routeID

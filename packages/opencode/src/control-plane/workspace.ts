@@ -117,6 +117,36 @@ export namespace Workspace {
     return members.filter((item): item is NonNullable<typeof item> => Boolean(item))
   }
 
+  /** 中文注释：把显式目录列表转换成批量沙盒成员，供多解决方案、多根目录和虚拟目录统一复用。 */
+  async function explicitMembers(input: {
+    directories: Array<{
+      directory: string
+      name?: string
+      relative_path?: string
+    }>
+    sandboxRoot: string
+    branch: string
+  }) {
+    const seen = new Set<string>()
+    const members = input.directories.flatMap((item, index) => {
+      const source_directory = path.resolve(item.directory)
+      if (seen.has(source_directory)) return []
+      seen.add(source_directory)
+      const name = item.name?.trim() || path.basename(source_directory) || `repo-${index + 1}`
+      const relative_path = item.relative_path?.trim() || name
+      return [
+        {
+          name,
+          relative_path,
+          source_directory,
+          sandbox_directory: path.join(input.sandboxRoot, relative_path),
+          branch: input.branch,
+        },
+      ]
+    })
+    return members
+  }
+
   /** 中文注释：在新建 worktree 后执行一次硬重置，确保成员目录具备可用工作副本。 */
   async function populate(directory: string) {
     for (const _ of Array.from({ length: 20 })) {
@@ -335,7 +365,17 @@ export namespace Workspace {
     z.object({
       id: Identifier.schema("workspace").optional(),
       projectID: z.string(),
-      sourceRoot: z.string(),
+      sourceRoot: z.string().optional(),
+      sourceRoots: z.array(z.string()).optional(),
+      members: z
+        .array(
+          z.object({
+            directory: z.string(),
+            name: z.string().optional(),
+            relative_path: z.string().optional(),
+          }),
+        )
+        .optional(),
       name: z.string(),
       directory: z.string().optional(),
       branch: z.string().optional(),
@@ -352,7 +392,17 @@ export namespace Workspace {
               projectID: input.projectID,
               name: input.name,
             })
-      const members = await batchMembers(input.sourceRoot, slot.directory, slot.branch)
+      const sourceRoots = input.sourceRoots ?? (input.sourceRoot ? [input.sourceRoot] : [])
+      const members =
+        input.members && input.members.length > 0
+          ? await explicitMembers({
+              directories: input.members,
+              sandboxRoot: slot.directory,
+              branch: slot.branch,
+            })
+          : input.sourceRoot
+            ? await batchMembers(input.sourceRoot, slot.directory, slot.branch)
+            : []
       if (members.length === 0) {
         throw new Error("No git members found for batch workspace")
       }
@@ -383,7 +433,9 @@ export namespace Workspace {
           next.status = "ready"
         }
 
-        await copyOverlay(input.sourceRoot, slot.directory, ready.map((item) => item.name))
+        if (input.sourceRoot) {
+          await copyOverlay(input.sourceRoot, slot.directory, ready.map((item) => item.name))
+        }
 
         await Database.use((db) =>
           db
@@ -399,7 +451,8 @@ export namespace Workspace {
                 directory: slot.directory,
               },
               meta: {
-                source_root: input.sourceRoot,
+                source_root: input.sourceRoot ?? sourceRoots[0],
+                source_roots: sourceRoots.length > 0 ? sourceRoots : [...new Set(members.map((item) => item.source_directory))],
                 members: ready,
               },
             })
@@ -417,7 +470,8 @@ export namespace Workspace {
             directory: slot.directory,
           },
           meta: {
-            source_root: input.sourceRoot,
+            source_root: input.sourceRoot ?? sourceRoots[0],
+            source_roots: sourceRoots.length > 0 ? sourceRoots : [...new Set(members.map((item) => item.source_directory))],
             members: ready,
           },
         })
@@ -426,7 +480,8 @@ export namespace Workspace {
           {
             directory: slot.directory,
             meta: {
-              source_root: input.sourceRoot,
+              source_root: input.sourceRoot ?? sourceRoots[0],
+              source_roots: sourceRoots.length > 0 ? sourceRoots : [...new Set(members.map((item) => item.source_directory))],
               members: ready,
             },
             projectID: input.projectID,
@@ -467,7 +522,9 @@ export namespace Workspace {
     for (const member of row.meta.members) {
       members.push(await resetMember(member))
     }
-    await refreshOverlay(row.meta.source_root, row.directory, members.map((item) => item.name))
+    if (row.meta.source_root) {
+      await refreshOverlay(row.meta.source_root, row.directory, members.map((item) => item.name))
+    }
     await Database.use((db) =>
       db
         .update(WorkspaceTable)
@@ -475,6 +532,7 @@ export namespace Workspace {
           branch: row.branch,
           meta: {
             source_root: row.meta!.source_root,
+            source_roots: row.meta!.source_roots,
             members,
           },
         })

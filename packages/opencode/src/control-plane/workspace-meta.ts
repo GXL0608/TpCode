@@ -16,7 +16,8 @@ export const BatchMember = z.object({
 export type BatchMember = z.infer<typeof BatchMember>
 
 export const BatchMeta = z.object({
-  source_root: z.string(),
+  source_root: z.string().optional(),
+  source_roots: z.array(z.string()).default([]),
   members: BatchMember.array(),
 })
 export type BatchMeta = z.infer<typeof BatchMeta>

@@ -323,6 +323,7 @@ describe("Project.workspaceMode", () => {
           },
           meta: {
             source_root: tmp.path,
+            source_roots: [tmp.path],
             members: [],
           },
         })

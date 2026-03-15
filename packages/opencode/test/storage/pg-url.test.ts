@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { pgDefault, pgSource, pgUrl } from "../../src/storage/pg-url"
+import { pgDefault, pgLocalDefault, pgSource, pgUrl } from "../../src/storage/pg-url"
 
 describe("storage.pg-url", () => {
   test("uses opencode_dev for local default", () => {
@@ -33,5 +33,32 @@ describe("storage.pg-url", () => {
 
   test("marks packaged fallback source when no env is set", () => {
     expect(pgSource({}, false)).toBe("DEFAULT_SEED_PACKAGED")
+  })
+
+  test("uses packaged fallback for local channel binaries", () => {
+    expect(
+      pgLocalDefault({
+        channel: "local",
+        execPath: "C:\\Program Files\\TpCode\\opencode.exe",
+      }),
+    ).toBe(false)
+  })
+
+  test("keeps local fallback for source bun runtime", () => {
+    expect(
+      pgLocalDefault({
+        channel: "local",
+        execPath: "C:\\Users\\demo\\scoop\\apps\\bun\\current\\bun.exe",
+      }),
+    ).toBe(true)
+  })
+
+  test("uses packaged fallback outside local channel", () => {
+    expect(
+      pgLocalDefault({
+        channel: "latest",
+        execPath: "C:\\Users\\demo\\scoop\\apps\\bun\\current\\bun.exe",
+      }),
+    ).toBe(false)
   })
 })

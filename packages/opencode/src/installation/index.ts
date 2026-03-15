@@ -6,6 +6,7 @@ import { NamedError } from "@opencode-ai/util/error"
 import { Log } from "../util/log"
 import { iife } from "@/util/iife"
 import { Flag } from "../flag/flag"
+import { pgLocalDefault } from "../storage/pg-url"
 
 declare global {
   const OPENCODE_VERSION: string
@@ -55,6 +56,14 @@ export namespace Installation {
 
   export function isLocal() {
     return CHANNEL === "local"
+  }
+
+  /** 中文注释：仅在源码开发态且由 Bun 直接运行时才默认回退开发库，避免 local 渠道打包包误连开发库。 */
+  export function useLocalDatabaseDefault(input?: { channel?: string; execPath?: string }) {
+    return pgLocalDefault({
+      channel: input?.channel ?? CHANNEL,
+      execPath: input?.execPath ?? process.execPath,
+    })
   }
 
   export async function method() {

@@ -13,6 +13,7 @@ import { SettingsUsers } from "./settings-users"
 import { SettingsRoles } from "./settings-roles"
 import { SettingsSystem } from "./settings-system"
 import { SettingsProjects } from "./settings-projects"
+import { SettingsBuildCenter } from "./settings-build-center"
 import { canUseBuildCapability } from "@/utils/account-build-access"
 
 export const DialogSettings: Component = () => {
@@ -23,6 +24,7 @@ export const DialogSettings: Component = () => {
   const canManageUsers = createMemo(() => auth.has("user:manage"))
   const canManageRoles = createMemo(() => auth.has("role:manage"))
   const canManageProjects = createMemo(() => auth.has("role:manage"))
+  const canManageBuildCenter = createMemo(() => auth.has("role:manage"))
   const canManageSystem = createMemo(() => auth.has("role:manage"))
   const canViewGlobalProviders = createMemo(() => isSuperAdmin())
   const canViewSelfProviders = createMemo(() => canUseBuildCapability(auth.user()))
@@ -85,6 +87,12 @@ export const DialogSettings: Component = () => {
                         项目管理
                       </Tabs.Trigger>
                     </Show>
+                    <Show when={canManageBuildCenter()}>
+                      <Tabs.Trigger value="build-center">
+                        <Icon name="check" />
+                        构建中心
+                      </Tabs.Trigger>
+                    </Show>
                     <Show when={canManageSystem()}>
                       <Tabs.Trigger value="system">
                         <Icon name="sliders" />
@@ -133,6 +141,11 @@ export const DialogSettings: Component = () => {
         <Show when={canManageProjects()}>
           <Tabs.Content value="projects" class="no-scrollbar">
             <SettingsProjects />
+          </Tabs.Content>
+        </Show>
+        <Show when={canManageBuildCenter()}>
+          <Tabs.Content value="build-center" class="no-scrollbar">
+            <SettingsBuildCenter />
           </Tabs.Content>
         </Show>
         <Show when={canManageSystem()}>

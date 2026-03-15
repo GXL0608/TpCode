@@ -25,7 +25,7 @@ export const NotFoundError = NamedError.create(
 const log = Log.create({ service: "db" })
 
 function dbSource() {
-  return pgSource(process.env, Installation.isLocal())
+  return pgSource(process.env, Installation.useLocalDatabaseDefault())
 }
 
 function dbLocation(value: string) {
@@ -99,7 +99,7 @@ export namespace Database {
   }
 
   export function url() {
-    return pgUrl(process.env, Installation.isLocal())
+    return pgUrl(process.env, Installation.useLocalDatabaseDefault())
   }
 
   export function source() {

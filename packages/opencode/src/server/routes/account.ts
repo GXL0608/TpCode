@@ -21,6 +21,12 @@ import { Config } from "@/config/config"
 import { AccountProviderState } from "@/provider/account-provider-state"
 import { AccountUserProviderSettingService } from "@/user/user-provider-setting"
 import { UserRbac } from "@/user/rbac"
+import { ProductSolutionService } from "@/user/product-solution"
+import { BuildProfile } from "@/build/profile"
+import { and, Database, desc, eq, inArray, or, sql } from "@/storage/db"
+import { TpSavedPlanTable } from "@/plan/saved-plan.sql"
+import { TpSavedPlanEvalTable } from "@/plan/saved-plan-eval.sql"
+import { TpProductTable } from "@/user/product.sql"
 
 const LoginResult = z
   .object({
@@ -347,10 +353,74 @@ const AccountAdminUserPage = z
   })
   .meta({ ref: "AccountAdminUserPage" })
 
+const ProductSolutionRootBody = z.object({
+  root_type: z.enum(["single_repo", "parent_batch", "virtual_group"]),
+  directory: z.string().min(1),
+  display_name: z.string().optional(),
+  sort_order: z.number().optional(),
+  enabled: z.boolean().optional(),
+  meta: z
+    .object({
+      directories: z.array(z.string()).optional(),
+    })
+    .optional(),
+})
+
+const ProductSolutionBody = z.object({
+  name: z.string().min(1),
+  code: z.string().min(1),
+  enabled: z.boolean().optional(),
+  primary_project_id: z.string().optional(),
+  build_profile: BuildProfile,
+  roots: z.array(ProductSolutionRootBody).min(1),
+})
+
+const ProductSolutionPatchBody = z.object({
+  name: z.string().optional(),
+  code: z.string().optional(),
+  enabled: z.boolean().optional(),
+  primary_project_id: z.string().optional(),
+  build_profile: BuildProfile.optional(),
+  roots: z.array(ProductSolutionRootBody).optional(),
+})
+
+const SavedPlanListQuery = z.object({
+  product_id: z.string().optional(),
+  keyword: z.string().optional(),
+  status: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+})
+
 function requireLogin(c: Context) {
   const user_id = c.get("account_user_id") as string | undefined
   if (!user_id) return c.json({ error: "unauthorized" }, 401)
   return user_id
+}
+
+/** 中文注释：移除 `undefined` 条件，方便把可选筛选项安全拼接到 Drizzle 的 `and` 条件中。 */
+function present<T>(input: T | undefined): input is T {
+  return input !== undefined
+}
+
+/** 中文注释：把关键字筛选下推到数据库，避免先截断记录再做内存过滤导致结果不完整。 */
+function savedPlanKeyword(keyword?: string) {
+  const value = keyword?.trim().toLowerCase()
+  if (!value) return
+  const word = `%${value}%`
+  return or(
+    sql`lower(coalesce(${TpSavedPlanTable.session_title}, '')) like ${word}`,
+    sql`lower(coalesce(${TpSavedPlanTable.plan_content}, '')) like ${word}`,
+    sql`lower(coalesce(${TpSavedPlanTable.vho_feedback_no}, '')) like ${word}`,
+    sql`lower(coalesce(${TpSavedPlanTable.project_name}, '')) like ${word}`,
+    sql`lower(coalesce(${TpSavedPlanTable.username}, '')) like ${word}`,
+  )
+}
+
+/** 中文注释：统一处理计划评估状态筛选，其中未评估记录按 `pending` 参与过滤。 */
+function savedPlanStatus(status?: string) {
+  const value = status?.trim()
+  if (!value) return
+  return sql`coalesce(${TpSavedPlanEvalTable.status}, 'pending') = ${value}`
 }
 
 function forbidUserProviderConfig() {
@@ -1663,6 +1733,185 @@ export const AccountRoutes = lazy(() =>
           user_agent: c.req.header("user-agent"),
         })
         AccountContextService.invalidateProjectAccess()
+        return c.json(result)
+      },
+    )
+    .get(
+      "/admin/products/:product_id/solutions",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ product_id: z.string().min(1) })),
+      async (c) => {
+        const param = c.req.valid("param")
+        return c.json(await ProductSolutionService.list(param.product_id))
+      },
+    )
+    .post(
+      "/admin/products/:product_id/solutions",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ product_id: z.string().min(1) })),
+      validator("json", ProductSolutionBody),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const result = await ProductSolutionService.create({
+          product_id: param.product_id,
+          name: body.name,
+          code: body.code,
+          enabled: body.enabled,
+          primary_project_id: body.primary_project_id,
+          build_profile: body.build_profile,
+          roots: body.roots,
+        })
+        if (!result.ok) return c.json({ ...result, error_code: result.code }, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.product.solution.create",
+          target_type: "tp_product_solution",
+          target_id: result.item.id,
+          result: "success",
+          detail_json: {
+            product_id: param.product_id,
+            solution_id: result.item.id,
+            code: result.item.code,
+            roots: result.item.roots.map((item) => item.directory),
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .patch(
+      "/admin/products/:product_id/solutions/:solution_id",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ product_id: z.string().min(1), solution_id: z.string().min(1) })),
+      validator("json", ProductSolutionPatchBody),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const result = await ProductSolutionService.update({
+          solution_id: param.solution_id,
+          name: body.name,
+          code: body.code,
+          enabled: body.enabled,
+          primary_project_id: body.primary_project_id,
+          build_profile: body.build_profile,
+          roots: body.roots,
+        })
+        if (!result.ok) return c.json({ ...result, error_code: result.code }, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.product.solution.update",
+          target_type: "tp_product_solution",
+          target_id: param.solution_id,
+          result: "success",
+          detail_json: {
+            product_id: param.product_id,
+            solution_id: param.solution_id,
+            code: result.item.code,
+            roots: result.item.roots.map((item) => item.directory),
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .delete(
+      "/admin/products/:product_id/solutions/:solution_id",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ product_id: z.string().min(1), solution_id: z.string().min(1) })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const result = await ProductSolutionService.remove(param.solution_id)
+        if (!result.ok) return c.json({ ...result, error_code: result.code }, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.product.solution.delete",
+          target_type: "tp_product_solution",
+          target_id: param.solution_id,
+          result: "success",
+          detail_json: {
+            product_id: param.product_id,
+            solution_id: param.solution_id,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .get(
+      "/admin/saved-plans",
+      UserRbac.require("role:manage"),
+      validator("query", SavedPlanListQuery),
+      async (c) => {
+        const query = c.req.valid("query")
+        const product = query.product_id
+          ? await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, query.product_id!)).get())
+          : undefined
+        if (query.product_id && !product) {
+          return c.json(
+            {
+              ok: false as const,
+              code: "product_missing" as const,
+            },
+            404,
+          )
+        }
+        const filters = [
+          product ? eq(TpSavedPlanTable.project_id, product.project_id) : undefined,
+          savedPlanKeyword(query.keyword),
+          savedPlanStatus(query.status),
+        ].filter(present)
+        const rows = await Database.use((db) => {
+          const where = filters.length === 0 ? undefined : and(...filters)
+          const statement = db
+            .select({
+              id: TpSavedPlanTable.id,
+              project_id: TpSavedPlanTable.project_id,
+              project_name: TpSavedPlanTable.project_name,
+              session_title: TpSavedPlanTable.session_title,
+              username: TpSavedPlanTable.username,
+              display_name: TpSavedPlanTable.display_name,
+              vho_feedback_no: TpSavedPlanTable.vho_feedback_no,
+              plan_content: TpSavedPlanTable.plan_content,
+              time_created: TpSavedPlanTable.time_created,
+              eval_status: TpSavedPlanEvalTable.status,
+              eval_summary: TpSavedPlanEvalTable.summary,
+              eval_user_score: TpSavedPlanEvalTable.user_score,
+              eval_assistant_score: TpSavedPlanEvalTable.assistant_score,
+            })
+            .from(TpSavedPlanTable)
+            .leftJoin(TpSavedPlanEvalTable, eq(TpSavedPlanEvalTable.plan_id, TpSavedPlanTable.id))
+          const ordered = where ? statement.where(where) : statement
+          return ordered.orderBy(desc(TpSavedPlanTable.time_created)).limit(query.limit ?? 100).all()
+        })
+        const result = rows.map((item) => ({
+          id: item.id,
+          project_id: item.project_id,
+          project_name: item.project_name,
+          session_title: item.session_title,
+          username: item.username,
+          display_name: item.display_name,
+          vho_feedback_no: item.vho_feedback_no ?? undefined,
+          plan_content: item.plan_content,
+          time_created: item.time_created,
+          eval: item.eval_status
+            ? {
+                status: item.eval_status,
+                summary: item.eval_summary ?? undefined,
+                user_score: item.eval_user_score ?? undefined,
+                assistant_score: item.eval_assistant_score ?? undefined,
+              }
+            : undefined,
+        }))
         return c.json(result)
       },
     )

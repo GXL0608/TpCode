@@ -9,6 +9,7 @@ import { TpRoleProductAccessTable } from "./role-product-access.sql"
 import { TpRoleTable } from "./role.sql"
 import { TpProductTable } from "./product.sql"
 import { TpProjectRoleAccessTable } from "./project-role-access.sql"
+import { ProductSolutionService, type ProductSolutionItem } from "./product-solution"
 
 export type ProductItem = {
   id: string
@@ -16,6 +17,7 @@ export type ProductItem = {
   project_id: string
   worktree: string
   vcs?: string
+  solutions?: ProductSolutionItem[]
   time_created: number
   time_updated: number
 }
@@ -95,7 +97,18 @@ async function productsByRows(rows: (typeof TpProductTable.$inferSelect)[]) {
       time_updated: item.time_updated,
     } satisfies ProductItem
   })
-  return byName(list)
+  const solutions = await ProductSolutionService.listByProductIDs(list.map((item) => item.id))
+  const solutionMap = new Map<string, ProductSolutionItem[]>()
+  for (const item of solutions) {
+    const list = solutionMap.get(item.product_id) ?? []
+    list.push(item)
+    solutionMap.set(item.product_id, list)
+  }
+  const hydrated = list.map((item) => ({
+    ...item,
+    solutions: solutionMap.get(item.id) ?? [],
+  }))
+  return byName(hydrated)
 }
 
 export namespace AccountProductService {

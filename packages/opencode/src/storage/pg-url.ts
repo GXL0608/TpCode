@@ -2,6 +2,13 @@ const base = "postgres://opencode:opencode@182.92.74.187:9124"
 const local = `${base}/opencode_dev`
 const remote = `${base}/opencode`
 
+/** 中文注释：仅在 local 渠道且由 Bun 直接运行源码时才默认回退开发库，避免打包产物误连开发库。 */
+export function pgLocalDefault(input: { channel?: string; execPath?: string }) {
+  if (input.channel !== "local") return false
+  const exec = (input.execPath ?? "").replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? ""
+  return exec === "bun" || exec === "bun.exe"
+}
+
 export function pgDefault(dev: boolean) {
   return dev ? local : remote
 }

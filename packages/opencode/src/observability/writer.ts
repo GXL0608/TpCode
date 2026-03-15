@@ -1,4 +1,4 @@
-import { pgUrl } from "../storage/pg-url"
+import { pgLocalDefault, pgUrl } from "../storage/pg-url"
 import type { LogEvent } from "./schema"
 import { Spool } from "./spool"
 
@@ -10,8 +10,12 @@ type Client = {
   close?: () => void
 }
 
+/** 中文注释：让日志写库与主数据库保持相同的默认回退规则，避免打包环境写到开发库。 */
 function dev() {
-  return typeof OPENCODE_CHANNEL === "string" ? OPENCODE_CHANNEL === "local" : true
+  return pgLocalDefault({
+    channel: typeof OPENCODE_CHANNEL === "string" ? OPENCODE_CHANNEL : "local",
+    execPath: process.execPath,
+  })
 }
 
 function sql(input: LogEvent[]) {

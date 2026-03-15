@@ -180,6 +180,7 @@ export namespace AccountContextService {
       project_id: item.id,
       worktree: item.worktree,
       vcs: item.vcs ?? undefined,
+      solutions: [],
       time_created: item.time_created,
       time_updated: item.time_updated,
     }))
@@ -194,6 +195,7 @@ export namespace AccountContextService {
           project_id: item.project_id,
           worktree: item.worktree,
           vcs: item.vcs,
+          solutions: item.solutions,
           selected: item.project_id === input.context_project_id,
           last_selected: item.project_id === state?.last_project_id,
         })),

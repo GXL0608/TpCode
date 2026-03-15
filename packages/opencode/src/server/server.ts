@@ -44,6 +44,8 @@ import { GlobalRoutes } from "./routes/global"
 import { ApprovalRoutes } from "./routes/approval"
 import { FeedbackRoutes } from "./routes/feedback"
 import { PrototypeRoutes } from "./routes/prototype"
+import { ProductRoutes } from "./routes/product"
+import { BuildRoutes } from "./routes/build"
 import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
@@ -324,6 +326,7 @@ export namespace Server {
               "/agent",
               "/approval",
               "/auth",
+              "/build",
               "/command",
               "/config",
               "/event",
@@ -340,6 +343,7 @@ export namespace Server {
               "/path",
               "/permission",
               "/project",
+              "/product",
               "/prototype",
               "/provider",
               "/pty",
@@ -360,7 +364,11 @@ export namespace Server {
               const auth = c.req.header("authorization")
               const queryToken =
                 c.req.method === "GET" &&
-                (/^\/session\/[^/]+\/voice\/[^/]+$/.test(path) || /^\/prototype\/[^/]+\/file$/.test(path))
+                (
+                  /^\/session\/[^/]+\/voice\/[^/]+$/.test(path) ||
+                  /^\/prototype\/[^/]+\/file$/.test(path) ||
+                  /^\/build\/artifact\/[^/]+\/file$/.test(path)
+                )
                   ? c.req.query("access_token")
                   : undefined
               const token = UserService.parseBearer(auth) ?? queryToken
@@ -767,6 +775,8 @@ export namespace Server {
         )
         .use(validator("query", z.object({ directory: z.string().optional() })))
         .route("/project", ProjectRoutes())
+        .route("/product", ProductRoutes())
+        .route("/build", BuildRoutes())
         .route("/pty", PtyRoutes())
         .route("/config", ConfigRoutes())
         .route("/experimental", ExperimentalRoutes())

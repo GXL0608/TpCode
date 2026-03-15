@@ -46,8 +46,13 @@ async function context(input: { sessionID: string; agent?: string }): Promise<Bu
       db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, row.workspace_id!)).get(),
     )
     if (workspace && WorkspaceKind.safeParse(workspace.kind).data === "batch_worktree" && workspace.meta) {
+      const source_roots = workspace.meta.source_roots?.length
+        ? workspace.meta.source_roots
+        : workspace.meta.source_root
+          ? [workspace.meta.source_root]
+          : []
       return {
-        blocked: [workspace.meta.source_root, ...workspace.meta.members.map((member) => member.source_directory)],
+        blocked: [...source_roots, ...workspace.meta.members.map((member) => member.source_directory)],
         allowed: [workspace.directory, ...workspace.meta.members.map((member) => member.sandbox_directory)],
         aggregate: workspace.directory,
         members: workspace.meta.members.map((member) => ({
