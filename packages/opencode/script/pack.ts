@@ -26,6 +26,26 @@ function latest(cwd: string) {
     .at(-1)
 }
 
+/**
+ * 生成适合包文件名的版本号，避免分支名中的特殊字符破坏路径。
+ */
+function sanitize(version: string) {
+  return version.replaceAll("/", "-")
+}
+
+/**
+ * 在打包前临时修正 package.json 的版本号，确保 bun pm pack 可以成功产包。
+ */
+async function patch(cwd: string) {
+  const file = Bun.file(path.join(cwd, "package.json"))
+  const text = await file.text()
+  const pkg = JSON.parse(text)
+  const next = sanitize(pkg.version)
+  if (next === pkg.version) return
+  pkg.version = next
+  await Bun.write(file, JSON.stringify(pkg, null, 2) + "\n")
+}
+
 const skipBuild = process.argv.includes("--skip-build")
 if (!skipBuild) {
   await $`bun run ./script/build.ts`
@@ -43,6 +63,7 @@ for (const name of list) {
   if (!existsSync(path.join(cwd, "package.json"))) continue
   console.log(`packing ${name}`)
   purge(cwd)
+  await patch(cwd)
   await $`bun pm pack`.cwd(cwd)
   const file = latest(cwd)
   if (file) out.push(path.join(cwd, file))

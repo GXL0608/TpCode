@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import os from "os"
+import fs from "fs/promises"
 import path from "path"
 import { BashTool } from "../../src/tool/bash"
 import { Instance } from "../../src/project/instance"
@@ -7,6 +8,17 @@ import { Filesystem } from "../../src/util/filesystem"
 import { tmpdir } from "../fixture/fixture"
 import type { PermissionNext } from "../../src/permission/next"
 import { Truncate } from "../../src/tool/truncation"
+import { Database } from "../../src/storage/db"
+import { WorkspaceTable } from "../../src/control-plane/workspace.sql"
+import { Workspace } from "../../src/control-plane/workspace"
+import { SessionTable } from "../../src/session/session.sql"
+import { TpProductSolutionRootTable } from "../../src/user/product-solution-root.sql"
+import { TpProductSolutionTable } from "../../src/user/product-solution.sql"
+import { TpProductTable } from "../../src/user/product.sql"
+import { AccountProductService } from "../../src/user/product"
+import { ProductSolutionService } from "../../src/user/product-solution"
+import { Session } from "../../src/session"
+import { BuildOverlay } from "../../src/build/overlay"
 
 const ctx = {
   sessionID: "test",
@@ -20,6 +32,32 @@ const ctx = {
 }
 
 const projectRoot = path.join(__dirname, "../..")
+
+/** 中文注释：为 bash overlay 场景创建最小 git 仓库，确保脚本命令能读到完整源码。 */
+async function createRepo(root: string, name: string) {
+  const directory = path.join(root, name)
+  await fs.mkdir(directory, { recursive: true })
+  await Bun.$`git init`.cwd(directory).quiet()
+  await Bun.write(path.join(directory, "source.txt"), `${name}\n`)
+  await Bun.write(path.join(directory, "keep.txt"), "keep\n")
+  await Bun.write(path.join(directory, "unchanged.txt"), "unchanged\n")
+  await Bun.$`git add .`.cwd(directory).quiet()
+  await Bun.$`git -c user.name=TpCode -c user.email=tpcode@example.com commit -m ${`init ${name}`}`.cwd(directory).quiet()
+  return directory
+}
+
+afterEach(async () => {
+  const workspaces = await Database.use((db) => db.select().from(WorkspaceTable).all())
+  for (const workspace of workspaces) {
+    await Workspace.remove(workspace.id).catch(() => undefined)
+  }
+  await Database.use(async (db) => {
+    await db.delete(SessionTable).run()
+    await db.delete(TpProductSolutionRootTable).run()
+    await db.delete(TpProductSolutionTable).run()
+    await db.delete(TpProductTable).run()
+  })
+})
 
 describe("tool.bash", () => {
   test("basic", async () => {
@@ -36,6 +74,101 @@ describe("tool.bash", () => {
         )
         expect(result.metadata.exit).toBe(0)
         expect(result.metadata.output).toContain("test")
+      },
+    })
+  })
+
+  test("uses overlay merged sandbox and only persists changed files", async () => {
+    await using tmp = await tmpdir()
+    const repo = await createRepo(tmp.path, "frontend")
+    await Instance.provide({
+      directory: repo,
+      fn: async () => {
+        const product = await AccountProductService.create({
+          name: "脚本覆盖层产品",
+          directory: repo,
+        })
+        expect(product.ok).toBe(true)
+        if (!product.ok) return
+
+        const solution = await ProductSolutionService.create({
+          product_id: product.item.id,
+          name: "脚本覆盖层方案",
+          code: "bash-overlay",
+          build_profile: {
+            workdirs: ["frontend"],
+            compile_command: "echo build",
+            artifact_include: [],
+          },
+          roots: [
+            {
+              root_type: "single_repo",
+              directory: repo,
+              display_name: "脚本覆盖层方案",
+              mount_name: "frontend",
+              sort_order: 1,
+            },
+          ],
+        })
+        expect(solution.ok).toBe(true)
+        if (!solution.ok) return
+
+        const workspace = await Workspace.createOverlay({
+          projectID: product.item.project_id,
+          sourceRoots: [repo],
+          members: [
+            {
+              directory: repo,
+              name: "frontend",
+              relative_path: "frontend",
+              solution_id: solution.item.id,
+              solution_code: solution.item.code,
+            },
+          ],
+          name: "bash-overlay-workspace",
+        })
+        const session = await Session.createNext({
+          directory: workspace.directory,
+          workspaceID: workspace.id,
+          workspaceDirectory: workspace.directory,
+          workspaceKind: workspace.kind,
+          workspaceStatus: "ready",
+          workspaceCleanupStatus: "none",
+        })
+        const bash = await BashTool.init()
+        const source = path.join(workspace.directory, "frontend", "source.txt")
+        const created = path.join(workspace.directory, "frontend", "new.txt")
+        const deleted = path.join(workspace.directory, "frontend", "keep.txt")
+        const result = await bash.execute(
+          {
+            command: `printf 'patched\\n' > "${source}" && cp "${source}" "${created}" && rm "${deleted}"`,
+            workdir: workspace.directory,
+            description: "更新 overlay 文件",
+          },
+          {
+            ...ctx,
+            sessionID: session.id,
+          },
+        )
+
+        const overlay = await BuildOverlay.load(session.id)
+        expect(overlay).toBeDefined()
+        if (!overlay) return
+
+        const changes = await BuildOverlay.listChanges(overlay)
+        expect(changes.map((item) => `${item.change_type}:${item.display_path}`)).toEqual([
+          "delete:frontend/keep.txt",
+          "create:frontend/new.txt",
+          "update:frontend/source.txt",
+        ])
+        expect(result.metadata.exit).toBe(0)
+        expect(typeof result.metadata.bash_sandbox_directory).toBe("string")
+        expect(await Bun.file(path.join(repo, "source.txt")).text()).toBe("frontend\n")
+        expect(await Bun.file(path.join(repo, "keep.txt")).text()).toBe("keep\n")
+        expect(await Bun.file(path.join(repo, "new.txt")).exists()).toBe(false)
+        expect(await Bun.file(path.join(workspace.directory, "frontend", "source.txt")).text()).toBe("patched\n")
+        expect(await Bun.file(path.join(workspace.directory, "frontend", "new.txt")).text()).toBe("patched\n")
+        expect(await Bun.file(path.join(workspace.directory, "frontend", "unchanged.txt")).exists()).toBe(false)
       },
     })
   })

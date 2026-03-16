@@ -19,6 +19,7 @@ import { Filesystem } from "@/util/filesystem"
 import { Instance } from "@/project/instance"
 import { Worktree } from "@/worktree"
 import { SessionTable } from "@/session/session.sql"
+import { BuildOverlay } from "@/build/overlay"
 
 export namespace Workspace {
   const log = Log.create({ service: "workspace-sync" })
@@ -93,6 +94,24 @@ export namespace Workspace {
     }
 
     throw new Error("Failed to allocate batch workspace directory")
+  }
+
+  /** 中文注释：为 overlay 编码工作区挑选独立目录，避免与完整 worktree 批量沙盒混在一起。 */
+  async function overlaySlot(input: { projectID: string; name: string }) {
+    const root = path.join(Global.Path.data, "build-overlay", input.projectID)
+    await fs.mkdir(root, { recursive: true })
+
+    for (const attempt of Array.from({ length: 26 }, (_, index) => index)) {
+      const name = attempt === 0 ? slug(input.name) : `${slug(input.name)}-${attempt + 1}`
+      const directory = path.join(root, name)
+      if (await Filesystem.exists(directory)) continue
+      return {
+        name,
+        directory,
+      }
+    }
+
+    throw new Error("Failed to allocate overlay workspace directory")
   }
 
   /** 中文注释：扫描父目录的一级子目录，筛出可参与批量沙盒的 git 项目。 */
@@ -490,6 +509,115 @@ export namespace Workspace {
         )
         throw error
       }
+    },
+  )
+
+  export const createOverlay = fn(
+    z.object({
+      id: Identifier.schema("workspace").optional(),
+      projectID: z.string(),
+      sourceRoots: z.array(z.string()),
+      members: z.array(
+        z.object({
+          directory: z.string(),
+          name: z.string(),
+          relative_path: z.string(),
+          solution_id: z.string(),
+          solution_code: z.string(),
+        }),
+      ),
+      name: z.string(),
+      directory: z.string().optional(),
+    }),
+    async (input) => {
+      const id = Identifier.ascending("workspace", input.id)
+      const slot = input.directory
+        ? {
+            directory: input.directory,
+          }
+        : await overlaySlot({
+            projectID: input.projectID,
+            name: input.name,
+          })
+      const members = await explicitMembers({
+        directories: input.members.map((item) => ({
+          directory: item.directory,
+          name: item.name,
+          relative_path: item.relative_path,
+        })),
+        sandboxRoot: slot.directory,
+        branch: `overlay/${slug(input.name)}`,
+      })
+      if (members.length === 0) {
+        throw new Error("No members found for overlay workspace")
+      }
+
+      await fs.mkdir(slot.directory, { recursive: true })
+      const ready: BatchMember[] = []
+      for (const member of members) {
+        await fs.mkdir(member.sandbox_directory, { recursive: true })
+        ready.push({
+          ...member,
+          base_ref: await baseRef(member.source_directory),
+          default_branch: await defaultBranch(member.source_directory),
+          status: "ready",
+        })
+      }
+
+      const overlay = await BuildOverlay.create({
+        root: slot.directory,
+        mounts: ready.flatMap((member) => {
+          const match = input.members.find((item) => item.relative_path === member.relative_path)
+          if (!match) return []
+          return [
+            {
+              solution_id: match.solution_id,
+              solution_code: match.solution_code,
+              mount_name: member.relative_path,
+              source_directory: member.source_directory,
+            },
+          ]
+        }),
+      })
+
+      await Database.use((db) =>
+        db
+          .insert(WorkspaceTable)
+          .values({
+            id,
+            directory: slot.directory,
+            branch: null,
+            kind: "batch_worktree",
+            project_id: input.projectID,
+            config: {
+              type: "batch_worktree",
+              directory: slot.directory,
+            },
+            meta: {
+              source_roots: input.sourceRoots,
+              members: ready,
+              overlay,
+            },
+          })
+          .run(),
+      )
+
+      return Info.parse({
+        id,
+        directory: slot.directory,
+        branch: null,
+        kind: "batch_worktree",
+        projectID: input.projectID,
+        config: {
+          type: "batch_worktree",
+          directory: slot.directory,
+        },
+        meta: {
+          source_roots: input.sourceRoots,
+          members: ready,
+          overlay,
+        },
+      })
     },
   )
 

@@ -3,9 +3,10 @@ import z from "zod"
 import { ulid } from "ulid"
 import { BuildProfile, normalizeBuildProfile, type BuildProfile as BuildProfileType } from "@/build/profile"
 import { ProjectTable } from "@/project/project.sql"
-import { Database, asc, eq, inArray } from "@/storage/db"
+import { Database, asc, desc, eq, inArray } from "@/storage/db"
 import { Filesystem } from "@/util/filesystem"
 import { TpProductTable } from "./product.sql"
+import { TpProductSolutionBindingTable } from "./product-solution-binding.sql"
 import { TpProductSolutionRootTable } from "./product-solution-root.sql"
 import { TpProductSolutionTable } from "./product-solution.sql"
 
@@ -21,6 +22,7 @@ export const ProductSolutionRootInput = z.object({
   root_type: ProductSolutionRootType,
   directory: z.string(),
   display_name: z.string().optional(),
+  mount_name: z.string().optional(),
   sort_order: z.number().optional(),
   enabled: z.boolean().optional(),
   meta: ProductSolutionRootMeta.optional(),
@@ -33,6 +35,7 @@ export type ProductSolutionRootItem = {
   root_type: ProductSolutionRootType
   directory: string
   display_name?: string
+  mount_name?: string
   sort_order: number
   enabled: boolean
   meta?: ProductSolutionRootMeta
@@ -76,6 +79,7 @@ async function validateRoot(input: ProductSolutionRootInput) {
         root_type,
         directory,
         display_name: input.display_name?.trim() || undefined,
+        mount_name: input.mount_name?.trim() || undefined,
         sort_order: input.sort_order ?? 0,
         enabled: input.enabled ?? true,
         meta: {
@@ -93,6 +97,7 @@ async function validateRoot(input: ProductSolutionRootInput) {
       root_type,
       directory: resolved,
       display_name: input.display_name?.trim() || undefined,
+      mount_name: input.mount_name?.trim() || undefined,
       sort_order: input.sort_order ?? 0,
       enabled: input.enabled ?? true,
       meta: input.meta ? ProductSolutionRootMeta.parse(input.meta) : undefined,
@@ -110,6 +115,7 @@ function rootItem(row: typeof TpProductSolutionRootTable.$inferSelect): ProductS
     root_type: ProductSolutionRootType.parse(row.root_type),
     directory: row.directory,
     display_name: row.display_name ?? undefined,
+    mount_name: row.mount_name ?? undefined,
     sort_order: row.sort_order,
     enabled: row.enabled,
     meta: row.meta_json ? ProductSolutionRootMeta.parse(row.meta_json) : undefined,
@@ -122,10 +128,11 @@ function rootItem(row: typeof TpProductSolutionRootTable.$inferSelect): ProductS
 function solutionItem(
   row: typeof TpProductSolutionTable.$inferSelect,
   roots: ProductSolutionRootItem[],
+  product_id = row.product_id,
 ): ProductSolutionItem {
   return {
     id: row.id,
-    product_id: row.product_id,
+    product_id,
     name: row.name,
     code: row.code,
     enabled: row.enabled,
@@ -160,8 +167,75 @@ async function hydrate(rows: (typeof TpProductSolutionTable.$inferSelect)[]) {
   return rows.map((row) => solutionItem(row, map.get(row.id) ?? []))
 }
 
+/** 中文注释：把绑定关系映射成指定产品视角下的解决方案列表，确保同一方案可被多个产品复用。 */
+async function hydrateBindings(rows: (typeof TpProductSolutionBindingTable.$inferSelect)[]) {
+  const ids = [...new Set(rows.map((item) => item.solution_id))]
+  const solutions =
+    ids.length === 0
+      ? []
+      : await Database.use((db) =>
+          db
+            .select()
+            .from(TpProductSolutionTable)
+            .where(inArray(TpProductSolutionTable.id, ids))
+            .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
+            .all(),
+        )
+  const items = await hydrate(solutions)
+  const map = new Map(items.map((item) => [item.id, item]))
+  return rows.flatMap((row) => {
+    const item = map.get(row.solution_id)
+    if (!item) return []
+    return [
+      {
+        ...item,
+        product_id: row.product_id,
+        enabled: row.enabled && item.enabled,
+      } satisfies ProductSolutionItem,
+    ]
+  })
+}
+
+/** 中文注释：判断哪些产品仍需走旧的 product_id 兜底逻辑；只在完全没有绑定关系历史时才回退。 */
+async function legacyProducts(product_ids: string[]) {
+  if (product_ids.length === 0) return new Set<string>()
+  const rows = await Database.use((db) =>
+    db
+      .select({ product_id: TpProductSolutionTable.product_id })
+      .from(TpProductSolutionBindingTable)
+      .innerJoin(TpProductSolutionTable, eq(TpProductSolutionBindingTable.solution_id, TpProductSolutionTable.id))
+      .where(inArray(TpProductSolutionTable.product_id, product_ids))
+      .all(),
+  )
+  const bound = new Set(rows.map((item) => item.product_id))
+  return new Set(product_ids.filter((item) => !bound.has(item)))
+}
+
 export namespace ProductSolutionService {
+  /** 中文注释：返回全局解决方案库，供产品绑定现有方案与后续独立方案库页面复用。 */
+  export async function listLibrary() {
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
+        .all(),
+    )
+    return hydrate(rows)
+  }
+
   export async function list(product_id: string) {
+    const bindings = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionBindingTable)
+        .where(eq(TpProductSolutionBindingTable.product_id, product_id))
+        .orderBy(asc(TpProductSolutionBindingTable.sort_order), asc(TpProductSolutionBindingTable.id))
+        .all(),
+    )
+    if (bindings.length > 0) return hydrateBindings(bindings)
+    const legacy = await legacyProducts([product_id])
+    if (!legacy.has(product_id)) return [] as ProductSolutionItem[]
     const rows = await Database.use((db) =>
       db
         .select()
@@ -175,15 +249,33 @@ export namespace ProductSolutionService {
 
   export async function listByProductIDs(product_ids: string[]) {
     if (product_ids.length === 0) return [] as ProductSolutionItem[]
+    const bindings = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionBindingTable)
+        .where(inArray(TpProductSolutionBindingTable.product_id, product_ids))
+        .orderBy(
+          asc(TpProductSolutionBindingTable.product_id),
+          asc(TpProductSolutionBindingTable.sort_order),
+          asc(TpProductSolutionBindingTable.id),
+        )
+        .all(),
+    )
+    const bound = await hydrateBindings(bindings)
+    const missing = product_ids.filter((item) => !bindings.some((binding) => binding.product_id === item))
+    if (missing.length === 0) return bound
+    const legacy = await legacyProducts(missing)
+    const fallback = missing.filter((item) => legacy.has(item))
+    if (fallback.length === 0) return bound
     const rows = await Database.use((db) =>
       db
         .select()
         .from(TpProductSolutionTable)
-        .where(inArray(TpProductSolutionTable.product_id, product_ids))
+        .where(inArray(TpProductSolutionTable.product_id, fallback))
         .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
         .all(),
     )
-    return hydrate(rows)
+    return [...bound, ...(await hydrate(rows))]
   }
 
   export async function get(solution_id: string) {
@@ -249,6 +341,18 @@ export namespace ProductSolutionService {
         })
         .run()
       await tx
+        .insert(TpProductSolutionBindingTable)
+        .values({
+          id: ulid(),
+          product_id: input.product_id,
+          solution_id: id,
+          enabled: true,
+          sort_order: 0,
+          time_created: now,
+          time_updated: now,
+        })
+        .run()
+      await tx
         .insert(TpProductSolutionRootTable)
         .values(
           roots.map((item, index) => ({
@@ -257,6 +361,7 @@ export namespace ProductSolutionService {
             root_type: item.root.root_type,
             directory: item.root.directory,
             display_name: item.root.display_name,
+            mount_name: item.root.mount_name,
             sort_order: item.root.sort_order ?? index,
             enabled: item.root.enabled,
             meta_json: item.root.meta,
@@ -314,6 +419,7 @@ export namespace ProductSolutionService {
         roots.push({
           ...item,
           directory: validated.root.directory,
+          mount_name: validated.root.mount_name,
           meta: validated.root.meta,
         })
       }
@@ -343,6 +449,7 @@ export namespace ProductSolutionService {
               root_type: item.root_type,
               directory: item.directory,
               display_name: item.display_name?.trim() || undefined,
+              mount_name: item.mount_name?.trim() || undefined,
               sort_order: item.sort_order ?? index,
               enabled: item.enabled ?? true,
               meta_json: item.meta,
@@ -358,11 +465,129 @@ export namespace ProductSolutionService {
     return { ok: true as const, item }
   }
 
+  /** 中文注释：把已有解决方案绑定到另一个产品下，支撑共享 API 等跨产品复用场景。 */
+  export async function bind(input: {
+    product_id: string
+    solution_id: string
+    enabled?: boolean
+    sort_order?: number
+  }) {
+    const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
+    if (!product) return { ok: false as const, code: "product_missing" as const }
+    const solution = await Database.use((db) =>
+      db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, input.solution_id)).get(),
+    )
+    if (!solution) return { ok: false as const, code: "solution_missing" as const }
+    const current = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionBindingTable)
+        .where(eq(TpProductSolutionBindingTable.product_id, input.product_id))
+        .orderBy(desc(TpProductSolutionBindingTable.sort_order), desc(TpProductSolutionBindingTable.id))
+        .all(),
+    )
+    if (current.some((item) => item.solution_id === input.solution_id)) {
+      return { ok: false as const, code: "solution_binding_exists" as const }
+    }
+    const now = Date.now()
+    await Database.use((db) =>
+      db
+        .insert(TpProductSolutionBindingTable)
+        .values({
+          id: ulid(),
+          product_id: input.product_id,
+          solution_id: input.solution_id,
+          enabled: input.enabled ?? true,
+          sort_order: input.sort_order ?? ((current[0]?.sort_order ?? -1) + 1),
+          time_created: now,
+          time_updated: now,
+        })
+        .run(),
+    )
+    const item = await get(input.solution_id)
+    if (!item) return { ok: false as const, code: "solution_missing" as const }
+    return {
+      ok: true as const,
+      item: {
+        ...item,
+        product_id: input.product_id,
+        enabled: input.enabled ?? item.enabled,
+      } satisfies ProductSolutionItem,
+    }
+  }
+
+  /** 中文注释：解除产品与解决方案的绑定关系，不直接删除解决方案本体，避免影响其它产品。 */
+  export async function unbind(input: { product_id: string; solution_id: string }) {
+    const binding = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionBindingTable)
+        .where(eq(TpProductSolutionBindingTable.product_id, input.product_id))
+        .all(),
+    )
+    const row = binding.find((item) => item.solution_id === input.solution_id)
+    if (!row) return { ok: false as const, code: "solution_binding_missing" as const }
+    await Database.use((db) => db.delete(TpProductSolutionBindingTable).where(eq(TpProductSolutionBindingTable.id, row.id)).run())
+    return { ok: true as const }
+  }
+
   export async function remove(solution_id: string) {
     const row = await Database.use((db) => db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).get())
     if (!row) return { ok: false as const, code: "solution_missing" as const }
     await Database.use((db) => db.delete(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).run())
     return { ok: true as const }
+  }
+
+  /** 中文注释：为历史遗留的产品私有方案补齐绑定关系，方便正式环境平滑迁移到新的多对多模型。 */
+  export async function backfillBindings(input?: { product_ids?: string[] }) {
+    const product_ids = [...new Set((input?.product_ids ?? []).map((item) => item.trim()).filter(Boolean))]
+    const solutions = await Database.use((db) => {
+      const query = db.select().from(TpProductSolutionTable).orderBy(asc(TpProductSolutionTable.product_id), asc(TpProductSolutionTable.time_created), asc(TpProductSolutionTable.id))
+      if (product_ids.length === 0) return query.all()
+      return query.where(inArray(TpProductSolutionTable.product_id, product_ids)).all()
+    })
+    if (solutions.length === 0) {
+      return {
+        scanned: 0,
+        created: 0,
+      }
+    }
+    const bindings = await Database.use((db) => {
+      const query = db.select().from(TpProductSolutionBindingTable).orderBy(asc(TpProductSolutionBindingTable.product_id), asc(TpProductSolutionBindingTable.sort_order), asc(TpProductSolutionBindingTable.id))
+      if (product_ids.length === 0) return query.all()
+      return query.where(inArray(TpProductSolutionBindingTable.product_id, product_ids)).all()
+    })
+    const exists = new Set(bindings.map((item) => `${item.product_id}:${item.solution_id}`))
+    const sort = new Map<string, number>()
+    for (const item of bindings) {
+      sort.set(item.product_id, Math.max(sort.get(item.product_id) ?? -1, item.sort_order))
+    }
+    const now = Date.now()
+    const values = solutions.flatMap((item) => {
+      const key = `${item.product_id}:${item.id}`
+      if (exists.has(key)) return []
+      const next = (sort.get(item.product_id) ?? -1) + 1
+      sort.set(item.product_id, next)
+      exists.add(key)
+      return [
+        {
+          id: ulid(),
+          product_id: item.product_id,
+          solution_id: item.id,
+          enabled: item.enabled,
+          sort_order: next,
+          time_created: now,
+          time_updated: now,
+        },
+      ]
+    })
+    if (values.length > 0) {
+      await Database.use((db) => db.insert(TpProductSolutionBindingTable).values(values).run())
+    }
+    return {
+      scanned: solutions.length,
+      created: values.length,
+    }
   }
 
   /** 中文注释：为执行链挑选解决方案；当前端尚未提供多方案选择时，默认回退到首个启用方案。 */

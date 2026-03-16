@@ -6,6 +6,7 @@ import DESCRIPTION from "./glob.txt"
 import { Ripgrep } from "../file/ripgrep"
 import { Instance } from "../project/instance"
 import { assertExternalDirectory } from "./external-directory"
+import { BuildOverlay } from "@/build/overlay"
 
 export const GlobTool = Tool.define("glob", {
   description: DESCRIPTION,
@@ -19,6 +20,7 @@ export const GlobTool = Tool.define("glob", {
       ),
   }),
   async execute(params, ctx) {
+    const overlay = await BuildOverlay.load(ctx.sessionID)
     await ctx.ask({
       permission: "glob",
       patterns: [params.pattern],
@@ -36,21 +38,40 @@ export const GlobTool = Tool.define("glob", {
     const limit = 100
     const files = []
     let truncated = false
-    for await (const file of Ripgrep.files({
-      cwd: search,
-      glob: [params.pattern],
-      signal: ctx.abort,
-    })) {
-      if (files.length >= limit) {
-        truncated = true
-        break
+    if (overlay && (await BuildOverlay.stat({ overlay, filePath: search }))) {
+      for (const full of await BuildOverlay.scanFiles({
+        overlay,
+        directory: search,
+        pattern: params.pattern,
+        limit: limit + 1,
+      })) {
+        if (files.length >= limit) {
+          truncated = true
+          break
+        }
+        const stats = (await BuildOverlay.stat({ overlay, filePath: full }))?.mtime.getTime() ?? 0
+        files.push({
+          path: full,
+          mtime: stats,
+        })
       }
-      const full = path.resolve(search, file)
-      const stats = Filesystem.stat(full)?.mtime.getTime() ?? 0
-      files.push({
-        path: full,
-        mtime: stats,
-      })
+    } else {
+      for await (const file of Ripgrep.files({
+        cwd: search,
+        glob: [params.pattern],
+        signal: ctx.abort,
+      })) {
+        if (files.length >= limit) {
+          truncated = true
+          break
+        }
+        const full = path.resolve(search, file)
+        const stats = Filesystem.stat(full)?.mtime.getTime() ?? 0
+        files.push({
+          path: full,
+          mtime: stats,
+        })
+      }
     }
     files.sort((a, b) => b.mtime - a.mtime)
 

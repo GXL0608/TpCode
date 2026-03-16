@@ -9,6 +9,7 @@ import { UserRbac } from "@/user/rbac"
 import { Session } from "@/session"
 import { Workspace } from "@/control-plane/workspace"
 import type { BunFile } from "bun"
+import { AccountProviderState } from "@/provider/account-provider-state"
 
 const BuildJobCreateBody = z.object({
   source_type: z.enum(["prompt", "saved_plan"]).default("prompt"),
@@ -16,6 +17,8 @@ const BuildJobCreateBody = z.object({
   solution_id: z.string().optional(),
   prompt_text: z.string().optional(),
   saved_plan_id: z.string().optional(),
+  providerID: z.string().optional(),
+  modelID: z.string().optional(),
   run_mode: z.enum(["async", "sync"]).optional(),
 })
 
@@ -23,6 +26,8 @@ const BuildJobBatchBody = z.object({
   product_id: z.string().min(1).optional(),
   solution_id: z.string().optional(),
   saved_plan_ids: z.array(z.string().min(1)).min(1),
+  providerID: z.string().optional(),
+  modelID: z.string().optional(),
   run_mode: z.enum(["async", "sync"]).optional(),
 })
 
@@ -48,6 +53,45 @@ async function resolveProductID(c: Context, product_id?: string) {
   if (!context_project_id) return
   const items = await AccountProductService.listByProjectIDs([context_project_id])
   return items.find((item) => item.project_id === context_project_id)?.id
+}
+
+/** 中文注释：校验构建任务显式指定的模型是否属于当前用户可选模型集合。 */
+async function resolveRuntimeModel(
+  c: Context,
+  input: {
+    providerID?: string
+    modelID?: string
+  },
+) {
+  if (!input.providerID && !input.modelID) return { ok: true as const }
+  if (!input.providerID || !input.modelID) {
+    return {
+      ok: false as const,
+      response: c.json({ ok: false, code: "build_runtime_model_invalid" }, 400),
+    }
+  }
+  const actor_user_id = c.get("account_user_id" as never) as string | undefined
+  if (!actor_user_id) {
+    return {
+      ok: false as const,
+      response: c.json({ error: "unauthorized" }, 401),
+    }
+  }
+  const state = await AccountProviderState.load(actor_user_id)
+  const value = `${input.providerID}/${input.modelID}`
+  if (!state.selectable_models.some((item) => item.value === value)) {
+    return {
+      ok: false as const,
+      response: c.json({ ok: false, code: "model_not_configured" }, 400),
+    }
+  }
+  return {
+    ok: true as const,
+    runtime_model: {
+      providerID: input.providerID,
+      modelID: input.modelID,
+    },
+  }
 }
 
 /** 中文注释：为 build job 详情补充 session/workspace 目录信息，方便前端直接跳转和下载。 */
@@ -153,12 +197,15 @@ export const BuildRoutes = lazy(() =>
             400,
           )
         }
+        const runtime = await resolveRuntimeModel(c, body)
+        if (!runtime.ok) return runtime.response
         const created = await BuildJobService.create({
           source_type: body.source_type,
           product_id,
           solution_id: body.solution_id,
           prompt_text: body.prompt_text,
           saved_plan_id: body.saved_plan_id,
+          runtime_model: runtime.runtime_model,
         })
         if (!created.ok) return c.json(created, 400)
         if (body.run_mode === "sync") {
@@ -209,10 +256,13 @@ export const BuildRoutes = lazy(() =>
             400,
           )
         }
+        const runtime = await resolveRuntimeModel(c, body)
+        if (!runtime.ok) return runtime.response
         const created = await BuildJobService.createBatch({
           product_id,
           solution_id: body.solution_id,
           saved_plan_ids: body.saved_plan_ids,
+          runtime_model: runtime.runtime_model,
         })
         if (!created.ok) return c.json(created, 400)
         if (body.run_mode === "sync") {

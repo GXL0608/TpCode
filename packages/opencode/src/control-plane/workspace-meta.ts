@@ -15,9 +15,26 @@ export const BatchMember = z.object({
 })
 export type BatchMember = z.infer<typeof BatchMember>
 
+export const BatchOverlayMount = z.object({
+  solution_id: z.string(),
+  solution_code: z.string(),
+  mount_name: z.string(),
+  source_directory: z.string(),
+  overlay_directory: z.string(),
+})
+export type BatchOverlayMount = z.infer<typeof BatchOverlayMount>
+
+export const BatchOverlay = z.object({
+  root: z.string(),
+  manifest_path: z.string(),
+  mounts: BatchOverlayMount.array(),
+})
+export type BatchOverlay = z.infer<typeof BatchOverlay>
+
 export const BatchMeta = z.object({
   source_root: z.string().optional(),
   source_roots: z.array(z.string()).default([]),
   members: BatchMember.array(),
+  overlay: BatchOverlay.optional(),
 })
 export type BatchMeta = z.infer<typeof BatchMeta>

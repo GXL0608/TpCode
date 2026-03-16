@@ -4,6 +4,9 @@ import { createStore } from "solid-js/store"
 import { useServer } from "@/context/server"
 import { AccountToken } from "@/utils/account-auth"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
+import { buildSummaryLine, buildScopeText, collectBuildSolutionCodes } from "./build-job-summary"
+import { buildStageGroups, buildStageLabel, syncBuildCenterJobSelection } from "./settings-build-center-detail"
+import { buildBuildCenterJobBody, buildBuildCenterModelOptions } from "./settings-build-center-model"
 import { resolveBuildCenterProducts, syncBuildCenterFilters } from "./settings-build-center-view"
 
 type SolutionItem = {
@@ -43,16 +46,37 @@ type BuildArtifact = {
   file_name: string
 }
 
+type BuildStage = {
+  id: string
+  stage: string
+  status: string
+  detail_json?: Record<string, unknown>
+  error_message?: string
+}
+
 type BuildJobItem = {
   id: string
   status: string
   current_stage?: string
   source_type: string
   product_id: string
+  solution_scope?: string
   solution_id: string
+  runtime_provider_id?: string
+  runtime_model_id?: string
   plan_content?: string
   error_message?: string
   time_created: number
+}
+
+type SelectableModel = {
+  value?: string
+  source?: string
+}
+
+type BuildJobDetail = {
+  stages: BuildStage[]
+  artifacts: BuildArtifact[]
 }
 
 /** 中文注释：把未知值安全收窄为对象，便于读取接口返回。 */
@@ -85,17 +109,23 @@ export const SettingsBuildCenter = () => {
     error: "",
     message: "",
     keyword: "",
+    model_value: "__auto__",
+    model_options: [{ value: "__auto__", label: "系统自动" }] as Array<{ value: string; label: string }>,
     products: [] as ProductItem[],
     product_id: "",
     solution_id: "",
     plans: [] as SavedPlanItem[],
     selected_plan_ids: [] as string[],
     jobs: [] as BuildJobItem[],
-    artifacts: {} as Record<string, BuildArtifact[]>,
+    selected_job_id: "",
+    detail_loading_id: "",
+    details: {} as Record<string, BuildJobDetail>,
   })
 
   const currentProduct = createMemo(() => state.products.find((item) => item.id === state.product_id))
   const solutions = createMemo(() => currentProduct()?.solutions ?? [])
+  const selectedJob = createMemo(() => state.jobs.find((item) => item.id === state.selected_job_id))
+  const selectedDetail = createMemo(() => (state.selected_job_id ? state.details[state.selected_job_id] : undefined))
 
   /** 中文注释：统一按当前筛选条件刷新计划与构建任务列表，并阻止旧请求覆盖较新的用户选择。 */
   const load = async (next?: { product_id?: string; solution_id?: string; refresh_products?: boolean }) => {
@@ -103,19 +133,25 @@ export const SettingsBuildCenter = () => {
     setState("loading", true)
     setState("error", "")
     const refresh_products = next?.refresh_products ?? state.products.length === 0
-    const incoming = refresh_products
-      ? await (async () => {
-          const response = await request({ path: "/account/admin/products" }).catch(() => undefined)
-          if (!response?.ok) {
-            if (token !== loadToken) return
-            setState("loading", false)
-            setState("error", await parseAccountError(response))
-            return
-          }
-          return list<ProductItem>(await response.json().catch(() => undefined))
-        })()
-      : state.products
+    const [incoming, catalog] = await Promise.all([
+      refresh_products
+        ? await (async () => {
+            const response = await request({ path: "/account/admin/products" }).catch(() => undefined)
+            if (!response?.ok) {
+              if (token !== loadToken) return
+              setState("loading", false)
+              setState("error", await parseAccountError(response))
+              return
+            }
+            return list<ProductItem>(await response.json().catch(() => undefined))
+          })()
+        : state.products,
+      request({ path: "/account/me/providers/catalog" })
+        .then((response) => (response?.ok ? response.json().catch(() => undefined) : undefined))
+        .catch(() => undefined),
+    ])
     if (token !== loadToken || !incoming) return
+    const options = buildBuildCenterModelOptions(list<SelectableModel>(obj(catalog)?.selectable_models))
     const products = resolveBuildCenterProducts(state.products, incoming, refresh_products)
     const filters = syncBuildCenterFilters(products, next?.product_id ?? state.product_id, next?.solution_id ?? state.solution_id)
     const product_id = filters.product_id
@@ -123,6 +159,8 @@ export const SettingsBuildCenter = () => {
     setState("products", products)
     setState("product_id", product_id)
     setState("solution_id", solution_id)
+    setState("model_options", options)
+    if (!options.some((item) => item.value === state.model_value)) setState("model_value", "__auto__")
     const query = new URLSearchParams()
     if (product_id) query.set("product_id", product_id)
     if (state.keyword.trim()) query.set("keyword", state.keyword.trim())
@@ -157,19 +195,23 @@ export const SettingsBuildCenter = () => {
         const response = await request({ path: `/build/job/${encodeURIComponent(item.id)}` }).catch(() => undefined)
         if (!response?.ok) return
         const body = obj(await response.json().catch(() => undefined))
-        return {
-          job_id: item.id,
-          artifacts: list<BuildArtifact>(body?.artifacts),
-        }
+        return [
+          item.id,
+          {
+            stages: list<BuildStage>(body?.stages),
+            artifacts: list<BuildArtifact>(body?.artifacts),
+          } satisfies BuildJobDetail,
+        ] as const
       }),
     )
     if (token !== loadToken) return
-    const artifacts = {} as Record<string, BuildArtifact[]>
+    const detailsByJob = {} as Record<string, BuildJobDetail>
     for (const item of details) {
       if (!item) continue
-      artifacts[item.job_id] = item.artifacts
+      detailsByJob[item[0]] = item[1]
     }
-    setState("artifacts", artifacts)
+    setState("details", detailsByJob)
+    setState("selected_job_id", syncBuildCenterJobSelection(jobs, state.selected_job_id))
   }
 
   const togglePlan = (plan_id: string) => {
@@ -185,12 +227,12 @@ export const SettingsBuildCenter = () => {
     const response = await request({
       method: "POST",
       path: "/build/job/batch",
-      body: {
+      body: buildBuildCenterJobBody({
         product_id: state.product_id,
-        solution_id: state.solution_id || undefined,
+        solution_id: state.solution_id,
         saved_plan_ids: state.selected_plan_ids,
-        run_mode: "async",
-      },
+        model: state.model_value,
+      }),
     }).catch(() => undefined)
     setState("pending", false)
     if (!response?.ok) {
@@ -212,6 +254,46 @@ export const SettingsBuildCenter = () => {
     return url.toString()
   }
 
+  /** 中文注释：读取指定任务的详情快照，供列表摘要和产物下载统一复用。 */
+  const detail = (job_id: string) => state.details[job_id]
+
+  /** 中文注释：提取任务详情中的方案编码摘要，便于列表直接显示本次覆盖范围。 */
+  const solutionText = (job_id: string) => {
+    const codes = collectBuildSolutionCodes(detail(job_id)?.stages)
+    if (codes.length === 0) return ""
+    return codes.join("、")
+  }
+
+  /** 中文注释：把阶段原始 detail_json 转成可读文本，作为没有方案明细时的兜底展示。 */
+  const detailText = (stage: BuildStage) => {
+    const payload = stage.detail_json
+    if (!payload || Object.keys(payload).length === 0) return ""
+    return JSON.stringify(payload, null, 2)
+  }
+
+  /** 中文注释：按需加载单个构建任务的详情，便于列表选中后再查看完整阶段明细。 */
+  const loadJobDetail = async (job_id: string) => {
+    if (!job_id || state.details[job_id] || state.detail_loading_id === job_id) return
+    setState("detail_loading_id", job_id)
+    const response = await request({ path: `/build/job/${encodeURIComponent(job_id)}` }).catch(() => undefined)
+    if (!response?.ok) {
+      if (state.detail_loading_id === job_id) setState("detail_loading_id", "")
+      return
+    }
+    const body = obj(await response.json().catch(() => undefined))
+    setState("details", job_id, {
+      stages: list<BuildStage>(body?.stages),
+      artifacts: list<BuildArtifact>(body?.artifacts),
+    })
+    if (state.detail_loading_id === job_id) setState("detail_loading_id", "")
+  }
+
+  /** 中文注释：切换构建任务选中态，并在首次查看时补拉详情数据。 */
+  const selectJob = (job_id: string) => {
+    setState("selected_job_id", job_id)
+    void loadJobDetail(job_id)
+  }
+
   createEffect(() => {
     if (booted) return
     booted = true
@@ -226,6 +308,17 @@ export const SettingsBuildCenter = () => {
     }
     if (filters.solution_id !== state.solution_id) {
       setState("solution_id", filters.solution_id)
+    }
+  })
+
+  createEffect(() => {
+    const job_id = syncBuildCenterJobSelection(state.jobs, state.selected_job_id)
+    if (job_id !== state.selected_job_id) {
+      setState("selected_job_id", job_id)
+      return
+    }
+    if (job_id && !selectedDetail()) {
+      void loadJobDetail(job_id)
     }
   })
 
@@ -252,7 +345,7 @@ export const SettingsBuildCenter = () => {
           </div>
         </div>
 
-        <div class="grid gap-3 md:grid-cols-[220px_220px_minmax(0,1fr)]">
+        <div class="grid gap-3 md:grid-cols-[220px_220px_220px_minmax(0,1fr)]">
           <select
             class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
             value={state.product_id}
@@ -281,6 +374,15 @@ export const SettingsBuildCenter = () => {
             <option value="">全部解决方案</option>
             <For each={solutions()}>
               {(item) => <option value={item.id}>{item.name}</option>}
+            </For>
+          </select>
+          <select
+            class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+            value={state.model_value}
+            onChange={(event) => setState("model_value", event.currentTarget.value)}
+          >
+            <For each={state.model_options}>
+              {(item) => <option value={item.value}>{item.label}</option>}
             </For>
           </select>
           <input
@@ -355,25 +457,45 @@ export const SettingsBuildCenter = () => {
                 <tbody>
                   <For each={state.jobs}>
                     {(item) => (
-                      <tr class="border-t border-border-weak-base align-top">
+                      <tr
+                        class="border-t border-border-weak-base align-top cursor-pointer transition-colors"
+                        classList={{
+                          "bg-brand-solid/10": state.selected_job_id === item.id,
+                          "hover:bg-surface-panel/45": state.selected_job_id !== item.id,
+                        }}
+                        onClick={() => selectJob(item.id)}
+                      >
                         <td class="px-3 py-2">
                           <div class="text-text-strong">{item.status}</div>
+                          <div class="mt-1 text-[11px] text-text-weak">{buildSummaryLine({ solution_scope: item.solution_scope, ...(detail(item.id) ?? {}) })}</div>
                           <div class="mt-1 text-[11px] text-text-weak">{timeText(item.time_created)}</div>
                         </td>
-                        <td class="px-3 py-2">{item.current_stage || "-"}</td>
                         <td class="px-3 py-2">
+                          <div>{item.current_stage || "-"}</div>
+                          <Show when={detail(item.id)?.stages?.length}>
+                            <div class="mt-1 text-[11px] text-text-weak">
+                              {(detail(item.id)?.stages ?? []).map((stage) => `${stage.stage}:${stage.status}`).join(" / ")}
+                            </div>
+                          </Show>
+                        </td>
+                        <td class="px-3 py-2">
+                          <Show when={buildScopeText(item.solution_scope) !== buildSummaryLine({ solution_scope: item.solution_scope, ...(detail(item.id) ?? {}) })}>
+                            <div class="mb-1 text-[11px] text-text-weak">
+                              {buildScopeText(item.solution_scope)}{solutionText(item.id) ? ` 已覆盖 ${solutionText(item.id)}` : ""}
+                            </div>
+                          </Show>
                           <div class="line-clamp-3 whitespace-pre-wrap">{item.error_message || item.plan_content || "-"}</div>
                         </td>
                         <td class="px-3 py-2">
                           <div class="flex flex-col gap-1">
-                            <For each={state.artifacts[item.id] ?? []}>
+                            <For each={detail(item.id)?.artifacts ?? []}>
                               {(artifact) => (
                                 <a class="text-icon-info-active underline" href={artifactURL(artifact.id)} target="_blank" rel="noreferrer">
                                   {artifact.file_name}
                                 </a>
                               )}
                             </For>
-                            <Show when={(state.artifacts[item.id] ?? []).length === 0}>
+                            <Show when={(detail(item.id)?.artifacts ?? []).length === 0}>
                               <span class="text-text-weak">-</span>
                             </Show>
                           </div>
@@ -391,6 +513,122 @@ export const SettingsBuildCenter = () => {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-border-weak-base bg-surface-base overflow-hidden">
+          <div class="px-4 py-3 border-b border-border-weak-base flex items-center justify-between gap-3">
+            <div>
+              <div class="text-13-medium text-text-strong">任务详情</div>
+              <div class="mt-1 text-11-regular text-text-weak">查看当前选中构建任务的阶段结果、方案级日志和打包产物。</div>
+            </div>
+            <Show when={selectedJob()}>
+              <div class="text-11-regular text-text-weak">{selectedJob()?.id}</div>
+            </Show>
+          </div>
+          <div class="p-4">
+            <Show
+              when={selectedJob()}
+              fallback={<div class="rounded-xl border border-dashed border-border-weak-base px-4 py-10 text-center text-12-regular text-text-weak">请选择一条构建任务后查看详情。</div>}
+            >
+              <div class="flex flex-col gap-4">
+                <div class="grid gap-3 md:grid-cols-4">
+                  <div class="rounded-xl bg-surface-panel/45 p-3">
+                    <div class="text-11-medium text-text-weak">执行范围</div>
+                    <div class="mt-2 text-12-regular text-text-strong">{buildSummaryLine({ solution_scope: selectedJob()?.solution_scope, ...(selectedDetail() ?? {}) })}</div>
+                  </div>
+                  <div class="rounded-xl bg-surface-panel/45 p-3">
+                    <div class="text-11-medium text-text-weak">当前阶段</div>
+                    <div class="mt-2 text-12-regular text-text-strong">{selectedJob()?.current_stage || "-"}</div>
+                  </div>
+                  <div class="rounded-xl bg-surface-panel/45 p-3">
+                    <div class="text-11-medium text-text-weak">来源类型</div>
+                    <div class="mt-2 text-12-regular text-text-strong">{selectedJob()?.source_type || "-"}</div>
+                  </div>
+                  <div class="rounded-xl bg-surface-panel/45 p-3">
+                    <div class="text-11-medium text-text-weak">执行模型</div>
+                    <div class="mt-2 text-12-regular text-text-strong">
+                      {selectedJob()?.runtime_provider_id && selectedJob()?.runtime_model_id
+                        ? `${selectedJob()!.runtime_provider_id}/${selectedJob()!.runtime_model_id}`
+                        : "系统自动"}
+                    </div>
+                  </div>
+                  <div class="rounded-xl bg-surface-panel/45 p-3">
+                    <div class="text-11-medium text-text-weak">创建时间</div>
+                    <div class="mt-2 text-12-regular text-text-strong">{timeText(selectedJob()?.time_created ?? 0)}</div>
+                  </div>
+                </div>
+
+                <Show when={selectedJob()?.plan_content}>
+                  <div class="rounded-xl bg-surface-panel/45 p-4">
+                    <div class="text-12-medium text-text-strong">计划/需求快照</div>
+                    <pre class="mt-3 whitespace-pre-wrap break-all text-12-regular text-text-weak">{selectedJob()?.plan_content}</pre>
+                  </div>
+                </Show>
+
+                <Show when={state.detail_loading_id === state.selected_job_id && !selectedDetail()}>
+                  <div class="rounded-xl border border-dashed border-border-weak-base px-4 py-8 text-center text-12-regular text-text-weak">
+                    正在加载任务详情...
+                  </div>
+                </Show>
+
+                <Show when={(selectedDetail()?.stages ?? []).length > 0}>
+                  <div class="grid gap-3 xl:grid-cols-2">
+                    <For each={selectedDetail()?.stages ?? []}>
+                      {(stage) => (
+                        <div class="rounded-xl border border-border-weak-base bg-surface-panel/35 p-4 flex flex-col gap-3">
+                          <div class="flex items-center justify-between gap-3">
+                            <div class="text-13-medium text-text-strong">{buildStageLabel(stage.stage)}</div>
+                            <div class="text-11-medium text-text-weak">{stage.status}</div>
+                          </div>
+                          <Show when={stage.error_message}>
+                            <div class="rounded-md bg-icon-critical-base/10 px-3 py-2 text-12-regular text-icon-critical-base">{stage.error_message}</div>
+                          </Show>
+                          <Show
+                            when={buildStageGroups(stage).length > 0}
+                            fallback={
+                              <Show when={detailText(stage)}>
+                                <pre class="rounded-md bg-surface-base px-3 py-2 whitespace-pre-wrap break-all text-11-regular text-text-weak">{detailText(stage)}</pre>
+                              </Show>
+                            }
+                          >
+                            <div class="flex flex-col gap-3">
+                              <For each={buildStageGroups(stage)}>
+                                {(group) => (
+                                  <div class="rounded-lg bg-surface-base px-3 py-3">
+                                    <div class="text-12-medium text-text-strong">{group.name}</div>
+                                    <div class="mt-2 flex flex-col gap-1">
+                                      <For each={group.lines}>
+                                        {(line) => <div class="text-11-regular text-text-weak break-all">{line}</div>}
+                                      </For>
+                                    </div>
+                                  </div>
+                                )}
+                              </For>
+                            </div>
+                          </Show>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+
+                <Show when={(selectedDetail()?.artifacts ?? []).length > 0}>
+                  <div class="rounded-xl bg-surface-panel/45 p-4">
+                    <div class="text-12-medium text-text-strong">当前产物</div>
+                    <div class="mt-3 flex flex-col gap-2">
+                      <For each={selectedDetail()?.artifacts ?? []}>
+                        {(artifact) => (
+                          <a class="text-icon-info-active underline break-all" href={artifactURL(artifact.id)} target="_blank" rel="noreferrer">
+                            {artifact.file_name}
+                          </a>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+              </div>
+            </Show>
           </div>
         </div>
       </section>

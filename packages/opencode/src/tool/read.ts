@@ -11,6 +11,7 @@ import { Instance } from "../project/instance"
 import { assertExternalDirectory } from "./external-directory"
 import { InstructionPrompt } from "../session/instruction"
 import { Filesystem } from "../util/filesystem"
+import { BuildOverlay } from "@/build/overlay"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -26,6 +27,7 @@ export const ReadTool = Tool.define("read", {
     limit: z.coerce.number().describe("The maximum number of lines to read (defaults to 2000)").optional(),
   }),
   async execute(params, ctx) {
+    const overlay = await BuildOverlay.load(ctx.sessionID)
     if (params.offset !== undefined && params.offset < 1) {
       throw new Error("offset must be greater than or equal to 1")
     }
@@ -35,7 +37,7 @@ export const ReadTool = Tool.define("read", {
     }
     const title = path.relative(Instance.worktree, filepath)
 
-    const stat = Filesystem.stat(filepath)
+    const stat = overlay ? await BuildOverlay.stat({ overlay, filePath: filepath }) : Filesystem.stat(filepath)
 
     await assertExternalDirectory(ctx, filepath, {
       bypass: Boolean(ctx.extra?.["bypassCwdCheck"]),
@@ -53,18 +55,31 @@ export const ReadTool = Tool.define("read", {
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
 
-      const suggestions = await fs
-        .readdir(dir)
-        .then((entries) =>
-          entries
-            .filter(
-              (entry) =>
-                entry.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(entry.toLowerCase()),
+      const suggestions = overlay
+        ? await BuildOverlay.listDirectory({ overlay, directory: dir })
+            .then((entries) =>
+              entries
+                .map((entry) => entry.replace(/\/$/, ""))
+                .filter(
+                  (entry) =>
+                    entry.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(entry.toLowerCase()),
+                )
+                .map((entry) => path.join(dir, entry))
+                .slice(0, 3),
             )
-            .map((entry) => path.join(dir, entry))
-            .slice(0, 3),
-        )
-        .catch(() => [])
+            .catch(() => [])
+        : await fs
+            .readdir(dir)
+            .then((entries) =>
+              entries
+                .filter(
+                  (entry) =>
+                    entry.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(entry.toLowerCase()),
+                )
+                .map((entry) => path.join(dir, entry))
+                .slice(0, 3),
+            )
+            .catch(() => [])
 
       if (suggestions.length > 0) {
         throw new Error(`File not found: ${filepath}\n\nDid you mean one of these?\n${suggestions.join("\n")}`)
@@ -74,18 +89,20 @@ export const ReadTool = Tool.define("read", {
     }
 
     if (stat.isDirectory()) {
-      const dirents = await fs.readdir(filepath, { withFileTypes: true })
-      const entries = await Promise.all(
-        dirents.map(async (dirent) => {
-          if (dirent.isDirectory()) return dirent.name + "/"
-          if (dirent.isSymbolicLink()) {
-            const target = await fs.stat(path.join(filepath, dirent.name)).catch(() => undefined)
-            if (target?.isDirectory()) return dirent.name + "/"
-          }
-          return dirent.name
-        }),
-      )
-      entries.sort((a, b) => a.localeCompare(b))
+      const entries = overlay
+        ? await BuildOverlay.listDirectory({ overlay, directory: filepath })
+        : await fs.readdir(filepath, { withFileTypes: true }).then(async (dirents) =>
+            (await Promise.all(
+              dirents.map(async (dirent) => {
+                if (dirent.isDirectory()) return dirent.name + "/"
+                if (dirent.isSymbolicLink()) {
+                  const target = await fs.stat(path.join(filepath, dirent.name)).catch(() => undefined)
+                  if (target?.isDirectory()) return dirent.name + "/"
+                }
+                return dirent.name
+              }),
+            )).sort((a, b) => a.localeCompare(b)),
+          )
 
       const limit = params.limit ?? DEFAULT_READ_LIMIT
       const offset = params.offset ?? 1
@@ -116,6 +133,42 @@ export const ReadTool = Tool.define("read", {
     }
 
     const instructions = await InstructionPrompt.resolve(ctx.messages, filepath, ctx.messageID)
+    if (overlay) {
+      const raw = (await BuildOverlay.readText({ overlay, filePath: filepath })).replace(/\r\n/g, "\n").split("\n")
+      if (raw[raw.length - 1] === "") raw.pop()
+      const limit = params.limit ?? DEFAULT_READ_LIMIT
+      const offset = params.offset ?? 1
+      if (raw.length < offset && !(raw.length === 0 && offset === 1)) {
+        throw new Error(`Offset ${offset} is out of range for this file (${raw.length} lines)`)
+      }
+      const sliced = raw.slice(offset - 1, offset - 1 + limit)
+      const content = sliced.map((line, index) => `${index + offset}: ${line}`)
+      const preview = sliced.slice(0, 20).join("\n")
+      const lastReadLine = offset + sliced.length - 1
+      const hasMoreLines = offset - 1 + sliced.length < raw.length
+      let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>"].join("\n")
+      output += content.join("\n")
+      if (hasMoreLines) {
+        output += `\n\n(Showing lines ${offset}-${lastReadLine} of ${raw.length}. Use offset=${lastReadLine + 1} to continue.)`
+      } else {
+        output += `\n\n(End of file - total ${raw.length} lines)`
+      }
+      output += "\n</content>"
+      if (instructions.length > 0) {
+        output += `\n\n<system-reminder>\n${instructions.map((i) => i.content).join("\n\n")}\n</system-reminder>`
+      }
+      LSP.touchFile(filepath, false)
+      FileTime.read(ctx.sessionID, filepath)
+      return {
+        title,
+        output,
+        metadata: {
+          preview,
+          truncated: hasMoreLines,
+          loaded: instructions.map((i) => i.filepath),
+        },
+      }
+    }
 
     // Exclude SVG (XML-based) and vnd.fastbidsheet (.fbs extension, commonly FlatBuffers schema files)
     const mime = Filesystem.mimeType(filepath)

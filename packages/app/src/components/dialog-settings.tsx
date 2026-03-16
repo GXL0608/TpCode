@@ -1,4 +1,4 @@
-import { Component, Show, createMemo } from "solid-js"
+import { Component, Show, createMemo, createSignal } from "solid-js"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { Icon } from "@opencode-ai/ui/icon"
@@ -14,16 +14,19 @@ import { SettingsRoles } from "./settings-roles"
 import { SettingsSystem } from "./settings-system"
 import { SettingsProjects } from "./settings-projects"
 import { SettingsBuildCenter } from "./settings-build-center"
+import { SettingsSolutionLibrary } from "./settings-solution-library"
 import { canUseBuildCapability } from "@/utils/account-build-access"
 
 export const DialogSettings: Component = () => {
   const language = useLanguage()
   const platform = usePlatform()
   const auth = useAccountAuth()
+  const [tab, setTab] = createSignal("general")
   const isSuperAdmin = createMemo(() => (auth.user()?.roles ?? []).includes("super_admin"))
   const canManageUsers = createMemo(() => auth.has("user:manage"))
   const canManageRoles = createMemo(() => auth.has("role:manage"))
   const canManageProjects = createMemo(() => auth.has("role:manage"))
+  const canManageSolutions = createMemo(() => auth.has("role:manage"))
   const canManageBuildCenter = createMemo(() => auth.has("role:manage"))
   const canManageSystem = createMemo(() => auth.has("role:manage"))
   const canViewGlobalProviders = createMemo(() => isSuperAdmin())
@@ -31,7 +34,7 @@ export const DialogSettings: Component = () => {
 
   return (
     <Dialog size="xx-large" transition>
-      <Tabs orientation="vertical" variant="settings" defaultValue="general" class="h-full settings-dialog">
+      <Tabs orientation="vertical" variant="settings" value={tab()} onChange={setTab} class="h-full settings-dialog">
         <Tabs.List>
           <div class="flex flex-col justify-between h-full w-full">
             <div class="flex flex-col gap-3 w-full pt-3">
@@ -87,6 +90,12 @@ export const DialogSettings: Component = () => {
                         项目管理
                       </Tabs.Trigger>
                     </Show>
+                    <Show when={canManageSolutions()}>
+                      <Tabs.Trigger value="solution-library">
+                        <Icon name="folder-add-left" />
+                        解决方案库
+                      </Tabs.Trigger>
+                    </Show>
                     <Show when={canManageBuildCenter()}>
                       <Tabs.Trigger value="build-center">
                         <Icon name="check" />
@@ -140,7 +149,12 @@ export const DialogSettings: Component = () => {
         </Show>
         <Show when={canManageProjects()}>
           <Tabs.Content value="projects" class="no-scrollbar">
-            <SettingsProjects />
+            <SettingsProjects onOpenSolutionLibrary={() => setTab("solution-library")} />
+          </Tabs.Content>
+        </Show>
+        <Show when={canManageSolutions()}>
+          <Tabs.Content value="solution-library" class="no-scrollbar">
+            <SettingsSolutionLibrary />
           </Tabs.Content>
         </Show>
         <Show when={canManageBuildCenter()}>

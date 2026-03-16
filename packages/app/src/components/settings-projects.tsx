@@ -21,6 +21,7 @@ type SolutionRootItem = {
   root_type: "single_repo" | "parent_batch" | "virtual_group"
   directory: string
   display_name?: string
+  mount_name?: string
   sort_order?: number
   enabled?: boolean
   meta?: {
@@ -77,7 +78,7 @@ function pretty(input: unknown) {
   return JSON.stringify(input, null, 2)
 }
 
-export const SettingsProjects = () => {
+export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) => {
   const auth = useAccountAuth()
   const request = useAccountRequest()
 
@@ -94,30 +95,10 @@ export const SettingsProjects = () => {
     formID: "",
     formName: "",
     formDirectory: "",
-    solutionOpen: false,
-    solutionEdit: false,
-    solutionProductID: "",
-    solutionID: "",
-    solutionName: "",
-    solutionCode: "",
-    solutionEnabled: true,
-    solutionProjectID: "",
-    solutionBuildProfileText: pretty({
-      workdirs: ["."],
-      compile_command: "",
-      artifact_include: ["dist/**"],
-      artifact_exclude: [],
-      output_name_template: "{{solution}}.zip",
-    }),
-    solutionRootsText: pretty([
-      {
-        root_type: "single_repo",
-        directory: "",
-        display_name: "",
-        sort_order: 0,
-        enabled: true,
-      },
-    ]),
+    solutionLibraryOpen: false,
+    solutionLibraryLoading: false,
+    solutionLibraryProductID: "",
+    solutionLibrary: [] as SolutionItem[],
     scanTarget: "create" as "create" | "edit",
     scanDirOpen: false,
     scanDirLoading: false,
@@ -127,6 +108,11 @@ export const SettingsProjects = () => {
   })
   const currentProduct = createMemo(() => state.products.find((item) => item.id === state.selectedProductID))
   const currentSolution = createMemo(() => currentProduct()?.solutions?.find((item) => item.id === state.selectedSolutionID))
+  const bindableSolutions = createMemo(() => {
+    const product = state.products.find((item) => item.id === state.solutionLibraryProductID)
+    const bound = new Set((product?.solutions ?? []).map((item) => item.id))
+    return state.solutionLibrary.filter((item) => !bound.has(item.id))
+  })
 
   const canManage = () => auth.has("role:manage")
 
@@ -189,162 +175,72 @@ export const SettingsProjects = () => {
     setState("formDirectory", "")
   }
 
-  /** 中文注释：切换左侧产品导航时同步刷新解决方案选中项，并退出当前编辑态。 */
+  /** 中文注释：切换左侧产品导航时同步刷新解决方案选中项，保持当前产品视角下的绑定列表稳定。 */
   const selectProduct = (item: ProductItem) => {
     if (state.pending) return
     setState("selectedProductID", item.id)
     setState("selectedSolutionID", syncSolutionSelection(item, state.selectedSolutionID))
-    setState("solutionOpen", false)
-    setState("solutionEdit", false)
-    setState("solutionID", "")
   }
 
-  /** 中文注释：切换当前产品下的解决方案时回到详情视图，避免不同方案的表单串联。 */
+  /** 中文注释：切换当前产品下的解决方案，右侧详情区同步展示当前绑定方案摘要。 */
   const selectSolution = (item: SolutionItem) => {
     if (state.pending) return
     setState("selectedSolutionID", item.id)
-    setState("solutionOpen", false)
-    setState("solutionEdit", false)
-    setState("solutionID", "")
   }
 
-  /** 中文注释：以当前产品为上下文初始化解决方案创建表单。 */
-  const openSolutionCreate = (product: ProductItem) => {
-    setState("solutionOpen", true)
-    setState("solutionEdit", false)
-    setState("solutionProductID", product.id)
-    setState("solutionID", "")
-    setState("solutionName", "")
-    setState("solutionCode", "")
-    setState("solutionEnabled", true)
-    setState("solutionProjectID", product.project_id)
-    setState(
-      "solutionBuildProfileText",
-      pretty({
-        workdirs: ["."],
-        compile_command: "",
-        artifact_include: ["dist/**"],
-        artifact_exclude: [],
-        output_name_template: "{{solution}}.zip",
-      }),
-    )
-    setState(
-      "solutionRootsText",
-      pretty([
-        {
-          root_type: "single_repo",
-          directory: product.worktree,
-          display_name: product.name,
-          sort_order: 0,
-          enabled: true,
-        },
-      ]),
-    )
-  }
-
-  /** 中文注释：把已有解决方案内容回填到表单，供管理员直接修改。 */
-  const openSolutionEdit = (product: ProductItem, item: SolutionItem) => {
-    setState("solutionOpen", true)
-    setState("solutionEdit", true)
-    setState("solutionProductID", product.id)
-    setState("solutionID", item.id)
-    setState("selectedSolutionID", item.id)
-    setState("solutionName", item.name)
-    setState("solutionCode", item.code)
-    setState("solutionEnabled", item.enabled)
-    setState("solutionProjectID", item.primary_project_id || product.project_id)
-    setState("solutionBuildProfileText", pretty(item.build_profile))
-    setState(
-      "solutionRootsText",
-      pretty(
-        item.roots.map((root) => ({
-          root_type: root.root_type,
-          directory: root.directory,
-          display_name: root.display_name,
-          sort_order: root.sort_order ?? 0,
-          enabled: root.enabled ?? true,
-          meta: root.meta,
-        })),
-      ),
-    )
-  }
-
-  /** 中文注释：关闭解决方案弹窗并清理本次编辑态。 */
-  const closeSolution = () => {
-    if (state.pending) return
-    setState("solutionOpen", false)
-    setState("solutionEdit", false)
-    setState("solutionProductID", "")
-    setState("solutionID", "")
-  }
-
-  /** 中文注释：解析解决方案编辑表单里的 JSON 文本，确保 build_profile 与 roots 都能直接落库。 */
-  const parseSolutionForm = () => {
-    try {
-      const build_profile = JSON.parse(state.solutionBuildProfileText)
-      const roots = JSON.parse(state.solutionRootsText)
-      if (!Array.isArray(roots)) {
-        return {
-          ok: false as const,
-          message: "源码根目录配置必须是 JSON 数组",
-        }
-      }
-      return {
-        ok: true as const,
-        body: {
-          name: state.solutionName.trim(),
-          code: state.solutionCode.trim(),
-          enabled: state.solutionEnabled,
-          primary_project_id: state.solutionProjectID.trim() || undefined,
-          build_profile,
-          roots,
-        },
-      }
-    } catch (error) {
-      return {
-        ok: false as const,
-        message: error instanceof Error ? error.message : "解决方案 JSON 解析失败",
-      }
-    }
-  }
-
-  /** 中文注释：提交解决方案创建或更新请求，并在成功后刷新产品列表。 */
-  const saveSolution = async (event: SubmitEvent) => {
-    event.preventDefault()
-    if (!state.solutionProductID || !state.solutionName.trim() || !state.solutionCode.trim()) return
-    const parsed = parseSolutionForm()
-    if (!parsed.ok) {
-      setState("error", parsed.message)
+  /** 中文注释：打开可复用解决方案库，供当前产品直接绑定已有方案。 */
+  const openSolutionLibrary = async (product: ProductItem) => {
+    setState("solutionLibraryOpen", true)
+    setState("solutionLibraryLoading", true)
+    setState("solutionLibraryProductID", product.id)
+    setState("error", "")
+    const response = await request({
+      path: "/account/admin/solutions",
+    }).catch(() => undefined)
+    setState("solutionLibraryLoading", false)
+    if (!response?.ok) {
+      setState("error", await resolveError(response))
+      setState("solutionLibrary", [])
       return
     }
+    const body = await response.json().catch(() => undefined)
+    setState("solutionLibrary", list<SolutionItem>(body))
+  }
+
+  /** 中文注释：关闭方案库弹窗，避免旧的产品上下文残留到下一次绑定操作。 */
+  const closeSolutionLibrary = () => {
+    if (state.pending || state.solutionLibraryLoading) return
+    setState("solutionLibraryOpen", false)
+    setState("solutionLibraryProductID", "")
+    setState("solutionLibrary", [])
+  }
+
+  /** 中文注释：把选中的全局方案绑定到当前产品下，供多个产品复用共享源码目录。 */
+  const bindSolution = async (product_id: string, item: SolutionItem) => {
     setState("pending", true)
     setState("error", "")
     setState("message", "")
     const response = await request({
-      method: state.solutionEdit ? "PATCH" : "POST",
-      path: state.solutionEdit
-        ? `/account/admin/products/${encodeURIComponent(state.solutionProductID)}/solutions/${encodeURIComponent(state.solutionID)}`
-        : `/account/admin/products/${encodeURIComponent(state.solutionProductID)}/solutions`,
-      body: parsed.body,
+      method: "POST",
+      path: `/account/admin/products/${encodeURIComponent(product_id)}/solution-bindings`,
+      body: {
+        solution_id: item.id,
+      },
     }).catch(() => undefined)
     setState("pending", false)
     if (!response?.ok) {
       setState("error", await resolveError(response))
       return
     }
-    const body = obj(await response.json().catch(() => undefined))
-    const item = obj(body?.item)
-    setState("message", state.solutionEdit ? "解决方案已更新" : "解决方案已创建")
-    closeSolution()
+    setState("message", "解决方案已绑定到当前产品")
+    closeSolutionLibrary()
     await load()
-    if (typeof item?.id === "string") {
-      setState("selectedSolutionID", item.id)
-    }
+    setState("selectedSolutionID", item.id)
   }
 
-  /** 中文注释：删除当前产品下的解决方案定义。 */
+  /** 中文注释：解绑当前产品下的解决方案，不直接删除全局方案本体。 */
   const removeSolution = async (product_id: string, item: SolutionItem) => {
-    if (!globalThis.confirm(`确认删除解决方案「${item.name}」？`)) return
+    if (!globalThis.confirm(`确认将解决方案「${item.name}」从当前产品解绑？`)) return
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -357,7 +253,7 @@ export const SettingsProjects = () => {
       setState("error", await resolveError(response))
       return
     }
-    setState("message", "解决方案已删除")
+    setState("message", "解决方案已从当前产品解绑")
     if (state.selectedSolutionID === item.id) {
       setState("selectedSolutionID", "")
     }
@@ -532,8 +428,8 @@ export const SettingsProjects = () => {
         <section class="rounded-2xl border border-border-weak-base bg-surface-raised-base p-5 flex flex-col gap-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <div class="text-18-medium text-text-strong">项目管理</div>
-              <div class="text-12-regular text-text-weak mt-1">左侧选择产品，右侧维护当前产品的解决方案和构建配置。</div>
+              <div class="text-18-medium text-text-strong">产品组合管理</div>
+              <div class="text-12-regular text-text-weak mt-1">左侧选择产品，右侧只维护产品与解决方案的绑定关系；方案详情统一到“解决方案库”里维护。</div>
             </div>
             <div class="flex items-center gap-2">
               <Button type="button" variant="secondary" onClick={() => void load()} disabled={state.loading}>
@@ -600,15 +496,18 @@ export const SettingsProjects = () => {
                       <div class="min-w-0">
                         <div class="text-18-medium text-text-strong break-all">{currentProduct()?.name}</div>
                         <div class="mt-1 text-12-regular text-text-weak">
-                          当前产品仍保留绑定目录，用于项目上下文和默认构建入口。
+                          产品本身作为虚拟组合入口，当前目录主要用于项目上下文与默认入口兼容。
                         </div>
                       </div>
                       <div class="flex flex-wrap gap-2">
                         <Button type="button" variant="secondary" onClick={() => currentProduct() && openEdit(currentProduct()!)} disabled={!currentProduct() || state.pending}>
                           编辑产品
                         </Button>
-                        <Button type="button" variant="secondary" onClick={() => currentProduct() && openSolutionCreate(currentProduct()!)} disabled={!currentProduct() || state.pending}>
-                          新增解决方案
+                        <Button type="button" variant="secondary" onClick={() => currentProduct() && void openSolutionLibrary(currentProduct()!)} disabled={!currentProduct() || state.pending}>
+                          绑定已有方案
+                        </Button>
+                        <Button type="button" variant="secondary" onClick={() => props.onOpenSolutionLibrary?.()} disabled={state.pending}>
+                          前往方案库
                         </Button>
                         <Button type="button" variant="secondary" onClick={() => currentProduct() && void removeProduct(currentProduct()!)} disabled={!currentProduct() || state.pending}>
                           删除产品
@@ -660,7 +559,7 @@ export const SettingsProjects = () => {
                       </For>
                       <Show when={(currentProduct()?.solutions ?? []).length === 0}>
                         <div class="rounded-xl border border-dashed border-border-weak-base px-4 py-8 text-center text-12-regular text-text-weak">
-                          当前产品还没有解决方案，请先新增。
+                          当前产品还没有绑定解决方案，请先从方案库中绑定。
                         </div>
                       </Show>
                     </Show>
@@ -670,119 +569,55 @@ export const SettingsProjects = () => {
                 <div class="rounded-xl border border-border-weak-base bg-surface-base overflow-hidden">
                   <div class="px-4 py-3 border-b border-border-weak-base flex items-center justify-between gap-3">
                     <div>
-                      <div class="text-13-medium text-text-strong">{state.solutionOpen ? (state.solutionEdit ? "编辑解决方案" : "新增解决方案") : "解决方案详情"}</div>
-                      <div class="mt-1 text-11-regular text-text-weak">
-                        {state.solutionOpen
-                          ? "右侧直接维护当前产品的方案配置，保存后立即刷新列表。"
-                          : "查看当前选中方案的编码、默认项目和构建配置。"}
-                      </div>
+                      <div class="text-13-medium text-text-strong">绑定方案详情</div>
+                      <div class="mt-1 text-11-regular text-text-weak">当前页面只做绑定关系管理；方案配置请前往“解决方案库”统一维护。</div>
                     </div>
-                    <Show when={!state.solutionOpen && currentSolution()}>
+                    <Show when={currentSolution()}>
                       <div class="flex gap-2">
-                        <Button type="button" size="small" variant="secondary" onClick={() => currentProduct() && currentSolution() && openSolutionEdit(currentProduct()!, currentSolution()!)} disabled={state.pending}>
-                          编辑
+                        <Button type="button" size="small" variant="secondary" onClick={() => props.onOpenSolutionLibrary?.()} disabled={state.pending}>
+                          去方案库编辑
                         </Button>
                         <Button type="button" size="small" variant="secondary" onClick={() => currentProduct() && currentSolution() && void removeSolution(currentProduct()!.id, currentSolution()!)} disabled={state.pending}>
-                          删除
+                          解绑
                         </Button>
                       </div>
                     </Show>
                   </div>
                   <div class="p-4">
                     <Show
-                      when={state.solutionOpen}
+                      when={currentSolution()}
                       fallback={
-                        <Show
-                          when={currentSolution()}
-                          fallback={<div class="rounded-xl border border-dashed border-border-weak-base px-4 py-10 text-center text-12-regular text-text-weak">请选择一个解决方案，或者先新增解决方案。</div>}
-                        >
-                          <div class="flex flex-col gap-4">
-                            <div class="grid gap-3 md:grid-cols-2">
-                              <div class="rounded-xl bg-surface-panel/45 p-3">
-                                <div class="text-11-medium text-text-weak">解决方案名称</div>
-                                <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.name}</div>
-                              </div>
-                              <div class="rounded-xl bg-surface-panel/45 p-3">
-                                <div class="text-11-medium text-text-weak">解决方案编码</div>
-                                <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.code}</div>
-                              </div>
-                              <div class="rounded-xl bg-surface-panel/45 p-3">
-                                <div class="text-11-medium text-text-weak">默认项目 ID</div>
-                                <div class="mt-2 text-12-regular text-text-strong break-all">{currentSolution()?.primary_project_id || currentProduct()?.project_id || "-"}</div>
-                              </div>
-                              <div class="rounded-xl bg-surface-panel/45 p-3">
-                                <div class="text-11-medium text-text-weak">状态</div>
-                                <div class="mt-2 text-12-regular text-text-strong">{currentSolution()?.enabled ? "启用" : "停用"}</div>
-                              </div>
-                            </div>
-                            <div class="rounded-xl bg-surface-panel/45 p-4">
-                              <div class="text-12-medium text-text-strong">build_profile</div>
-                              <pre class="mt-3 whitespace-pre-wrap break-all text-12-regular text-text-weak">{pretty(currentSolution()?.build_profile)}</pre>
-                            </div>
-                            <div class="rounded-xl bg-surface-panel/45 p-4">
-                              <div class="text-12-medium text-text-strong">roots</div>
-                              <pre class="mt-3 whitespace-pre-wrap break-all text-12-regular text-text-weak">{pretty(currentSolution()?.roots)}</pre>
-                            </div>
-                          </div>
-                        </Show>
+                        <div class="rounded-xl border border-dashed border-border-weak-base px-4 py-10 text-center text-12-regular text-text-weak">请选择一个解决方案，或者先到“解决方案库”新增后再绑定。</div>
                       }
                     >
-                      <form class="flex flex-col gap-3" onSubmit={saveSolution}>
+                      <div class="flex flex-col gap-4">
                         <div class="grid gap-3 md:grid-cols-2">
-                          <input
-                            class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                            placeholder="解决方案名称"
-                            value={state.solutionName}
-                            onInput={(event) => setState("solutionName", event.currentTarget.value)}
-                          />
-                          <input
-                            class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                            placeholder="解决方案编码"
-                            value={state.solutionCode}
-                            onInput={(event) => setState("solutionCode", event.currentTarget.value)}
-                          />
-                          <input
-                            class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                            placeholder="默认项目 ID（可选）"
-                            value={state.solutionProjectID}
-                            onInput={(event) => setState("solutionProjectID", event.currentTarget.value)}
-                          />
-                          <label class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular flex items-center gap-2">
-                            <input type="checkbox" checked={state.solutionEnabled} onChange={(event) => setState("solutionEnabled", event.currentTarget.checked)} />
-                            启用该解决方案
-                          </label>
-                        </div>
-                        <div class="rounded-xl bg-surface-panel/45 p-4 flex flex-col gap-2">
-                          <div class="text-12-medium text-text-strong">build_profile JSON</div>
-                          <div class="text-11-regular text-text-weak">
-                            这里维护编译、打包和产物收集规则，暂时仍使用 JSON 直接编辑。
+                          <div class="rounded-xl bg-surface-panel/45 p-3">
+                            <div class="text-11-medium text-text-weak">解决方案名称</div>
+                            <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.name}</div>
                           </div>
-                          <textarea
-                            class="min-h-56 rounded-md border border-border-weak-base bg-surface-base px-3 py-2 text-13-regular font-mono"
-                            value={state.solutionBuildProfileText}
-                            onInput={(event) => setState("solutionBuildProfileText", event.currentTarget.value)}
-                          />
-                        </div>
-                        <div class="rounded-xl bg-surface-panel/45 p-4 flex flex-col gap-2">
-                          <div class="text-12-medium text-text-strong">roots JSON</div>
-                          <div class="text-11-regular text-text-weak">
-                            `roots` 支持 `single_repo`、`parent_batch`、`virtual_group`，其中 `virtual_group` 可在 `meta.directories` 中配置多个真实目录。
+                          <div class="rounded-xl bg-surface-panel/45 p-3">
+                            <div class="text-11-medium text-text-weak">解决方案编码</div>
+                            <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.code}</div>
                           </div>
-                          <textarea
-                            class="min-h-64 rounded-md border border-border-weak-base bg-surface-base px-3 py-2 text-13-regular font-mono"
-                            value={state.solutionRootsText}
-                            onInput={(event) => setState("solutionRootsText", event.currentTarget.value)}
-                          />
+                          <div class="rounded-xl bg-surface-panel/45 p-3">
+                            <div class="text-11-medium text-text-weak">默认项目 ID</div>
+                            <div class="mt-2 text-12-regular text-text-strong break-all">{currentSolution()?.primary_project_id || currentProduct()?.project_id || "-"}</div>
+                          </div>
+                          <div class="rounded-xl bg-surface-panel/45 p-3">
+                            <div class="text-11-medium text-text-weak">状态</div>
+                            <div class="mt-2 text-12-regular text-text-strong">{currentSolution()?.enabled ? "启用" : "停用"}</div>
+                          </div>
                         </div>
-                        <div class="flex justify-end gap-2">
-                          <Button type="button" variant="secondary" onClick={closeSolution} disabled={state.pending}>
-                            取消
-                          </Button>
-                          <Button type="submit" disabled={state.pending || !state.solutionName.trim() || !state.solutionCode.trim()}>
-                            {state.pending ? "保存中..." : "保存"}
-                          </Button>
+                        <div class="rounded-xl bg-surface-panel/45 p-4">
+                          <div class="text-12-medium text-text-strong">build_profile</div>
+                          <pre class="mt-3 whitespace-pre-wrap break-all text-12-regular text-text-weak">{pretty(currentSolution()?.build_profile)}</pre>
                         </div>
-                      </form>
+                        <div class="rounded-xl bg-surface-panel/45 p-4">
+                          <div class="text-12-medium text-text-strong">roots</div>
+                          <pre class="mt-3 whitespace-pre-wrap break-all text-12-regular text-text-weak">{pretty(currentSolution()?.roots)}</pre>
+                        </div>
+                      </div>
                     </Show>
                   </div>
                 </div>
@@ -823,6 +658,50 @@ export const SettingsProjects = () => {
               </Button>
             </div>
           </form>
+        </div>
+      </Show>
+
+      <Show when={state.solutionLibraryOpen}>
+        <div class="fixed inset-0 z-[145] bg-black/55 backdrop-blur-sm px-4 flex items-center justify-center">
+          <div class="w-full max-w-4xl rounded-xl border border-border-weak-base bg-background-base shadow-lg p-5 flex flex-col gap-3">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-16-medium text-text-strong">绑定已有解决方案</div>
+                <div class="mt-1 text-12-regular text-text-weak">从全局方案库中选择一个方案，绑定到当前产品下复用。</div>
+              </div>
+              <Button type="button" variant="secondary" onClick={closeSolutionLibrary} disabled={state.pending || state.solutionLibraryLoading}>
+                关闭
+              </Button>
+            </div>
+            <div class="max-h-[520px] overflow-auto rounded-md border border-border-weak-base bg-surface-base p-3 flex flex-col gap-2">
+              <Show when={!state.solutionLibraryLoading} fallback={<div class="px-2 py-6 text-12-regular text-text-weak">加载方案库中...</div>}>
+                <For each={bindableSolutions()}>
+                  {(item) => (
+                    <div class="rounded-xl border border-border-weak-base bg-surface-panel/35 p-3 flex items-start justify-between gap-3">
+                      <div class="min-w-0">
+                        <div class="text-13-medium text-text-strong break-all">{item.name}</div>
+                        <div class="mt-1 text-11-regular text-text-weak break-all">{item.code}</div>
+                        <div class="mt-2 text-11-regular text-text-weak">
+                          roots：{item.roots.length} · 默认项目：{item.primary_project_id || "-"}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="small"
+                        onClick={() => void bindSolution(state.solutionLibraryProductID, item)}
+                        disabled={state.pending || !state.solutionLibraryProductID}
+                      >
+                        绑定
+                      </Button>
+                    </div>
+                  )}
+                </For>
+                <Show when={bindableSolutions().length === 0}>
+                  <div class="px-2 py-6 text-12-regular text-text-weak">当前没有可绑定的现有方案，或者该产品已绑定全部方案。</div>
+                </Show>
+              </Show>
+            </div>
+          </div>
         </div>
       </Show>
 

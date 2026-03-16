@@ -109,6 +109,9 @@ export namespace Agent {
               "*": "deny",
               [path.join(root, ".opencode", "plans", "*.md")]: "allow",
               ...Object.fromEntries(dirs.map((dir) => [path.join(dir, "*"), "allow"])),
+              "*.env": "ask",
+              "*.env.*": "ask",
+              "*.env.example": "allow",
             },
             edit: {
               "*": "deny",

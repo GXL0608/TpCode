@@ -14,6 +14,7 @@ import { Filesystem } from "../util/filesystem"
 import DESCRIPTION from "./apply_patch.txt"
 import { File } from "../file"
 import { assertBuildWriteTarget } from "@/session/build-protection"
+import { BuildOverlay } from "@/build/overlay"
 
 const PatchParams = z.object({
   patchText: z.string().describe("The full patch text that describes all changes to be made"),
@@ -23,6 +24,7 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
   description: DESCRIPTION,
   parameters: PatchParams,
   async execute(params, ctx) {
+    const overlay = await BuildOverlay.load(ctx.sessionID)
     if (!params.patchText) {
       throw new Error("patchText is required")
     }
@@ -97,12 +99,16 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
 
         case "update": {
           // Check if file exists for update
-          const stats = await fs.stat(filePath).catch(() => null)
+          const stats = overlay
+            ? ((await BuildOverlay.stat({ overlay, filePath })) ?? null)
+            : await fs.stat(filePath).catch(() => null)
           if (!stats || stats.isDirectory()) {
             throw new Error(`apply_patch verification failed: Failed to read file to update: ${filePath}`)
           }
 
-          const oldContent = await fs.readFile(filePath, "utf-8")
+          const oldContent = overlay
+            ? await BuildOverlay.readText({ overlay, filePath })
+            : await fs.readFile(filePath, "utf-8")
           let newContent = oldContent
 
           // Apply the update chunks to get new content
@@ -146,9 +152,13 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
         }
 
         case "delete": {
-          const contentToDelete = await fs.readFile(filePath, "utf-8").catch((error) => {
-            throw new Error(`apply_patch verification failed: ${error}`)
-          })
+          const contentToDelete = overlay
+            ? await BuildOverlay.readText({ overlay, filePath }).catch((error) => {
+                throw new Error(`apply_patch verification failed: ${error}`)
+              })
+            : await fs.readFile(filePath, "utf-8").catch((error) => {
+                throw new Error(`apply_patch verification failed: ${error}`)
+              })
           const deleteDiff = trimDiff(createTwoFilesPatch(filePath, filePath, contentToDelete, ""))
 
           const deletions = contentToDelete.split("\n").length
@@ -203,29 +213,39 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
       switch (change.type) {
         case "add":
           // Create parent directories (recursive: true is safe on existing/root dirs)
-          await fs.mkdir(path.dirname(change.filePath), { recursive: true })
-          await fs.writeFile(change.filePath, change.newContent, "utf-8")
+          if (overlay) await BuildOverlay.writeText({ overlay, filePath: change.filePath, content: change.newContent })
+          else {
+            await fs.mkdir(path.dirname(change.filePath), { recursive: true })
+            await fs.writeFile(change.filePath, change.newContent, "utf-8")
+          }
           updates.push({ file: change.filePath, event: "add" })
           break
 
         case "update":
-          await fs.writeFile(change.filePath, change.newContent, "utf-8")
+          if (overlay) await BuildOverlay.writeText({ overlay, filePath: change.filePath, content: change.newContent })
+          else await fs.writeFile(change.filePath, change.newContent, "utf-8")
           updates.push({ file: change.filePath, event: "change" })
           break
 
         case "move":
           if (change.movePath) {
             // Create parent directories (recursive: true is safe on existing/root dirs)
-            await fs.mkdir(path.dirname(change.movePath), { recursive: true })
-            await fs.writeFile(change.movePath, change.newContent, "utf-8")
-            await fs.unlink(change.filePath)
+            if (overlay) {
+              await BuildOverlay.writeText({ overlay, filePath: change.movePath, content: change.newContent })
+              await BuildOverlay.deletePath({ overlay, filePath: change.filePath })
+            } else {
+              await fs.mkdir(path.dirname(change.movePath), { recursive: true })
+              await fs.writeFile(change.movePath, change.newContent, "utf-8")
+              await fs.unlink(change.filePath)
+            }
             updates.push({ file: change.filePath, event: "unlink" })
             updates.push({ file: change.movePath, event: "add" })
           }
           break
 
         case "delete":
-          await fs.unlink(change.filePath)
+          if (overlay) await BuildOverlay.deletePath({ overlay, filePath: change.filePath })
+          else await fs.unlink(change.filePath)
           updates.push({ file: change.filePath, event: "unlink" })
           break
       }

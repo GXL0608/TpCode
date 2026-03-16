@@ -5,6 +5,7 @@ import DESCRIPTION from "./ls.txt"
 import { Instance } from "../project/instance"
 import { Ripgrep } from "../file/ripgrep"
 import { assertExternalDirectory } from "./external-directory"
+import { BuildOverlay } from "@/build/overlay"
 
 export const IGNORE_PATTERNS = [
   "node_modules/",
@@ -42,6 +43,7 @@ export const ListTool = Tool.define("list", {
     ignore: z.array(z.string()).describe("List of glob patterns to ignore").optional(),
   }),
   async execute(params, ctx) {
+    const overlay = await BuildOverlay.load(ctx.sessionID)
     const searchPath = path.resolve(Instance.directory, params.path || ".")
     await assertExternalDirectory(ctx, searchPath, { kind: "directory" })
 
@@ -56,9 +58,22 @@ export const ListTool = Tool.define("list", {
 
     const ignoreGlobs = IGNORE_PATTERNS.map((p) => `!${p}*`).concat(params.ignore?.map((p) => `!${p}`) || [])
     const files = []
-    for await (const file of Ripgrep.files({ cwd: searchPath, glob: ignoreGlobs, signal: ctx.abort })) {
-      files.push(file)
-      if (files.length >= LIMIT) break
+    if (overlay && (await BuildOverlay.stat({ overlay, filePath: searchPath }))) {
+      for (const file of await BuildOverlay.scanFiles({
+        overlay,
+        directory: searchPath,
+        limit: LIMIT,
+      })) {
+        const relative = path.relative(searchPath, file).replaceAll("\\", "/")
+        if (ignoreGlobs.some((item) => item.startsWith("!") && relative.startsWith(item.slice(1).replace(/\*+$/, "")))) continue
+        files.push(relative)
+        if (files.length >= LIMIT) break
+      }
+    } else {
+      for await (const file of Ripgrep.files({ cwd: searchPath, glob: ignoreGlobs, signal: ctx.abort })) {
+        files.push(file)
+        if (files.length >= LIMIT) break
+      }
     }
 
     // Build directory structure

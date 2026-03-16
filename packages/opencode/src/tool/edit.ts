@@ -18,6 +18,7 @@ import { Instance } from "../project/instance"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectory } from "./external-directory"
 import { assertBuildWriteTarget } from "@/session/build-protection"
+import { BuildOverlay } from "@/build/overlay"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 
@@ -34,6 +35,7 @@ export const EditTool = Tool.define("edit", {
     replaceAll: z.boolean().optional().describe("Replace all occurrences of oldString (default false)"),
   }),
   async execute(params, ctx) {
+    const overlay = await BuildOverlay.load(ctx.sessionID)
     if (!params.filePath) {
       throw new Error("filePath is required")
     }
@@ -55,7 +57,7 @@ export const EditTool = Tool.define("edit", {
     let contentNew = ""
     await FileTime.withLock(filePath, async () => {
       if (params.oldString === "") {
-        const existed = await Filesystem.exists(filePath)
+        const existed = overlay ? Boolean(await BuildOverlay.stat({ overlay, filePath })) : await Filesystem.exists(filePath)
         contentNew = params.newString
         diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
         await ctx.ask({
@@ -67,7 +69,8 @@ export const EditTool = Tool.define("edit", {
             diff,
           },
         })
-        await Filesystem.write(filePath, params.newString)
+        if (overlay) await BuildOverlay.writeText({ overlay, filePath, content: params.newString })
+        else await Filesystem.write(filePath, params.newString)
         await Bus.publish(File.Event.Edited, {
           file: filePath,
         })
@@ -79,11 +82,11 @@ export const EditTool = Tool.define("edit", {
         return
       }
 
-      const stats = Filesystem.stat(filePath)
+      const stats = overlay ? await BuildOverlay.stat({ overlay, filePath }) : Filesystem.stat(filePath)
       if (!stats) throw new Error(`File ${filePath} not found`)
       if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
       await FileTime.assert(ctx.sessionID, filePath)
-      contentOld = await Filesystem.readText(filePath)
+      contentOld = overlay ? await BuildOverlay.readText({ overlay, filePath }) : await Filesystem.readText(filePath)
       contentNew = replace(contentOld, params.oldString, params.newString, params.replaceAll)
 
       diff = trimDiff(
@@ -99,7 +102,8 @@ export const EditTool = Tool.define("edit", {
         },
       })
 
-      await Filesystem.write(filePath, contentNew)
+      if (overlay) await BuildOverlay.writeText({ overlay, filePath, content: contentNew })
+      else await Filesystem.write(filePath, contentNew)
       await Bus.publish(File.Event.Edited, {
         file: filePath,
       })
@@ -107,7 +111,7 @@ export const EditTool = Tool.define("edit", {
         file: filePath,
         event: "change",
       })
-      contentNew = await Filesystem.readText(filePath)
+      contentNew = overlay ? await BuildOverlay.readText({ overlay, filePath }) : await Filesystem.readText(filePath)
       diff = trimDiff(
         createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
       )

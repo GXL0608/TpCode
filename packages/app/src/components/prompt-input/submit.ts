@@ -19,6 +19,7 @@ import { useAccountAuth } from "@/context/account-auth"
 import { AccountToken } from "@/utils/account-auth"
 import { Identifier } from "@/utils/id"
 import { Worktree as WorktreeState } from "@/utils/worktree"
+import { buildToastDescription } from "@/components/build-job-summary"
 import { buildRequestParts } from "./build-request-parts"
 import { setCursorPosition } from "./editor-dom"
 
@@ -91,6 +92,16 @@ type CommentItem = {
   commentID?: string
   commentOrigin?: "review" | "file"
   preview?: string
+}
+
+type BuildStageDetail = {
+  stage?: string
+  detail_json?: Record<string, unknown>
+}
+
+type BuildArtifactDetail = {
+  id: string
+  file_name: string
 }
 
 export function createPromptSubmit(input: PromptSubmitInput) {
@@ -169,8 +180,11 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           detail?: {
             job?: {
               session_id?: string
+              solution_scope?: string
             }
             session_directory?: string
+            stages?: BuildStageDetail[]
+            artifacts?: BuildArtifactDetail[]
           }
         }
       | undefined
@@ -180,6 +194,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     return {
       session_id: body.detail?.job?.session_id,
       session_directory: body.detail?.session_directory,
+      solution_scope: body.detail?.job?.solution_scope,
+      stages: body.detail?.stages ?? [],
+      artifacts: body.detail?.artifacts ?? [],
     }
   }
 
@@ -311,7 +328,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         }
         showToast({
           title: "构建闭环已完成",
-          description: "系统已完成计划、改码、编译与打包，你可以在会话或构建中心继续查看结果。",
+          description: buildToastDescription(created ?? {}),
         })
         return
         }

@@ -357,6 +357,7 @@ const ProductSolutionRootBody = z.object({
   root_type: z.enum(["single_repo", "parent_batch", "virtual_group"]),
   directory: z.string().min(1),
   display_name: z.string().optional(),
+  mount_name: z.string().optional(),
   sort_order: z.number().optional(),
   enabled: z.boolean().optional(),
   meta: z
@@ -375,6 +376,10 @@ const ProductSolutionBody = z.object({
   roots: z.array(ProductSolutionRootBody).min(1),
 })
 
+const ProductSolutionLibraryBody = ProductSolutionBody.extend({
+  product_id: z.string().min(1),
+})
+
 const ProductSolutionPatchBody = z.object({
   name: z.string().optional(),
   code: z.string().optional(),
@@ -382,6 +387,12 @@ const ProductSolutionPatchBody = z.object({
   primary_project_id: z.string().optional(),
   build_profile: BuildProfile.optional(),
   roots: z.array(ProductSolutionRootBody).optional(),
+})
+
+const ProductSolutionBindingBody = z.object({
+  solution_id: z.string().min(1),
+  enabled: z.boolean().optional(),
+  sort_order: z.number().optional(),
 })
 
 const SavedPlanListQuery = z.object({
@@ -1737,6 +1748,115 @@ export const AccountRoutes = lazy(() =>
       },
     )
     .get(
+      "/admin/solutions",
+      UserRbac.require("role:manage"),
+      async (c) => {
+        return c.json(await ProductSolutionService.listLibrary())
+      },
+    )
+    .post(
+      "/admin/solutions",
+      UserRbac.require("role:manage"),
+      validator("json", ProductSolutionLibraryBody),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const body = c.req.valid("json")
+        const result = await ProductSolutionService.create({
+          product_id: body.product_id,
+          name: body.name,
+          code: body.code,
+          enabled: body.enabled,
+          primary_project_id: body.primary_project_id,
+          build_profile: body.build_profile,
+          roots: body.roots,
+        })
+        if (!result.ok) return c.json({ ...result, error_code: result.code }, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.solution.create",
+          target_type: "tp_product_solution",
+          target_id: result.item.id,
+          result: "success",
+          detail_json: {
+            product_id: body.product_id,
+            solution_id: result.item.id,
+            code: result.item.code,
+            roots: result.item.roots.map((item) => item.directory),
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .patch(
+      "/admin/solutions/:solution_id",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ solution_id: z.string().min(1) })),
+      validator("json", ProductSolutionPatchBody),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const result = await ProductSolutionService.update({
+          solution_id: param.solution_id,
+          name: body.name,
+          code: body.code,
+          enabled: body.enabled,
+          primary_project_id: body.primary_project_id,
+          build_profile: body.build_profile,
+          roots: body.roots,
+        })
+        if (!result.ok) return c.json({ ...result, error_code: result.code }, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.solution.update",
+          target_type: "tp_product_solution",
+          target_id: param.solution_id,
+          result: "success",
+          detail_json: {
+            product_id: result.item.product_id,
+            solution_id: param.solution_id,
+            code: result.item.code,
+            roots: result.item.roots.map((item) => item.directory),
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .delete(
+      "/admin/solutions/:solution_id",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ solution_id: z.string().min(1) })),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const current = await ProductSolutionService.get(param.solution_id)
+        const result = await ProductSolutionService.remove(param.solution_id)
+        if (!result.ok) return c.json({ ...result, error_code: result.code }, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.solution.delete",
+          target_type: "tp_product_solution",
+          target_id: param.solution_id,
+          result: "success",
+          detail_json: {
+            product_id: current?.product_id,
+            solution_id: param.solution_id,
+            code: current?.code,
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .get(
       "/admin/products/:product_id/solutions",
       UserRbac.require("role:manage"),
       validator("param", z.object({ product_id: z.string().min(1) })),
@@ -1776,6 +1896,39 @@ export const AccountRoutes = lazy(() =>
             solution_id: result.item.id,
             code: result.item.code,
             roots: result.item.roots.map((item) => item.directory),
+          },
+          ip: c.req.header("x-forwarded-for"),
+          user_agent: c.req.header("user-agent"),
+        })
+        return c.json(result)
+      },
+    )
+    .post(
+      "/admin/products/:product_id/solution-bindings",
+      UserRbac.require("role:manage"),
+      validator("param", z.object({ product_id: z.string().min(1) })),
+      validator("json", ProductSolutionBindingBody),
+      async (c) => {
+        const actor_user_id = requireLogin(c)
+        if (typeof actor_user_id !== "string") return actor_user_id
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const result = await ProductSolutionService.bind({
+          product_id: param.product_id,
+          solution_id: body.solution_id,
+          enabled: body.enabled,
+          sort_order: body.sort_order,
+        })
+        if (!result.ok) return c.json({ ...result, error_code: result.code }, 400)
+        await UserService.audit({
+          actor_user_id,
+          action: "account.product.solution.bind",
+          target_type: "tp_product_solution",
+          target_id: body.solution_id,
+          result: "success",
+          detail_json: {
+            product_id: param.product_id,
+            solution_id: body.solution_id,
           },
           ip: c.req.header("x-forwarded-for"),
           user_agent: c.req.header("user-agent"),
@@ -1829,11 +1982,14 @@ export const AccountRoutes = lazy(() =>
         const actor_user_id = requireLogin(c)
         if (typeof actor_user_id !== "string") return actor_user_id
         const param = c.req.valid("param")
-        const result = await ProductSolutionService.remove(param.solution_id)
+        const result = await ProductSolutionService.unbind({
+          product_id: param.product_id,
+          solution_id: param.solution_id,
+        })
         if (!result.ok) return c.json({ ...result, error_code: result.code }, 400)
         await UserService.audit({
           actor_user_id,
-          action: "account.product.solution.delete",
+          action: "account.product.solution.unbind",
           target_type: "tp_product_solution",
           target_id: param.solution_id,
           result: "success",

@@ -4,11 +4,13 @@ import { Tool } from "./tool"
 import { Filesystem } from "../util/filesystem"
 import { Ripgrep } from "../file/ripgrep"
 import { Process } from "../util/process"
+import { Glob } from "../util/glob"
 
 import DESCRIPTION from "./grep.txt"
 import { Instance } from "../project/instance"
 import path from "path"
 import { assertExternalDirectory } from "./external-directory"
+import { BuildOverlay } from "@/build/overlay"
 
 const MAX_LINE_LENGTH = 2000
 
@@ -20,6 +22,7 @@ export const GrepTool = Tool.define("grep", {
     include: z.string().optional().describe('File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")'),
   }),
   async execute(params, ctx) {
+    const overlay = await BuildOverlay.load(ctx.sessionID)
     if (!params.pattern) {
       throw new Error("pattern is required")
     }
@@ -38,6 +41,71 @@ export const GrepTool = Tool.define("grep", {
     let searchPath = params.path ?? Instance.directory
     searchPath = path.isAbsolute(searchPath) ? searchPath : path.resolve(Instance.directory, searchPath)
     await assertExternalDirectory(ctx, searchPath, { kind: "directory" })
+
+    if (overlay && (await BuildOverlay.stat({ overlay, filePath: searchPath }))) {
+      const regexp = new RegExp(params.pattern, "g")
+      const files = await BuildOverlay.scanFiles({
+        overlay,
+        directory: searchPath,
+        limit: 1000,
+      })
+      const matches = []
+      for (const filePath of files) {
+        const relative = path.relative(searchPath, filePath).replaceAll("\\", "/")
+        if (params.include && !Glob.match(params.include, relative)) continue
+        const text = await BuildOverlay.readText({ overlay, filePath })
+        for (const [index, line] of text.split(/\r?\n/).entries()) {
+          regexp.lastIndex = 0
+          if (!regexp.test(line)) continue
+          const stat = await BuildOverlay.stat({ overlay, filePath })
+          matches.push({
+            path: filePath,
+            modTime: stat?.mtime.getTime() ?? 0,
+            lineNum: index + 1,
+            lineText: line,
+          })
+        }
+      }
+
+      matches.sort((a, b) => b.modTime - a.modTime)
+      const limit = 100
+      const truncated = matches.length > limit
+      const finalMatches = truncated ? matches.slice(0, limit) : matches
+      if (finalMatches.length === 0) {
+        return {
+          title: params.pattern,
+          metadata: { matches: 0, truncated: false },
+          output: "No files found",
+        }
+      }
+      const totalMatches = matches.length
+      const outputLines = [`Found ${totalMatches} matches${truncated ? ` (showing first ${limit})` : ""}`]
+      let currentFile = ""
+      for (const match of finalMatches) {
+        if (currentFile !== match.path) {
+          if (currentFile !== "") outputLines.push("")
+          currentFile = match.path
+          outputLines.push(`${match.path}:`)
+        }
+        const truncatedLineText =
+          match.lineText.length > MAX_LINE_LENGTH ? match.lineText.substring(0, MAX_LINE_LENGTH) + "..." : match.lineText
+        outputLines.push(`  Line ${match.lineNum}: ${truncatedLineText}`)
+      }
+      if (truncated) {
+        outputLines.push("")
+        outputLines.push(
+          `(Results truncated: showing ${limit} of ${totalMatches} matches (${totalMatches - limit} hidden). Consider using a more specific path or pattern.)`,
+        )
+      }
+      return {
+        title: params.pattern,
+        metadata: {
+          matches: totalMatches,
+          truncated,
+        },
+        output: outputLines.join("\n"),
+      }
+    }
 
     const rgPath = await Ripgrep.filepath()
     const args = ["-nH", "--hidden", "--no-messages", "--field-match-separator=|", "--regexp", params.pattern]

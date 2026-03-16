@@ -13,6 +13,7 @@ import { Instance } from "../project/instance"
 import { trimDiff } from "./edit"
 import { assertExternalDirectory } from "./external-directory"
 import { assertBuildWriteTarget } from "@/session/build-protection"
+import { BuildOverlay } from "@/build/overlay"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
@@ -24,6 +25,7 @@ export const WriteTool = Tool.define("write", {
     filePath: z.string().describe("The absolute path to the file to write (must be absolute, not relative)"),
   }),
   async execute(params, ctx) {
+    const overlay = await BuildOverlay.load(ctx.sessionID)
     const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
     await assertExternalDirectory(ctx, filepath)
     await assertBuildWriteTarget({
@@ -32,8 +34,12 @@ export const WriteTool = Tool.define("write", {
       target: filepath,
     })
 
-    const exists = await Filesystem.exists(filepath)
-    const contentOld = exists ? await Filesystem.readText(filepath) : ""
+    const exists = overlay ? Boolean(await BuildOverlay.stat({ overlay, filePath: filepath })) : await Filesystem.exists(filepath)
+    const contentOld = exists
+      ? overlay
+        ? await BuildOverlay.readText({ overlay, filePath: filepath })
+        : await Filesystem.readText(filepath)
+      : ""
     if (exists) await FileTime.assert(ctx.sessionID, filepath)
 
     const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, params.content))
@@ -47,7 +53,8 @@ export const WriteTool = Tool.define("write", {
       },
     })
 
-    await Filesystem.write(filepath, params.content)
+    if (overlay) await BuildOverlay.writeText({ overlay, filePath: filepath, content: params.content })
+    else await Filesystem.write(filepath, params.content)
     await Bus.publish(File.Event.Edited, {
       file: filepath,
     })

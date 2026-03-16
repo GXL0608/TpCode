@@ -12,6 +12,7 @@ export const TpProductSolutionRootTable = table(
     root_type: text().notNull(),
     directory: text().notNull(),
     display_name: text(),
+    mount_name: text(),
     sort_order: integer().notNull().$default(() => 0),
     enabled: boolean_int().notNull().$default(() => true),
     meta_json: text({ mode: "json" }),
