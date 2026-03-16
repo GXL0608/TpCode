@@ -2006,7 +2006,8 @@ export type Workspace = {
         type: "batch_worktree"
       }
   meta?: {
-    source_root: string
+    source_root?: string
+    source_roots?: Array<string>
     members: Array<{
       name: string
       relative_path: string
@@ -2017,6 +2018,17 @@ export type Workspace = {
       default_branch?: string
       status: "ready" | "failed"
     }>
+    overlay?: {
+      root: string
+      manifest_path: string
+      mounts: Array<{
+        solution_id: string
+        solution_code: string
+        mount_name: string
+        source_directory: string
+        overlay_directory: string
+      }>
+    }
   }
 }
 
@@ -3514,6 +3526,231 @@ export type PatchAccountAdminProductsProductIdResponses = {
   200: unknown
 }
 
+export type PostAccountAdminSolutionsData = {
+  body?: {
+    name: string
+    code: string
+    enabled?: boolean
+    primary_project_id?: string
+    build_profile: {
+      workdirs?: Array<string>
+      install_command?: string
+      compile_command: string
+      package_mode?: "zip"
+      artifact_include?: Array<string>
+      artifact_exclude?: Array<string>
+      output_name_template?: string
+    }
+    roots: Array<{
+      root_type: "single_repo" | "parent_batch" | "virtual_group"
+      directory: string
+      display_name?: string
+      mount_name?: string
+      sort_order?: number
+      enabled?: boolean
+      meta?: {
+        directories?: Array<string>
+      }
+    }>
+    product_id: string
+  }
+  path?: never
+  query?: never
+  url: "/account/admin/solutions"
+}
+
+export type PostAccountAdminSolutionsResponses = {
+  200: unknown
+}
+
+export type DeleteAccountAdminSolutionsSolutionIdData = {
+  body?: never
+  path: {
+    solution_id: string
+  }
+  query?: never
+  url: "/account/admin/solutions/{solution_id}"
+}
+
+export type DeleteAccountAdminSolutionsSolutionIdResponses = {
+  200: unknown
+}
+
+export type PatchAccountAdminSolutionsSolutionIdData = {
+  body?: {
+    name?: string
+    code?: string
+    enabled?: boolean
+    primary_project_id?: string
+    build_profile?: {
+      workdirs?: Array<string>
+      install_command?: string
+      compile_command: string
+      package_mode?: "zip"
+      artifact_include?: Array<string>
+      artifact_exclude?: Array<string>
+      output_name_template?: string
+    }
+    roots?: Array<{
+      root_type: "single_repo" | "parent_batch" | "virtual_group"
+      directory: string
+      display_name?: string
+      mount_name?: string
+      sort_order?: number
+      enabled?: boolean
+      meta?: {
+        directories?: Array<string>
+      }
+    }>
+  }
+  path: {
+    solution_id: string
+  }
+  query?: never
+  url: "/account/admin/solutions/{solution_id}"
+}
+
+export type PatchAccountAdminSolutionsSolutionIdResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminProductsProductIdSolutionsData = {
+  body?: never
+  path: {
+    product_id: string
+  }
+  query?: never
+  url: "/account/admin/products/{product_id}/solutions"
+}
+
+export type GetAccountAdminProductsProductIdSolutionsResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminProductsProductIdSolutionsData = {
+  body?: {
+    name: string
+    code: string
+    enabled?: boolean
+    primary_project_id?: string
+    build_profile: {
+      workdirs?: Array<string>
+      install_command?: string
+      compile_command: string
+      package_mode?: "zip"
+      artifact_include?: Array<string>
+      artifact_exclude?: Array<string>
+      output_name_template?: string
+    }
+    roots: Array<{
+      root_type: "single_repo" | "parent_batch" | "virtual_group"
+      directory: string
+      display_name?: string
+      mount_name?: string
+      sort_order?: number
+      enabled?: boolean
+      meta?: {
+        directories?: Array<string>
+      }
+    }>
+  }
+  path: {
+    product_id: string
+  }
+  query?: never
+  url: "/account/admin/products/{product_id}/solutions"
+}
+
+export type PostAccountAdminProductsProductIdSolutionsResponses = {
+  200: unknown
+}
+
+export type PostAccountAdminProductsProductIdSolutionBindingsData = {
+  body?: {
+    solution_id: string
+    enabled?: boolean
+    sort_order?: number
+  }
+  path: {
+    product_id: string
+  }
+  query?: never
+  url: "/account/admin/products/{product_id}/solution-bindings"
+}
+
+export type PostAccountAdminProductsProductIdSolutionBindingsResponses = {
+  200: unknown
+}
+
+export type DeleteAccountAdminProductsProductIdSolutionsSolutionIdData = {
+  body?: never
+  path: {
+    product_id: string
+    solution_id: string
+  }
+  query?: never
+  url: "/account/admin/products/{product_id}/solutions/{solution_id}"
+}
+
+export type DeleteAccountAdminProductsProductIdSolutionsSolutionIdResponses = {
+  200: unknown
+}
+
+export type PatchAccountAdminProductsProductIdSolutionsSolutionIdData = {
+  body?: {
+    name?: string
+    code?: string
+    enabled?: boolean
+    primary_project_id?: string
+    build_profile?: {
+      workdirs?: Array<string>
+      install_command?: string
+      compile_command: string
+      package_mode?: "zip"
+      artifact_include?: Array<string>
+      artifact_exclude?: Array<string>
+      output_name_template?: string
+    }
+    roots?: Array<{
+      root_type: "single_repo" | "parent_batch" | "virtual_group"
+      directory: string
+      display_name?: string
+      mount_name?: string
+      sort_order?: number
+      enabled?: boolean
+      meta?: {
+        directories?: Array<string>
+      }
+    }>
+  }
+  path: {
+    product_id: string
+    solution_id: string
+  }
+  query?: never
+  url: "/account/admin/products/{product_id}/solutions/{solution_id}"
+}
+
+export type PatchAccountAdminProductsProductIdSolutionsSolutionIdResponses = {
+  200: unknown
+}
+
+export type GetAccountAdminSavedPlansData = {
+  body?: never
+  path?: never
+  query?: {
+    product_id?: string
+    keyword?: string
+    status?: string
+    limit?: number
+  }
+  url: "/account/admin/saved-plans"
+}
+
+export type GetAccountAdminSavedPlansResponses = {
+  200: unknown
+}
+
 export type GetAccountAdminRolesRoleCodeProductsData = {
   body?: never
   path: {
@@ -4231,6 +4468,170 @@ export type ProjectUpdateResponses = {
 }
 
 export type ProjectUpdateResponse = ProjectUpdateResponses[keyof ProjectUpdateResponses]
+
+export type ProductSolutionListData = {
+  body?: never
+  path: {
+    product_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/product/{product_id}/solution"
+}
+
+export type ProductSolutionListResponses = {
+  /**
+   * Product solutions
+   */
+  200: Array<{
+    [key: string]: unknown
+  }>
+}
+
+export type ProductSolutionListResponse = ProductSolutionListResponses[keyof ProductSolutionListResponses]
+
+export type BuildJobListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    product_id?: string
+    solution_id?: string
+    status?: string
+    limit?: number
+  }
+  url: "/build/job"
+}
+
+export type BuildJobListResponses = {
+  /**
+   * Build jobs
+   */
+  200: Array<{
+    [key: string]: unknown
+  }>
+}
+
+export type BuildJobListResponse = BuildJobListResponses[keyof BuildJobListResponses]
+
+export type BuildJobCreateData = {
+  body?: {
+    source_type?: "prompt" | "saved_plan"
+    product_id?: string
+    solution_id?: string
+    prompt_text?: string
+    saved_plan_id?: string
+    providerID?: string
+    modelID?: string
+    run_mode?: "async" | "sync"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/build/job"
+}
+
+export type BuildJobCreateResponses = {
+  /**
+   * Build job created
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type BuildJobCreateResponse = BuildJobCreateResponses[keyof BuildJobCreateResponses]
+
+export type BuildJobBatchData = {
+  body?: {
+    product_id?: string
+    solution_id?: string
+    saved_plan_ids: Array<string>
+    providerID?: string
+    modelID?: string
+    run_mode?: "async" | "sync"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/build/job/batch"
+}
+
+export type BuildJobBatchResponses = {
+  /**
+   * Build jobs created
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type BuildJobBatchResponse = BuildJobBatchResponses[keyof BuildJobBatchResponses]
+
+export type BuildJobGetData = {
+  body?: never
+  path: {
+    job_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/build/job/{job_id}"
+}
+
+export type BuildJobGetResponses = {
+  /**
+   * Build job detail
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type BuildJobGetResponse = BuildJobGetResponses[keyof BuildJobGetResponses]
+
+export type BuildJobArtifactListData = {
+  body?: never
+  path: {
+    job_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/build/job/{job_id}/artifact"
+}
+
+export type BuildJobArtifactListResponses = {
+  /**
+   * Build artifacts
+   */
+  200: Array<{
+    [key: string]: unknown
+  }>
+}
+
+export type BuildJobArtifactListResponse = BuildJobArtifactListResponses[keyof BuildJobArtifactListResponses]
+
+export type BuildArtifactFileData = {
+  body?: never
+  path: {
+    artifact_id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/build/artifact/{artifact_id}/file"
+}
+
+export type BuildArtifactFileResponses = {
+  /**
+   * Artifact file
+   */
+  200: unknown
+}
 
 export type PtyListData = {
   body?: never

@@ -76,6 +76,12 @@ import type {
   AuthRemoveResponses,
   AuthSetErrors,
   AuthSetResponses,
+  BuildArtifactFileResponses,
+  BuildJobArtifactListResponses,
+  BuildJobBatchResponses,
+  BuildJobCreateResponses,
+  BuildJobGetResponses,
+  BuildJobListResponses,
   CommandListResponses,
   Config as Config3,
   ConfigGetResponses,
@@ -83,10 +89,12 @@ import type {
   ConfigUpdateErrors,
   ConfigUpdateResponses,
   DeleteAccountAdminProductsProductIdResponses,
+  DeleteAccountAdminProductsProductIdSolutionsSolutionIdResponses,
   DeleteAccountAdminProviderProviderIdGlobalResponses,
   DeleteAccountAdminProvidersProviderIdConfigGlobalResponses,
   DeleteAccountAdminProvidersProviderIdGlobalResponses,
   DeleteAccountAdminRolesRoleCodeResponses,
+  DeleteAccountAdminSolutionsSolutionIdResponses,
   DeleteAccountAdminUsersUserIdProvidersProviderIdResponses,
   DeleteAccountAdminUsersUserIdResponses,
   DeleteAccountMeProviderProviderIdResponses,
@@ -127,6 +135,7 @@ import type {
   FormatterStatusResponses,
   GetAccountAdminAuditResponses,
   GetAccountAdminFsDirectoriesResponses,
+  GetAccountAdminProductsProductIdSolutionsResponses,
   GetAccountAdminProjectAccessRoleResponses,
   GetAccountAdminProjectAccessUserResponses,
   GetAccountAdminProjectsCatalogResponses,
@@ -134,6 +143,7 @@ import type {
   GetAccountAdminRolesResponses,
   GetAccountAdminRolesRoleCodeProductsResponses,
   GetAccountAdminRolesRoleCodeProjectsResponses,
+  GetAccountAdminSavedPlansResponses,
   GetAccountAdminUsersUserIdModelPrefsResponses,
   GetAccountAdminUsersUserIdProviderControlResponses,
   GetAccountAdminUsersUserIdProvidersProviderIdConfigResponses,
@@ -178,6 +188,8 @@ import type {
   PartUpdateErrors,
   PartUpdateResponses,
   PatchAccountAdminProductsProductIdResponses,
+  PatchAccountAdminProductsProductIdSolutionsSolutionIdResponses,
+  PatchAccountAdminSolutionsSolutionIdResponses,
   PatchAccountAdminUsersUserIdProvidersProviderIdDisabledResponses,
   PatchAccountAdminUsersUserIdResponses,
   PatchAccountMeProvidersProviderIdDisabledResponses,
@@ -189,17 +201,21 @@ import type {
   PermissionRespondErrors,
   PermissionRespondResponses,
   PermissionRuleset,
+  PostAccountAdminProductsProductIdSolutionBindingsResponses,
+  PostAccountAdminProductsProductIdSolutionsResponses,
   PostAccountAdminProductsResponses,
   PostAccountAdminProjectAccessRoleResponses,
   PostAccountAdminProjectAccessUserResponses,
   PostAccountAdminRolesResponses,
   PostAccountAdminRolesRoleCodePermissionsResponses,
+  PostAccountAdminSolutionsResponses,
   PostAccountAdminUsersResponses,
   PostAccountAdminUsersUserIdPasswordResetResponses,
   PostAccountAdminUsersUserIdRolesResponses,
   PostAccountAdminVhoBindResponses,
   PostAccountContextSelectResponses,
   PostAccountMeVhoBindResponses,
+  ProductSolutionListResponses,
   ProjectCurrentResponses,
   ProjectListResponses,
   ProjectUpdateErrors,
@@ -1379,6 +1395,288 @@ export class Project extends HeyApiClient {
         ...params.headers,
       },
     })
+  }
+}
+
+export class Solution extends HeyApiClient {
+  /**
+   * List product solutions
+   *
+   * List enabled and disabled build solutions under the current product.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters: {
+      product_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "product_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ProductSolutionListResponses, unknown, ThrowOnError>({
+      url: "/product/{product_id}/solution",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Product extends HeyApiClient {
+  private _solution?: Solution
+  get solution(): Solution {
+    return (this._solution ??= new Solution({ client: this.client }))
+  }
+}
+
+export class Artifact extends HeyApiClient {
+  /**
+   * List build artifacts
+   *
+   * List packaged artifacts under a build job.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters: {
+      job_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "job_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<BuildJobArtifactListResponses, unknown, ThrowOnError>({
+      url: "/build/job/{job_id}/artifact",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Job extends HeyApiClient {
+  /**
+   * List build jobs
+   *
+   * List build jobs for current product or management console.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      product_id?: string
+      solution_id?: string
+      status?: string
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "product_id" },
+            { in: "query", key: "solution_id" },
+            { in: "query", key: "status" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<BuildJobListResponses, unknown, ThrowOnError>({
+      url: "/build/job",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Create build job
+   *
+   * Create a build job and optionally execute it immediately.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      source_type?: "prompt" | "saved_plan"
+      product_id?: string
+      solution_id?: string
+      prompt_text?: string
+      saved_plan_id?: string
+      providerID?: string
+      modelID?: string
+      run_mode?: "async" | "sync"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "source_type" },
+            { in: "body", key: "product_id" },
+            { in: "body", key: "solution_id" },
+            { in: "body", key: "prompt_text" },
+            { in: "body", key: "saved_plan_id" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "modelID" },
+            { in: "body", key: "run_mode" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<BuildJobCreateResponses, unknown, ThrowOnError>({
+      url: "/build/job",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Create build jobs in batch
+   *
+   * Create multiple build jobs from saved plans and optionally execute them.
+   */
+  public batch<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      product_id?: string
+      solution_id?: string
+      saved_plan_ids?: Array<string>
+      providerID?: string
+      modelID?: string
+      run_mode?: "async" | "sync"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "product_id" },
+            { in: "body", key: "solution_id" },
+            { in: "body", key: "saved_plan_ids" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "modelID" },
+            { in: "body", key: "run_mode" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<BuildJobBatchResponses, unknown, ThrowOnError>({
+      url: "/build/job/batch",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Get build job detail
+   *
+   * Get detail of a build job, including stages and artifacts.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      job_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "job_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<BuildJobGetResponses, unknown, ThrowOnError>({
+      url: "/build/job/{job_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  private _artifact?: Artifact
+  get artifact(): Artifact {
+    return (this._artifact ??= new Artifact({ client: this.client }))
+  }
+}
+
+export class Artifact2 extends HeyApiClient {
+  /**
+   * Download artifact file
+   *
+   * Download a packaged zip artifact generated by a build job.
+   */
+  public file<ThrowOnError extends boolean = false>(
+    parameters: {
+      artifact_id: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "artifact_id" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<BuildArtifactFileResponses, unknown, ThrowOnError>({
+      url: "/build/artifact/{artifact_id}/file",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Build extends HeyApiClient {
+  private _job?: Job
+  get job(): Job {
+    return (this._job ??= new Job({ client: this.client }))
+  }
+
+  private _artifact?: Artifact2
+  get artifact(): Artifact2 {
+    return (this._artifact ??= new Artifact2({ client: this.client }))
   }
 }
 
@@ -6190,6 +6488,382 @@ export class OpencodeClient extends HeyApiClient {
     })
   }
 
+  public postAccountAdminSolutions<ThrowOnError extends boolean = false>(
+    parameters?: {
+      name?: string
+      code?: string
+      enabled?: boolean
+      primary_project_id?: string
+      build_profile?: {
+        workdirs?: Array<string>
+        install_command?: string
+        compile_command: string
+        package_mode?: "zip"
+        artifact_include?: Array<string>
+        artifact_exclude?: Array<string>
+        output_name_template?: string
+      }
+      roots?: Array<{
+        root_type: "single_repo" | "parent_batch" | "virtual_group"
+        directory: string
+        display_name?: string
+        mount_name?: string
+        sort_order?: number
+        enabled?: boolean
+        meta?: {
+          directories?: Array<string>
+        }
+      }>
+      product_id?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "name" },
+            { in: "body", key: "code" },
+            { in: "body", key: "enabled" },
+            { in: "body", key: "primary_project_id" },
+            { in: "body", key: "build_profile" },
+            { in: "body", key: "roots" },
+            { in: "body", key: "product_id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PostAccountAdminSolutionsResponses, unknown, ThrowOnError>({
+      url: "/account/admin/solutions",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public deleteAccountAdminSolutionsSolutionId<ThrowOnError extends boolean = false>(
+    parameters: {
+      solution_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "solution_id" }] }])
+    return (options?.client ?? this.client).delete<
+      DeleteAccountAdminSolutionsSolutionIdResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/solutions/{solution_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  public patchAccountAdminSolutionsSolutionId<ThrowOnError extends boolean = false>(
+    parameters: {
+      solution_id: string
+      name?: string
+      code?: string
+      enabled?: boolean
+      primary_project_id?: string
+      build_profile?: {
+        workdirs?: Array<string>
+        install_command?: string
+        compile_command: string
+        package_mode?: "zip"
+        artifact_include?: Array<string>
+        artifact_exclude?: Array<string>
+        output_name_template?: string
+      }
+      roots?: Array<{
+        root_type: "single_repo" | "parent_batch" | "virtual_group"
+        directory: string
+        display_name?: string
+        mount_name?: string
+        sort_order?: number
+        enabled?: boolean
+        meta?: {
+          directories?: Array<string>
+        }
+      }>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "solution_id" },
+            { in: "body", key: "name" },
+            { in: "body", key: "code" },
+            { in: "body", key: "enabled" },
+            { in: "body", key: "primary_project_id" },
+            { in: "body", key: "build_profile" },
+            { in: "body", key: "roots" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<PatchAccountAdminSolutionsSolutionIdResponses, unknown, ThrowOnError>(
+      {
+        url: "/account/admin/solutions/{solution_id}",
+        ...options,
+        ...params,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+          ...params.headers,
+        },
+      },
+    )
+  }
+
+  public getAccountAdminProductsProductIdSolutions<ThrowOnError extends boolean = false>(
+    parameters: {
+      product_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "product_id" }] }])
+    return (options?.client ?? this.client).get<
+      GetAccountAdminProductsProductIdSolutionsResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/products/{product_id}/solutions",
+      ...options,
+      ...params,
+    })
+  }
+
+  public postAccountAdminProductsProductIdSolutions<ThrowOnError extends boolean = false>(
+    parameters: {
+      product_id: string
+      name?: string
+      code?: string
+      enabled?: boolean
+      primary_project_id?: string
+      build_profile?: {
+        workdirs?: Array<string>
+        install_command?: string
+        compile_command: string
+        package_mode?: "zip"
+        artifact_include?: Array<string>
+        artifact_exclude?: Array<string>
+        output_name_template?: string
+      }
+      roots?: Array<{
+        root_type: "single_repo" | "parent_batch" | "virtual_group"
+        directory: string
+        display_name?: string
+        mount_name?: string
+        sort_order?: number
+        enabled?: boolean
+        meta?: {
+          directories?: Array<string>
+        }
+      }>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "product_id" },
+            { in: "body", key: "name" },
+            { in: "body", key: "code" },
+            { in: "body", key: "enabled" },
+            { in: "body", key: "primary_project_id" },
+            { in: "body", key: "build_profile" },
+            { in: "body", key: "roots" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      PostAccountAdminProductsProductIdSolutionsResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/products/{product_id}/solutions",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public postAccountAdminProductsProductIdSolutionBindings<ThrowOnError extends boolean = false>(
+    parameters: {
+      product_id: string
+      solution_id?: string
+      enabled?: boolean
+      sort_order?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "product_id" },
+            { in: "body", key: "solution_id" },
+            { in: "body", key: "enabled" },
+            { in: "body", key: "sort_order" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      PostAccountAdminProductsProductIdSolutionBindingsResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/products/{product_id}/solution-bindings",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public deleteAccountAdminProductsProductIdSolutionsSolutionId<ThrowOnError extends boolean = false>(
+    parameters: {
+      product_id: string
+      solution_id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "product_id" },
+            { in: "path", key: "solution_id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      DeleteAccountAdminProductsProductIdSolutionsSolutionIdResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/products/{product_id}/solutions/{solution_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  public patchAccountAdminProductsProductIdSolutionsSolutionId<ThrowOnError extends boolean = false>(
+    parameters: {
+      product_id: string
+      solution_id: string
+      name?: string
+      code?: string
+      enabled?: boolean
+      primary_project_id?: string
+      build_profile?: {
+        workdirs?: Array<string>
+        install_command?: string
+        compile_command: string
+        package_mode?: "zip"
+        artifact_include?: Array<string>
+        artifact_exclude?: Array<string>
+        output_name_template?: string
+      }
+      roots?: Array<{
+        root_type: "single_repo" | "parent_batch" | "virtual_group"
+        directory: string
+        display_name?: string
+        mount_name?: string
+        sort_order?: number
+        enabled?: boolean
+        meta?: {
+          directories?: Array<string>
+        }
+      }>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "product_id" },
+            { in: "path", key: "solution_id" },
+            { in: "body", key: "name" },
+            { in: "body", key: "code" },
+            { in: "body", key: "enabled" },
+            { in: "body", key: "primary_project_id" },
+            { in: "body", key: "build_profile" },
+            { in: "body", key: "roots" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      PatchAccountAdminProductsProductIdSolutionsSolutionIdResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/account/admin/products/{product_id}/solutions/{solution_id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public getAccountAdminSavedPlans<ThrowOnError extends boolean = false>(
+    parameters?: {
+      product_id?: string
+      keyword?: string
+      status?: string
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "product_id" },
+            { in: "query", key: "keyword" },
+            { in: "query", key: "status" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GetAccountAdminSavedPlansResponses, unknown, ThrowOnError>({
+      url: "/account/admin/saved-plans",
+      ...options,
+      ...params,
+    })
+  }
+
   public getAccountAdminRolesRoleCodeProducts<ThrowOnError extends boolean = false>(
     parameters: {
       role_code: string
@@ -7130,6 +7804,16 @@ export class OpencodeClient extends HeyApiClient {
   private _project?: Project
   get project(): Project {
     return (this._project ??= new Project({ client: this.client }))
+  }
+
+  private _product?: Product
+  get product(): Product {
+    return (this._product ??= new Product({ client: this.client }))
+  }
+
+  private _build?: Build
+  get build(): Build {
+    return (this._build ??= new Build({ client: this.client }))
   }
 
   private _pty?: Pty

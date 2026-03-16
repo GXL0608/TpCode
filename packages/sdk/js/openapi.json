@@ -2319,6 +2319,776 @@
         ]
       }
     },
+    "/account/admin/solutions": {
+      "post": {
+        "operationId": "postAccountAdminSolutions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "primary_project_id": {
+                    "type": "string"
+                  },
+                  "build_profile": {
+                    "type": "object",
+                    "properties": {
+                      "workdirs": {
+                        "default": [
+                          "."
+                        ],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "install_command": {
+                        "type": "string"
+                      },
+                      "compile_command": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "package_mode": {
+                        "default": "zip",
+                        "type": "string",
+                        "enum": [
+                          "zip"
+                        ]
+                      },
+                      "artifact_include": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "artifact_exclude": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "output_name_template": {
+                        "default": "{{solution}}.zip",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "compile_command"
+                    ]
+                  },
+                  "roots": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "root_type": {
+                          "type": "string",
+                          "enum": [
+                            "single_repo",
+                            "parent_batch",
+                            "virtual_group"
+                          ]
+                        },
+                        "directory": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "display_name": {
+                          "type": "string"
+                        },
+                        "mount_name": {
+                          "type": "string"
+                        },
+                        "sort_order": {
+                          "type": "number"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "meta": {
+                          "type": "object",
+                          "properties": {
+                            "directories": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "root_type",
+                        "directory"
+                      ]
+                    }
+                  },
+                  "product_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "name",
+                  "code",
+                  "build_profile",
+                  "roots",
+                  "product_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.postAccountAdminSolutions({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/account/admin/solutions/{solution_id}": {
+      "patch": {
+        "operationId": "patchAccountAdminSolutions:solution_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "solution_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "code": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "primary_project_id": {
+                    "type": "string"
+                  },
+                  "build_profile": {
+                    "type": "object",
+                    "properties": {
+                      "workdirs": {
+                        "default": [
+                          "."
+                        ],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "install_command": {
+                        "type": "string"
+                      },
+                      "compile_command": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "package_mode": {
+                        "default": "zip",
+                        "type": "string",
+                        "enum": [
+                          "zip"
+                        ]
+                      },
+                      "artifact_include": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "artifact_exclude": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "output_name_template": {
+                        "default": "{{solution}}.zip",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "compile_command"
+                    ]
+                  },
+                  "roots": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "root_type": {
+                          "type": "string",
+                          "enum": [
+                            "single_repo",
+                            "parent_batch",
+                            "virtual_group"
+                          ]
+                        },
+                        "directory": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "display_name": {
+                          "type": "string"
+                        },
+                        "mount_name": {
+                          "type": "string"
+                        },
+                        "sort_order": {
+                          "type": "number"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "meta": {
+                          "type": "object",
+                          "properties": {
+                            "directories": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "root_type",
+                        "directory"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.patchAccountAdminSolutions:solution_id({\n  ...\n})"
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteAccountAdminSolutions:solution_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "solution_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.deleteAccountAdminSolutions:solution_id({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/account/admin/products/{product_id}/solutions": {
+      "get": {
+        "operationId": "getAccountAdminProducts:product_idSolutions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.getAccountAdminProducts:product_idSolutions({\n  ...\n})"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "postAccountAdminProducts:product_idSolutions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "primary_project_id": {
+                    "type": "string"
+                  },
+                  "build_profile": {
+                    "type": "object",
+                    "properties": {
+                      "workdirs": {
+                        "default": [
+                          "."
+                        ],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "install_command": {
+                        "type": "string"
+                      },
+                      "compile_command": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "package_mode": {
+                        "default": "zip",
+                        "type": "string",
+                        "enum": [
+                          "zip"
+                        ]
+                      },
+                      "artifact_include": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "artifact_exclude": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "output_name_template": {
+                        "default": "{{solution}}.zip",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "compile_command"
+                    ]
+                  },
+                  "roots": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "root_type": {
+                          "type": "string",
+                          "enum": [
+                            "single_repo",
+                            "parent_batch",
+                            "virtual_group"
+                          ]
+                        },
+                        "directory": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "display_name": {
+                          "type": "string"
+                        },
+                        "mount_name": {
+                          "type": "string"
+                        },
+                        "sort_order": {
+                          "type": "number"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "meta": {
+                          "type": "object",
+                          "properties": {
+                            "directories": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "root_type",
+                        "directory"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "name",
+                  "code",
+                  "build_profile",
+                  "roots"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.postAccountAdminProducts:product_idSolutions({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/account/admin/products/{product_id}/solution-bindings": {
+      "post": {
+        "operationId": "postAccountAdminProducts:product_idSolution-bindings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "solution_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "sort_order": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "solution_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.postAccountAdminProducts:product_idSolution-bindings({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/account/admin/products/{product_id}/solutions/{solution_id}": {
+      "patch": {
+        "operationId": "patchAccountAdminProducts:product_idSolutions:solution_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "solution_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "code": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "primary_project_id": {
+                    "type": "string"
+                  },
+                  "build_profile": {
+                    "type": "object",
+                    "properties": {
+                      "workdirs": {
+                        "default": [
+                          "."
+                        ],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "install_command": {
+                        "type": "string"
+                      },
+                      "compile_command": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "package_mode": {
+                        "default": "zip",
+                        "type": "string",
+                        "enum": [
+                          "zip"
+                        ]
+                      },
+                      "artifact_include": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "artifact_exclude": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "output_name_template": {
+                        "default": "{{solution}}.zip",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "compile_command"
+                    ]
+                  },
+                  "roots": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "root_type": {
+                          "type": "string",
+                          "enum": [
+                            "single_repo",
+                            "parent_batch",
+                            "virtual_group"
+                          ]
+                        },
+                        "directory": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "display_name": {
+                          "type": "string"
+                        },
+                        "mount_name": {
+                          "type": "string"
+                        },
+                        "sort_order": {
+                          "type": "number"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "meta": {
+                          "type": "object",
+                          "properties": {
+                            "directories": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "root_type",
+                        "directory"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.patchAccountAdminProducts:product_idSolutions:solution_id({\n  ...\n})"
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteAccountAdminProducts:product_idSolutions:solution_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "solution_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.deleteAccountAdminProducts:product_idSolutions:solution_id({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/account/admin/saved-plans": {
+      "get": {
+        "operationId": "getAccountAdminSaved-plans",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "product_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "keyword",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {}
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.getAccountAdminSaved-plans({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/account/admin/roles/{role_code}/products": {
       "get": {
         "operationId": "getAccountAdminRoles:role_codeProducts",
@@ -4039,6 +4809,420 @@
           {
             "lang": "js",
             "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.project.update({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/product/{product_id}/solution": {
+      "get": {
+        "operationId": "product.solution.list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "summary": "List product solutions",
+        "description": "List enabled and disabled build solutions under the current product.",
+        "responses": {
+          "200": {
+            "description": "Product solutions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.product.solution.list({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/build/job": {
+      "get": {
+        "operationId": "build.job.list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "product_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "solution_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ],
+        "summary": "List build jobs",
+        "description": "List build jobs for current product or management console.",
+        "responses": {
+          "200": {
+            "description": "Build jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.build.job.list({\n  ...\n})"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "build.job.create",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Create build job",
+        "description": "Create a build job and optionally execute it immediately.",
+        "responses": {
+          "200": {
+            "description": "Build job created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "source_type": {
+                    "default": "prompt",
+                    "type": "string",
+                    "enum": [
+                      "prompt",
+                      "saved_plan"
+                    ]
+                  },
+                  "product_id": {
+                    "type": "string"
+                  },
+                  "solution_id": {
+                    "type": "string"
+                  },
+                  "prompt_text": {
+                    "type": "string"
+                  },
+                  "saved_plan_id": {
+                    "type": "string"
+                  },
+                  "providerID": {
+                    "type": "string"
+                  },
+                  "modelID": {
+                    "type": "string"
+                  },
+                  "run_mode": {
+                    "type": "string",
+                    "enum": [
+                      "async",
+                      "sync"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.build.job.create({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/build/job/batch": {
+      "post": {
+        "operationId": "build.job.batch",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Create build jobs in batch",
+        "description": "Create multiple build jobs from saved plans and optionally execute them.",
+        "responses": {
+          "200": {
+            "description": "Build jobs created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "product_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "solution_id": {
+                    "type": "string"
+                  },
+                  "saved_plan_ids": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "providerID": {
+                    "type": "string"
+                  },
+                  "modelID": {
+                    "type": "string"
+                  },
+                  "run_mode": {
+                    "type": "string",
+                    "enum": [
+                      "async",
+                      "sync"
+                    ]
+                  }
+                },
+                "required": [
+                  "saved_plan_ids"
+                ]
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.build.job.batch({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/build/job/{job_id}": {
+      "get": {
+        "operationId": "build.job.get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "summary": "Get build job detail",
+        "description": "Get detail of a build job, including stages and artifacts.",
+        "responses": {
+          "200": {
+            "description": "Build job detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.build.job.get({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/build/job/{job_id}/artifact": {
+      "get": {
+        "operationId": "build.job.artifact.list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "summary": "List build artifacts",
+        "description": "List packaged artifacts under a build job.",
+        "responses": {
+          "200": {
+            "description": "Build artifacts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.build.job.artifact.list({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/build/artifact/{artifact_id}/file": {
+      "get": {
+        "operationId": "build.artifact.file",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          }
+        ],
+        "summary": "Download artifact file",
+        "description": "Download a packaged zip artifact generated by a build job.",
+        "responses": {
+          "200": {
+            "description": "Artifact file"
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.build.artifact.file({\n  ...\n})"
           }
         ]
       }
@@ -19469,6 +20653,13 @@
               "source_root": {
                 "type": "string"
               },
+              "source_roots": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
               "members": {
                 "type": "array",
                 "items": {
@@ -19512,10 +20703,55 @@
                     "status"
                   ]
                 }
+              },
+              "overlay": {
+                "type": "object",
+                "properties": {
+                  "root": {
+                    "type": "string"
+                  },
+                  "manifest_path": {
+                    "type": "string"
+                  },
+                  "mounts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "solution_id": {
+                          "type": "string"
+                        },
+                        "solution_code": {
+                          "type": "string"
+                        },
+                        "mount_name": {
+                          "type": "string"
+                        },
+                        "source_directory": {
+                          "type": "string"
+                        },
+                        "overlay_directory": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "solution_id",
+                        "solution_code",
+                        "mount_name",
+                        "source_directory",
+                        "overlay_directory"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "root",
+                  "manifest_path",
+                  "mounts"
+                ]
               }
             },
             "required": [
-              "source_root",
               "members"
             ]
           }
