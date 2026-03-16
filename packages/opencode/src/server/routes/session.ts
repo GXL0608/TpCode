@@ -243,9 +243,6 @@ export const SessionRoutes = lazy(() =>
         return c.json(filtered)
       },
     )
-    .use("/:sessionID", requireSessionReadable)
-    .use("/:sessionID/*", requireSessionReadable)
-    .route("/:sessionID/prototype", SessionPrototypeRoutes())
     .post(
       "/voice/transcribe",
       describeRoute({
@@ -293,6 +290,9 @@ export const SessionRoutes = lazy(() =>
         return c.json(result)
       },
     )
+    .use("/:sessionID", requireSessionReadable)
+    .use("/:sessionID/*", requireSessionReadable)
+    .route("/:sessionID/prototype", SessionPrototypeRoutes())
     .get(
       "/:sessionID/voice/:voiceID",
       describeRoute({

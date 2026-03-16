@@ -97,6 +97,7 @@ export function createSpeechRecognition(opts?: {
   lang?: string
   onFinal?: (text: string) => void
   onInterim?: (text: string) => void
+  onError?: (error: string) => void
 }) {
   const ctor = getSpeechRecognitionCtor<Recognition>(typeof window === "undefined" ? undefined : window)
   const hasSupport = Boolean(ctor)
@@ -283,6 +284,7 @@ export function createSpeechRecognition(opts?: {
     }
 
     recognition.onerror = (e: { error: string }) => {
+      if (opts?.onError) opts.onError(e.error)
       clearRestart()
       cancelPendingCommit()
       lastInterimSuffix = ""
@@ -337,7 +339,9 @@ export function createSpeechRecognition(opts?: {
     setStore("interim", "")
     try {
       recognition.start()
-    } catch {}
+    } catch {
+      if (opts?.onError) opts.onError("start-failed")
+    }
   }
 
   const stop = () => {

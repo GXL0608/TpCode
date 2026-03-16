@@ -291,6 +291,31 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
 
     const probe = async () => {
       setState("ready", false)
+      const access = AccountToken.access()
+      const refreshToken = AccountToken.refresh()
+      if (!access && !refreshToken) {
+        setState("enabled", true)
+        clearSession()
+        setState("ready", true)
+        return
+      }
+
+      const expires = AccountToken.accessExpiresAt()
+      const stale = !access || (typeof expires === "number" && expires <= Date.now() + 5_000)
+      if (stale) {
+        const ok = await refresh()
+        if (ok) {
+          setState("ready", true)
+          return
+        }
+        if (!AccountToken.access()) {
+          setState("enabled", true)
+          clearSession()
+          setState("ready", true)
+          return
+        }
+      }
+
       const me = await request({
         path: "/account/me",
         method: "GET",
@@ -381,7 +406,12 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           method: "POST",
           body: input,
           auth: "none",
-        })
+        }).catch(() => undefined)
+        if (!response) {
+          setState("enabled", true)
+          setState("last_error", "network_error")
+          return false
+        }
         if (response.status === 404) {
           setState("enabled", true)
           setState("last_error", "account_disabled")
@@ -410,7 +440,12 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
             login_type: input.loginType,
           },
           auth: "none",
-        })
+        }).catch(() => undefined)
+        if (!response) {
+          setState("enabled", true)
+          setState("last_error", "network_error")
+          return false
+        }
         if (response.status === 404) {
           setState("enabled", true)
           setState("last_error", "account_disabled")

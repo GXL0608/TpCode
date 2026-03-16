@@ -366,7 +366,7 @@ export function MessageTimeline(props: {
 
   return (
     <Show
-      when={!props.mobileChanges}
+      when={props.mobileChanges || props.isDesktop}
       fallback={<div class="relative h-full overflow-hidden">{props.mobileFallback}</div>}
     >
       <div class="relative w-full h-full min-w-0">

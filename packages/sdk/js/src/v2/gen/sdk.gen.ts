@@ -2719,6 +2719,51 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * Transcribe voice audio
+   *
+   * Transcribe an audio data URL into plain text.
+   */
+  public voiceTranscribe<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      mime?: string
+      data_url?: string
+      providerID?: string
+      modelID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "mime" },
+            { in: "body", key: "data_url" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "modelID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionVoiceTranscribeResponses,
+      SessionVoiceTranscribeErrors,
+      ThrowOnError
+    >({
+      url: "/session/voice/transcribe",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
    * List session prototypes
    *
    * List prototype assets inside a session.
@@ -2830,51 +2875,6 @@ export class Session2 extends HeyApiClient {
       ThrowOnError
     >({
       url: "/session/{sessionID}/prototype/capture",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Transcribe voice audio
-   *
-   * Transcribe an audio data URL into plain text.
-   */
-  public voiceTranscribe<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      mime?: string
-      data_url?: string
-      providerID?: string
-      modelID?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "body", key: "mime" },
-            { in: "body", key: "data_url" },
-            { in: "body", key: "providerID" },
-            { in: "body", key: "modelID" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      SessionVoiceTranscribeResponses,
-      SessionVoiceTranscribeErrors,
-      ThrowOnError
-    >({
-      url: "/session/voice/transcribe",
       ...options,
       ...params,
       headers: {

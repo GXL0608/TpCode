@@ -7614,6 +7614,89 @@
         ]
       }
     },
+    "/session/voice/transcribe": {
+      "post": {
+        "operationId": "session.voiceTranscribe",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Transcribe voice audio",
+        "description": "Transcribe an audio data URL into plain text.",
+        "responses": {
+          "200": {
+            "description": "Transcription result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "engine": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "engine"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mime": {
+                    "type": "string"
+                  },
+                  "data_url": {
+                    "type": "string"
+                  },
+                  "providerID": {
+                    "type": "string"
+                  },
+                  "modelID": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mime",
+                  "data_url"
+                ]
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.voiceTranscribe({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/session/{sessionID}/prototype": {
       "get": {
         "operationId": "session.prototypeList",
@@ -7837,89 +7920,6 @@
           {
             "lang": "js",
             "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.prototypeCapture({\n  ...\n})"
-          }
-        ]
-      }
-    },
-    "/session/voice/transcribe": {
-      "post": {
-        "operationId": "session.voiceTranscribe",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "directory",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "summary": "Transcribe voice audio",
-        "description": "Transcribe an audio data URL into plain text.",
-        "responses": {
-          "200": {
-            "description": "Transcription result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "text": {
-                      "type": "string"
-                    },
-                    "engine": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "text",
-                    "engine"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BadRequestError"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "mime": {
-                    "type": "string"
-                  },
-                  "data_url": {
-                    "type": "string"
-                  },
-                  "providerID": {
-                    "type": "string"
-                  },
-                  "modelID": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "mime",
-                  "data_url"
-                ]
-              }
-            }
-          }
-        },
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.voiceTranscribe({\n  ...\n})"
           }
         ]
       }

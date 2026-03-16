@@ -23,7 +23,9 @@ export const PromptVoiceAttachments: Component<PromptVoiceAttachmentsProps> = (p
                 <span class="text-11-medium truncate text-text-base">{attachment.filename}</span>
                 <span class="text-10-regular text-text-weak shrink-0">{Math.max(1, Math.round(attachment.duration_ms / 1000))}s</span>
               </div>
-              <audio controls preload="metadata" src={attachment.dataUrl} class="w-full h-8" />
+              <audio controls preload="metadata" class="w-full h-8">
+                <source src={attachment.dataUrl} type={attachment.mime} />
+              </audio>
               <button
                 type="button"
                 onClick={() => props.onRemove(attachment.id)}

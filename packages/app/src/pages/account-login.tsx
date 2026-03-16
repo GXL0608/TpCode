@@ -14,6 +14,7 @@ export default function AccountLogin() {
   const [auto, setAuto] = createSignal(false)
 
   const loginErrorText = (code?: string) => {
+    if (code === "network_error") return "网络连接失败，请检查服务地址和端口是否可访问"
     if (code === "user_locked") return "账号已锁定，请稍后重试"
     if (code === "invalid_credentials") return "登录失败，请检查账号或密码"
     if (code === "vho_login_type_invalid") return "直登失败：loginType 必须为 vho"
@@ -42,10 +43,12 @@ export default function AccountLogin() {
     event.preventDefault()
     setPending(true)
     setError("")
-    const ok = await auth.login({
+    const ok = await auth
+      .login({
       username: username().trim(),
       password: password(),
-    })
+      })
+      .catch(() => false)
     setPending(false)
     if (!ok) {
       setError(loginErrorText(auth.lastError()))
@@ -63,14 +66,17 @@ export default function AccountLogin() {
     setAuto(true)
     setPending(true)
     setError("")
-    void auth.loginVho(input).then((ok) => {
+    void auth
+      .loginVho(input)
+      .catch(() => false)
+      .then((ok) => {
       setPending(false)
       if (!ok) {
         setError(loginErrorText(auth.lastError()))
         return
       }
       navigate("/")
-    })
+      })
   })
 
   return (

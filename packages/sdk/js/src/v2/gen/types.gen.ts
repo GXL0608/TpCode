@@ -5988,6 +5988,41 @@ export type SessionStatusResponses = {
 
 export type SessionStatusResponse = SessionStatusResponses[keyof SessionStatusResponses]
 
+export type SessionVoiceTranscribeData = {
+  body?: {
+    mime: string
+    data_url: string
+    providerID?: string
+    modelID?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/session/voice/transcribe"
+}
+
+export type SessionVoiceTranscribeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SessionVoiceTranscribeError = SessionVoiceTranscribeErrors[keyof SessionVoiceTranscribeErrors]
+
+export type SessionVoiceTranscribeResponses = {
+  /**
+   * Transcription result
+   */
+  200: {
+    text: string
+    engine: string
+  }
+}
+
+export type SessionVoiceTranscribeResponse = SessionVoiceTranscribeResponses[keyof SessionVoiceTranscribeResponses]
+
 export type SessionPrototypeListData = {
   body?: never
   path: {
@@ -6089,41 +6124,6 @@ export type SessionPrototypeCaptureResponses = {
 }
 
 export type SessionPrototypeCaptureResponse = SessionPrototypeCaptureResponses[keyof SessionPrototypeCaptureResponses]
-
-export type SessionVoiceTranscribeData = {
-  body?: {
-    mime: string
-    data_url: string
-    providerID?: string
-    modelID?: string
-  }
-  path?: never
-  query?: {
-    directory?: string
-  }
-  url: "/session/voice/transcribe"
-}
-
-export type SessionVoiceTranscribeErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type SessionVoiceTranscribeError = SessionVoiceTranscribeErrors[keyof SessionVoiceTranscribeErrors]
-
-export type SessionVoiceTranscribeResponses = {
-  /**
-   * Transcription result
-   */
-  200: {
-    text: string
-    engine: string
-  }
-}
-
-export type SessionVoiceTranscribeResponse = SessionVoiceTranscribeResponses[keyof SessionVoiceTranscribeResponses]
 
 export type SessionVoiceData = {
   body?: never

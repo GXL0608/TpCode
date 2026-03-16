@@ -111,6 +111,7 @@ const EXAMPLES = [
 const MAX_VOICE_DURATION_MS = 60_000
 const MAX_VOICE_BYTES = 3 * 1024 * 1024
 const VOICE_MIME_FALLBACK = "audio/webm"
+const VOICE_PERMISSION_TIMEOUT_MS = 12_000
 const SPEECH_LOCALE: Record<string, string> = {
   en: "en-US",
   zh: "zh-CN",
@@ -162,10 +163,16 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   let finalizing = false
   let voiceRun = 0
   let activeVoiceRun = 0
+  let activeVoiceMime = ""
+  let recordedVoiceMime = ""
 
   const mirror = { input: false }
   const inset = 44
-  const speech = createSpeechRecognition()
+  const [speechFailure, setSpeechFailure] = createSignal("")
+  const [transcribeFailure, setTranscribeFailure] = createSignal("")
+  const speech = createSpeechRecognition({
+    onError: (error) => setSpeechFailure(error),
+  })
 
   const scrollCursorIntoView = () => {
     const container = scrollRef
@@ -340,7 +347,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const voiceAttachments = createMemo(() =>
     prompt.current().filter((part): part is VoiceAttachmentPart => part.type === "voice"),
   )
-  const [voicePhase, setVoicePhase] = createSignal<"idle" | "recording" | "transcribing" | "failed">("idle")
+  const [voicePhase, setVoicePhase] = createSignal<"idle" | "requesting" | "recording" | "transcribing" | "failed">(
+    "idle",
+  )
   const [voiceError, setVoiceError] = createSignal("")
   const supportsVoiceCapture = () =>
     typeof navigator !== "undefined" &&
@@ -349,17 +358,30 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     typeof MediaRecorder !== "undefined"
   const voiceUnsupportedDescription = () => {
     if (typeof window !== "undefined" && !window.isSecureContext) {
-      return "当前页面不是 HTTPS 安全上下文，手机浏览器会禁用麦克风。请使用 HTTPS 域名访问。"
+      return language.t("prompt.toast.voiceUnsupported.insecureContext")
     }
     if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
-      return "当前浏览器不支持麦克风采集接口。"
+      return language.t("prompt.toast.voiceUnsupported.mediaDevices")
     }
     if (typeof MediaRecorder === "undefined") {
-      return "当前浏览器不支持录音能力。建议使用最新版 Chrome 或 Safari。"
+      return language.t("prompt.toast.voiceUnsupported.mediaRecorder")
     }
     return language.t("prompt.toast.voiceUnsupported.description")
   }
   const supportsSpeech = () => speech.isSupported()
+  const isMobileBrowser = () => {
+    if (typeof navigator === "undefined") return false
+    const nav = navigator as Navigator & { userAgentData?: { mobile?: boolean } }
+    if (nav.userAgentData?.mobile) return true
+    return /android|iphone|ipad|ipod|mobile/i.test(nav.userAgent)
+  }
+  const shouldUseServerFallback = () => isMobileBrowser()
+  const voiceNoSpeechDescription = () => {
+    const base = language.t("prompt.toast.voiceNoSpeech.description")
+    const error = speechFailure().trim()
+    if (!error) return base
+    return `${base}（浏览器语音识别错误：${error}）`
+  }
   const clearVoiceTimer = () => {
     if (timer === undefined) return
     clearTimeout(timer)
@@ -377,11 +399,15 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       active.stop()
     }
     chunks = []
+    activeVoiceMime = ""
+    recordedVoiceMime = ""
     startedAt = 0
     finalizing = false
     speech.stop()
     speech.reset()
     clearVoiceStream()
+    setSpeechFailure("")
+    setTranscribeFailure("")
     setVoiceError("")
     setVoicePhase("idle")
   }
@@ -394,6 +420,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   }
   const pickVoiceMime = () => {
     if (typeof MediaRecorder === "undefined") return
+    const canPlay = (mime: string) => {
+      if (typeof document === "undefined") return true
+      const audio = document.createElement("audio")
+      if (audio.canPlayType(mime)) return true
+      const normalized = mime.split(";")[0]
+      if (!normalized) return false
+      return !!audio.canPlayType(normalized)
+    }
     const preferred = [
       "audio/webm;codecs=opus",
       "audio/webm",
@@ -402,7 +436,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       "audio/ogg;codecs=opus",
       "audio/ogg",
     ]
-    return preferred.find((item) => MediaRecorder.isTypeSupported(item))
+    const supported = preferred.filter((item) => MediaRecorder.isTypeSupported(item))
+    if (supported.length === 0) return
+    const playable = supported.find((item) => canPlay(item))
+    return playable || supported[0]
   }
 
   /** 中文注释：把选择器值拆成 providerID 和 modelID。 */
@@ -414,6 +451,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   }
 
   const transcribeVoice = async (input: { mime: string; dataUrl: string }) => {
+    setTranscribeFailure("")
     const selected = runtimeValue() !== "__auto__" ? parseRuntimeValue(runtimeValue()) : undefined
     const model = selected ?? info()?.runtime_model
     const result = await sdk.client.session
@@ -423,9 +461,21 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         providerID: model?.providerID,
         modelID: model?.modelID,
       })
-      .then((response) => response.data)
-      .catch(() => undefined)
-    return result?.text?.trim() ?? ""
+      .catch((error) => {
+        setTranscribeFailure(errorMessage(error, language.t("prompt.toast.voiceTranscribeFailed.description")))
+        return
+      })
+    if (!result) return ""
+    if (result.error) {
+      setTranscribeFailure(errorMessage(result.error, language.t("prompt.toast.voiceTranscribeFailed.description")))
+      return ""
+    }
+    const text = result.data?.text?.trim() ?? ""
+    if (text) return text
+    if (result.data?.engine === "none") {
+      setTranscribeFailure(language.t("prompt.toast.voiceTranscribeFailed.description"))
+    }
+    return ""
   }
 
   /** 中文注释：把当前选择同步到 session 手动模型接口。 */
@@ -479,6 +529,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return `voice-${now}.${subtype}`
   }
   const voiceStatus = createMemo(() => {
+    if (voicePhase() === "requesting") return language.t("prompt.voice.status.requesting")
     if (voicePhase() === "recording") return language.t("prompt.voice.status.recording")
     if (voicePhase() === "transcribing") return language.t("prompt.voice.status.transcribing")
     if (voicePhase() === "failed") return voiceError() || language.t("prompt.voice.status.failed")
@@ -1225,9 +1276,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     const elapsed = Math.max(0, Date.now() - startedAt)
     const duration = Math.min(elapsed, MAX_VOICE_DURATION_MS)
-    const mime = active?.mimeType || pickVoiceMime() || VOICE_MIME_FALLBACK
+    const mime = recordedVoiceMime || active?.mimeType || activeVoiceMime || pickVoiceMime() || VOICE_MIME_FALLBACK
     const blob = new Blob(chunks, { type: mime })
     chunks = []
+    activeVoiceMime = ""
+    recordedVoiceMime = ""
 
     if (blob.size <= 0) {
       finalizing = false
@@ -1268,8 +1321,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     const cursorPosition = prompt.cursor() ?? getCursorPosition(editorRef)
     prompt.set([...prompt.current(), attachment], cursorPosition)
 
-    const browserTranscript = speech.committed().trim()
-    const transcript = browserTranscript || (await transcribeVoice({ mime, dataUrl }))
+    setTranscribeFailure("")
+    const browserTranscript = (speech.committed().trim() || speech.interim().trim()).trim()
+    const transcript = browserTranscript || (shouldUseServerFallback() ? await transcribeVoice({ mime, dataUrl }) : "")
+    const transcribeError = transcribeFailure().trim()
     if (transcript) {
       editorRef.focus()
       addPart({
@@ -1279,10 +1334,17 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         end: 0,
       })
     } else {
-      showToast({
-        title: language.t("prompt.toast.voiceNoSpeech.title"),
-        description: language.t("prompt.toast.voiceNoSpeech.description"),
-      })
+      if (transcribeError) {
+        showToast({
+          title: language.t("prompt.toast.voiceTranscribeFailed.title"),
+          description: transcribeError,
+        })
+      } else {
+        showToast({
+          title: language.t("prompt.toast.voiceNoSpeech.title"),
+          description: voiceNoSpeechDescription(),
+        })
+      }
     }
 
     setVoiceError("")
@@ -1308,11 +1370,27 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       failVoice(language.t("prompt.toast.voiceUnsupported.title"), voiceUnsupportedDescription())
       return
     }
-    if (voicePhase() === "recording" || voicePhase() === "transcribing") return
+    if (voicePhase() === "requesting" || voicePhase() === "recording" || voicePhase() === "transcribing") return
+    setVoiceError("")
+    setVoicePhase("requesting")
 
-    const media = await navigator.mediaDevices.getUserMedia({ audio: true }).catch((error) => error)
+    let mediaTimeout: number | undefined
+    const media = await Promise.race([
+      navigator.mediaDevices.getUserMedia({ audio: true }).catch((error) => error),
+      new Promise((resolve) => {
+        mediaTimeout = window.setTimeout(() => resolve("voice_permission_timeout"), VOICE_PERMISSION_TIMEOUT_MS)
+      }),
+    ])
+    if (mediaTimeout !== undefined) window.clearTimeout(mediaTimeout)
+    if (media === "voice_permission_timeout") {
+      failVoice(
+        language.t("prompt.toast.voicePermissionTimeout.title"),
+        language.t("prompt.toast.voicePermissionTimeout.description"),
+      )
+      return
+    }
     if (!(typeof MediaStream !== "undefined" && media instanceof MediaStream)) {
-      const blocked = media instanceof DOMException && media.name === "NotAllowedError"
+      const blocked = media instanceof DOMException && (media.name === "NotAllowedError" || media.name === "SecurityError")
       if (blocked) {
         failVoice(
           language.t("prompt.toast.voicePermissionDenied.title"),
@@ -1326,11 +1404,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     stream = media
     chunks = []
+    activeVoiceMime = ""
+    recordedVoiceMime = ""
     finalizing = false
     startedAt = Date.now()
     activeVoiceRun = ++voiceRun
 
     const mime = pickVoiceMime()
+    activeVoiceMime = mime || ""
     const next = (() => {
       if (!mime) return new MediaRecorder(media)
       return new MediaRecorder(media, { mimeType: mime })
@@ -1339,6 +1420,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     recorder = next
     next.ondataavailable = (event) => {
       if (event.data.size <= 0) return
+      if (event.data.type) recordedVoiceMime = event.data.type
       chunks.push(event.data)
     }
     next.onerror = () => {
@@ -1347,6 +1429,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       speech.stop()
       recorder = undefined
       chunks = []
+      activeVoiceMime = ""
+      recordedVoiceMime = ""
       failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
     }
     next.onstop = () => {
@@ -1354,6 +1438,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
 
     speech.reset()
+    setSpeechFailure("")
     speech.setLang(speechLocale())
     setVoiceError("")
     setVoicePhase("recording")
@@ -1395,6 +1480,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
     recorder = undefined
     chunks = []
+    activeVoiceMime = ""
+    recordedVoiceMime = ""
     clearVoiceStream()
   })
 
@@ -1423,6 +1510,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     onNewSessionWorktreeReset: props.onNewSessionWorktreeReset,
     onSubmit: props.onSubmit,
   })
+
+  const submitPrompt = (event: Event) => {
+    if (voicePhase() === "recording") {
+      event.preventDefault()
+      stopVoiceInput()
+      return
+    }
+    if (voicePhase() === "requesting") {
+      event.preventDefault()
+      return
+    }
+    if (voicePhase() === "transcribing") {
+      event.preventDefault()
+      return
+    }
+    void handleSubmit(event)
+  }
 
   const handleKeyDown = (event: KeyboardEvent) => {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "u") {
@@ -1555,7 +1659,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     // Note: Shift+Enter is handled earlier, before IME check
     if (event.key === "Enter" && !event.shiftKey) {
-      handleSubmit(event)
+      submitPrompt(event)
     }
   }
 
@@ -1673,7 +1777,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         t={(key) => language.t(key as Parameters<typeof language.t>[0])}
       />
       <DockShellForm
-        onSubmit={handleSubmit}
+        onSubmit={submitPrompt}
         classList={{
           "group/prompt-input": true,
           "focus-within:shadow-xs-border": true,
@@ -1820,6 +1924,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       stopVoiceInput()
                       return
                     }
+                    if (voicePhase() === "requesting") return
                     if (voicePhase() === "transcribing") return
                     if (!supportsVoiceCapture()) {
                       failVoice(language.t("prompt.toast.voiceUnsupported.title"), voiceUnsupportedDescription())

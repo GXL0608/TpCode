@@ -280,6 +280,7 @@ export const dict = {
   "prompt.attachment.remove": "Remove attachment",
   "prompt.action.send": "Send",
   "prompt.action.stop": "Stop",
+  "prompt.voice.status.requesting": "Requesting microphone access",
   "prompt.voice.status.recording": "Recording",
   "prompt.voice.status.transcribing": "Transcribing",
   "prompt.voice.status.failed": "Voice input failed",
@@ -296,15 +297,26 @@ export const dict = {
   "prompt.toast.promptSendFailed.description": "Unable to retrieve session",
   "prompt.toast.voiceUnsupported.title": "Voice input is not supported",
   "prompt.toast.voiceUnsupported.description": "This browser or webview does not support microphone recording.",
+  "prompt.toast.voiceUnsupported.insecureContext":
+    "This page is not in a secure HTTPS context, so mobile browsers may block microphone access.",
+  "prompt.toast.voiceUnsupported.mediaDevices": "This browser does not support microphone capture APIs.",
+  "prompt.toast.voiceUnsupported.mediaRecorder":
+    "This browser does not support recording. Try the latest Chrome or Safari.",
   "prompt.toast.voicePermissionDenied.title": "Microphone permission denied",
   "prompt.toast.voicePermissionDenied.description":
     "Allow microphone permission in the browser or host app, then try again.",
+  "prompt.toast.voicePermissionTimeout.title": "Microphone permission timed out",
+  "prompt.toast.voicePermissionTimeout.description":
+    "The host app did not return microphone permission in time. Check system permissions or use HTTPS.",
   "prompt.toast.voiceTooLong.title": "Recording stopped at 60 seconds",
   "prompt.toast.voiceTooLong.description": "Maximum recording duration is 60 seconds.",
   "prompt.toast.voiceTooLarge.title": "Audio file is too large",
   "prompt.toast.voiceTooLarge.description": "Maximum audio file size is 3 MB.",
   "prompt.toast.voiceRecordFailed.title": "Failed to record audio",
   "prompt.toast.voiceRecordFailed.description": "Please retry after checking microphone availability.",
+  "prompt.toast.voiceTranscribeFailed.title": "Voice transcription request failed",
+  "prompt.toast.voiceTranscribeFailed.description":
+    "Check login status, transcription model setup, or network connectivity and retry.",
   "prompt.toast.voiceRecognitionUnsupported.title": "Speech recognition unavailable",
   "prompt.toast.voiceRecognitionUnsupported.description":
     "Audio is attached to the current draft. Add text before sending; it is only stored after the message is sent.",

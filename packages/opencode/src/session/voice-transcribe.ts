@@ -56,6 +56,14 @@ function localPython() {
   return ["python3"]
 }
 
+function localPythonEnv() {
+  return {
+    ...process.env,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+  }
+}
+
 function prewarmEnabled() {
   const value = process.env.TPCODE_LOCAL_STT_PREWARM?.toLowerCase()
   if (value === undefined) return true
@@ -122,6 +130,7 @@ async function transcribeWithLocalWhisper(input: { mime: string; data_url: strin
     ],
     stdout: "pipe",
     stderr: "pipe",
+    env: localPythonEnv(),
   })
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -150,6 +159,7 @@ async function prewarmLocalWhisper() {
     cmd: [...py, script, "--warmup", process.env.TPCODE_LOCAL_STT_MODEL ?? "small"],
     stdout: "pipe",
     stderr: "pipe",
+    env: localPythonEnv(),
   })
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(),
