@@ -44,7 +44,12 @@ export const ListTool = Tool.define("list", {
   }),
   async execute(params, ctx) {
     const overlay = await BuildOverlay.load(ctx.sessionID)
-    const searchPath = path.resolve(Instance.directory, params.path || ".")
+    const searchPath = overlay
+      ? BuildOverlay.remapSourcePath({
+          overlay,
+          filePath: path.resolve(Instance.directory, params.path || "."),
+        })
+      : path.resolve(Instance.directory, params.path || ".")
     await assertExternalDirectory(ctx, searchPath, { kind: "directory" })
 
     await ctx.ask({

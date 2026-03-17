@@ -14,7 +14,7 @@ import { useLanguage } from "@/context/language"
 import { useNotification } from "@/context/notification"
 import { ProjectIcon, SessionItem, type SessionItemProps } from "./sidebar-items"
 import { childMapByParent, displayName, sortedRootSessions } from "./helpers"
-import { projectSelected, projectTileActive } from "./sidebar-project-helpers"
+import { projectSelected, projectTileActive, selectedProjectSidebarAction } from "./sidebar-project-helpers"
 
 export type ProjectSidebarContext = {
   currentDir: Accessor<string>
@@ -123,8 +123,15 @@ const ProjectTile = (props: {
         }}
         onClick={() => {
           if (props.selected()) {
-            props.setSuppressHover(true)
-            layout.sidebar.toggle()
+            props.setOpen(false)
+            props.onProjectMouseLeave(props.project.worktree)
+            if (selectedProjectSidebarAction(layout.sidebar.opened()) === "close") {
+              props.setSuppressHover(true)
+              layout.sidebar.close()
+              return
+            }
+            props.setSuppressHover(false)
+            layout.sidebar.open()
             return
           }
           props.setSuppressHover(false)

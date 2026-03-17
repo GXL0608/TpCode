@@ -151,6 +151,32 @@ describe("Project.fromDirectory", () => {
       expect(sandbox).toBe(tmp.path)
     })
   })
+
+  test("maps UNC directories to the mounted share path on non-windows hosts", async () => {
+    if (process.platform === "win32") return
+    const p = await loadProject()
+    await using tmp = await tmpdir()
+    const root = path.join(tmp.path, "TPCode", "07慢病系统-JAVA", "后端")
+    const previous = process.env.TPCODE_SHARED_MOUNT_ROOT
+
+    await fs.mkdir(root, { recursive: true })
+    await $`git init`.cwd(root).quiet()
+    await Bun.write(path.join(root, "README.md"), "# slow-care\n")
+    await $`git add README.md`.cwd(root).quiet()
+    await $`git commit -m init`.cwd(root).quiet()
+    process.env.TPCODE_SHARED_MOUNT_ROOT = tmp.path
+
+    try {
+      const directory = "\\\\192.168.1.212\\TPCode\\07慢病系统-JAVA\\后端"
+      const { project, sandbox } = await p.fromDirectory(directory)
+      expect(project.worktree).toBe(root)
+      expect(sandbox).toBe(root)
+      await expect(p.workspaceMode(directory)).resolves.toBe("single")
+    } finally {
+      if (previous) process.env.TPCODE_SHARED_MOUNT_ROOT = previous
+      if (!previous) delete process.env.TPCODE_SHARED_MOUNT_ROOT
+    }
+  })
 })
 
 describe("Project.fromDirectory with worktrees", () => {
@@ -333,6 +359,83 @@ describe("Project.workspaceMode", () => {
     const current = await p.get(projectID)
 
     expect(current?.sandboxes).toEqual([batchDirectory])
+  })
+
+  test("listByIDs only returns requested projects and strips hidden overlay sandboxes", async () => {
+    const p = await loadProject()
+    await using tmp = await tmpdir()
+    const keepID = `project_keep_${Date.now()}`
+    const skipID = `project_skip_${Date.now()}`
+    const keepRoot = path.join(tmp.path, "keep")
+    const skipRoot = path.join(tmp.path, "skip")
+    const keepSandbox = path.join(tmp.path, "keep-sandbox")
+    const overlaySandbox = path.join(tmp.path, ".local", "share", "opencode", "build-overlay", "keep", "session-a")
+
+    await fs.mkdir(keepRoot, { recursive: true })
+    await fs.mkdir(skipRoot, { recursive: true })
+    await fs.mkdir(keepSandbox, { recursive: true })
+    await fs.mkdir(overlaySandbox, { recursive: true })
+
+    await Database.use((db) =>
+      db.insert(ProjectTable)
+        .values([
+          {
+            id: keepID,
+            worktree: keepRoot,
+            vcs: "git",
+            name: "keep",
+            icon_url: null,
+            icon_color: null,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+            time_initialized: null,
+            sandboxes: [keepSandbox, overlaySandbox],
+            commands: null,
+          },
+          {
+            id: skipID,
+            worktree: skipRoot,
+            vcs: "git",
+            name: "skip",
+            icon_url: null,
+            icon_color: null,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+            time_initialized: null,
+            sandboxes: [],
+            commands: null,
+          },
+        ])
+        .run(),
+    )
+
+    await Database.use((db) =>
+      db.insert(WorkspaceTable)
+        .values({
+          id: `workspace_keep_${Date.now()}`,
+          directory: keepSandbox,
+          branch: "opencode/keep",
+          kind: "single_worktree",
+          project_id: keepID,
+          config: {
+            type: "single_worktree",
+            directory: keepSandbox,
+          },
+          meta: undefined,
+        })
+        .run(),
+    )
+
+    try {
+      const items = await p.listByIDs([keepID])
+      expect(items).toHaveLength(1)
+      expect(items[0]?.id).toBe(keepID)
+      expect(items[0]?.sandboxes).toEqual([keepSandbox])
+    } finally {
+      await Database.use((db) => db.delete(WorkspaceTable).where(eq(WorkspaceTable.project_id, keepID)).run())
+      await Database.use((db) => db.delete(ProjectTable).where(eq(ProjectTable.id, keepID)).run())
+      await Database.use((db) => db.delete(ProjectTable).where(eq(ProjectTable.id, skipID)).run())
+    }
   })
 })
 

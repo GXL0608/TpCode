@@ -27,9 +27,28 @@ describe("project resolver", () => {
       "c:\\users\\zhaoz\\.local\\share\\opencode\\worktree\\project_b\\stellar-planet-ses-313df03e5ffelypuwxrne6x0pi"
     const batch =
       "/Users/demo/.local/share/opencode/batch-worktree/project_a/night-shift"
+    const overlay =
+      "/Users/demo/.local/share/opencode/build-overlay/project_b/slow-care-system"
     expect(resolveProjectByDirectory(projects, directory)?.id).toBe("project_b")
     expect(resolveProjectByDirectory(projects, batch)?.id).toBe("project_a")
+    expect(resolveProjectByDirectory(projects, overlay)?.id).toBe("project_b")
     expect(projectRootByDirectory(projects, directory)).toBe("/repo/b")
+  })
+
+  test("treats UNC share paths and mounted /Volumes paths as the same project", () => {
+    const shared = [
+      {
+        id: "slow_care_backend",
+        worktree: "/Volumes/TPCode/07慢病系统-JAVA/后端",
+        sandboxes: [],
+      },
+    ]
+    expect(resolveProjectByDirectory(shared, "\\\\192.168.1.212\\TPCode\\07慢病系统-JAVA\\后端")?.id).toBe(
+      "slow_care_backend",
+    )
+    expect(projectRootByDirectory(shared, "\\\\192.168.1.212\\TPCode\\07慢病系统-JAVA\\后端")).toBe(
+      "/Volumes/TPCode/07慢病系统-JAVA/后端",
+    )
   })
 
   test("sanitizes workspace order to keep real directories and root first", () => {

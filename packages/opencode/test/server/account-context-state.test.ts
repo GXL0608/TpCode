@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { Flag } from "../../src/flag/flag"
 import { Database, eq } from "../../src/storage/db"
 import { ProjectTable } from "../../src/project/project.sql"
+import { MessageTable, SessionTable } from "../../src/session/session.sql"
 
 const on = Flag.TPCODE_ACCOUNT_ENABLED
 
@@ -101,6 +102,20 @@ describe("account context state", () => {
     expect(!!session.id).toBe(true)
     expect(session.directory).toBe(project.worktree)
     if (!session.id || !session.directory) throw new Error("session_missing")
+    const now = Date.now()
+    await Database.use((db) =>
+      db.insert(MessageTable)
+        .values({
+          id: uid("msg"),
+          session_id: session.id!,
+          time_created: now,
+          time_updated: now,
+          data: {
+            role: "user",
+          },
+        })
+        .run(),
+    )
 
     const patched = await req({
       path: "/account/context/state",
@@ -175,6 +190,173 @@ describe("account context state", () => {
     expect(fetched.status).toBe(200)
     const persisted = (await fetched.json()) as { open_project_ids: string[] }
     expect(persisted.open_project_ids).toEqual([project.id])
+  })
+
+  test.skipIf(!on)("keeps overlay sessions in the remembered state after refresh", async () => {
+    const loginResult = await login("admin", "TpCode@2026")
+    const admin = loginResult.access_token
+    const projects = await req({
+      path: "/account/context/projects",
+      token: admin,
+    })
+    expect(projects.status).toBe(200)
+    const payload = (await projects.json()) as {
+      projects?: Array<{ id: string; worktree: string }>
+    }
+    const project = payload.projects?.[0]
+    expect(!!project?.id).toBe(true)
+    expect(!!project?.worktree).toBe(true)
+    if (!project?.id || !project.worktree) throw new Error("project_missing")
+
+    const selected = await req({
+      path: "/account/context/select",
+      method: "POST",
+      token: admin,
+      body: { project_id: project.id },
+    })
+    expect(selected.status).toBe(200)
+    const selectedBody = (await selected.json()) as Record<string, unknown>
+    const token = typeof selectedBody.access_token === "string" ? selectedBody.access_token : undefined
+    expect(!!token).toBe(true)
+    if (!token) throw new Error("token_missing")
+
+    const created = await req({
+      path: "/session?directory=" + encodeURIComponent(project.worktree),
+      method: "POST",
+      token,
+      body: { title: uid("context_overlay_state") },
+    })
+    expect(created.status).toBe(200)
+    const session = (await created.json()) as { id?: string; directory?: string }
+    expect(!!session.id).toBe(true)
+    if (!session.id) throw new Error("session_missing")
+    const now = Date.now()
+    await Database.use((db) =>
+      db.insert(MessageTable)
+        .values({
+          id: uid("msg"),
+          session_id: session.id!,
+          time_created: now,
+          time_updated: now,
+          data: {
+            role: "user",
+          },
+        })
+        .run(),
+    )
+
+    const overlay = `/tmp/build-overlay/${project.id}/session-overlay`
+    await Database.use((db) =>
+      db.update(SessionTable).set({ directory: overlay, time_updated: Date.now() }).where(eq(SessionTable.id, session.id!)).run(),
+    )
+
+    const patched = await req({
+      path: "/account/context/state",
+      method: "PATCH",
+      token,
+      body: {
+        last_session_by_project: {
+          [project.id]: {
+            session_id: session.id,
+            directory: overlay,
+            time_updated: Date.now(),
+          },
+        },
+      },
+    })
+    expect(patched.status).toBe(200)
+    const state = (await patched.json()) as {
+      last_session_by_project: Record<string, { session_id: string; directory: string }>
+    }
+    expect(state.last_session_by_project[project.id]?.session_id).toBe(session.id)
+    expect(state.last_session_by_project[project.id]?.directory).toBe(overlay)
+  })
+
+  test.skipIf(!on)("falls back to the latest non-empty session when the remembered session is blank", async () => {
+    const loginResult = await login("admin", "TpCode@2026")
+    const admin = loginResult.access_token
+    const projects = await req({
+      path: "/account/context/projects",
+      token: admin,
+    })
+    expect(projects.status).toBe(200)
+    const payload = (await projects.json()) as {
+      projects?: Array<{ id: string; worktree: string }>
+    }
+    const project = payload.projects?.[0]
+    expect(!!project?.id).toBe(true)
+    expect(!!project?.worktree).toBe(true)
+    if (!project?.id || !project.worktree) throw new Error("project_missing")
+
+    const selected = await req({
+      path: "/account/context/select",
+      method: "POST",
+      token: admin,
+      body: { project_id: project.id },
+    })
+    expect(selected.status).toBe(200)
+    const selectedBody = (await selected.json()) as Record<string, unknown>
+    const token = typeof selectedBody.access_token === "string" ? selectedBody.access_token : undefined
+    expect(!!token).toBe(true)
+    if (!token) throw new Error("token_missing")
+
+    const first = await req({
+      path: "/session?directory=" + encodeURIComponent(project.worktree),
+      method: "POST",
+      token,
+      body: { title: uid("context_history_real") },
+    })
+    expect(first.status).toBe(200)
+    const remembered = (await first.json()) as { id?: string; directory?: string }
+    expect(!!remembered.id).toBe(true)
+    if (!remembered.id || !remembered.directory) throw new Error("remembered_missing")
+
+    const now = Date.now()
+    await Database.use((db) =>
+      db.insert(MessageTable)
+        .values({
+          id: uid("msg"),
+          session_id: remembered.id!,
+          time_created: now,
+          time_updated: now,
+          data: {
+            role: "user",
+          },
+        })
+        .run(),
+    )
+
+    const second = await req({
+      path: "/session?directory=" + encodeURIComponent(project.worktree),
+      method: "POST",
+      token,
+      body: { title: uid("context_history_blank") },
+    })
+    expect(second.status).toBe(200)
+    const blank = (await second.json()) as { id?: string; directory?: string }
+    expect(!!blank.id).toBe(true)
+    if (!blank.id || !blank.directory) throw new Error("blank_missing")
+
+    const patched = await req({
+      path: "/account/context/state",
+      method: "PATCH",
+      token,
+      body: {
+        last_session_by_project: {
+          [project.id]: {
+            session_id: blank.id,
+            directory: blank.directory,
+            time_updated: Date.now(),
+          },
+        },
+      },
+    })
+    expect(patched.status).toBe(200)
+    const state = (await patched.json()) as {
+      last_session_by_project: Record<string, { session_id: string; directory: string }>
+    }
+    expect(state.last_session_by_project[project.id]?.session_id).toBe(remembered.id)
+    expect(state.last_session_by_project[project.id]?.directory).toBe(remembered.directory)
   })
 
   test.skipIf(!on)("keeps the previous access token valid while selecting a new project context", async () => {

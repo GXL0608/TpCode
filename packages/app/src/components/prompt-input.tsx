@@ -70,6 +70,7 @@ import {
 import { base64Encode } from "@opencode-ai/util/encode"
 import { buildPackageDisabledReason, buildPackagePrompt, canUseBuildPackage } from "./build-package"
 import { errorMessage } from "@/pages/layout/helpers"
+import { freshSessionHref } from "@/utils/session-route"
 import type { Workspace } from "@opencode-ai/sdk/v2/client"
 
 interface PromptInputProps {
@@ -1592,13 +1593,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     const target = findAssignedVhoProject({
       project_id: input.project_id,
       project_worktree: input.project_worktree,
-      products: payload.products.map((item) => ({
-        id: item.id,
-        project_id: item.project_id,
-        worktree: item.worktree,
-      })),
+      products: payload.products.flatMap((item) => {
+        if (!item.project_id || !item.worktree) return []
+        return [
+          {
+            id: item.id,
+            project_id: item.project_id,
+            worktree: item.worktree,
+          },
+        ]
+      }),
     })
     if (!target) {
+      return vhoFeedbackApplyFailure({
+        reason: "project_missing",
+      })
+    }
+    if (!target.project_id || !target.worktree) {
       return vhoFeedbackApplyFailure({
         reason: "project_missing",
       })
@@ -1613,7 +1624,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     const slug = base64Encode(target.worktree)
     layout.handoff.setPrompt(slug, next, next.length)
-    navigate(`/${slug}/session`)
+    navigate(freshSessionHref(slug))
     return {
       ok: true,
     } as const

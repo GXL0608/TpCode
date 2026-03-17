@@ -2,7 +2,21 @@ import type { Project } from "@opencode-ai/sdk/v2/client"
 
 type ProjectRef = Pick<Project, "worktree" | "sandboxes"> & { id?: string }
 
+/** 中文注释：把 UNC 共享目录和 macOS 的 /Volumes 挂载目录归一到同一个比较键，便于识别同一真实项目。 */
+function sharedKey(input: string) {
+  const current = input.replace(/[\\/]+$/, "")
+  const unc = current.replaceAll("/", "\\").match(/^\\\\+[^\\]+\\([^\\]+)(?:\\(.*))?$/)
+  if (unc) {
+    return `//${unc[1]}/${(unc[2] ?? "").split("\\").filter(Boolean).join("/")}`.replace(/\/+$/, "")
+  }
+  const mounted = current.replaceAll("\\", "/").match(/^\/Volumes\/([^/]+)(?:\/(.*))?$/)
+  if (!mounted) return
+  return `//${mounted[1]}/${mounted[2] ?? ""}`.replace(/\/+$/, "")
+}
+
 export function directoryKey(input: string) {
+  const shared = sharedKey(input)
+  if (shared) return shared
   const drive = input.match(/^([A-Za-z]:)[\\/]+$/)
   if (drive) return `${drive[1]}${input.includes("\\") ? "\\" : "/"}`
   if (/^[\\/]+$/.test(input)) return input.includes("\\") ? "\\" : "/"
@@ -14,7 +28,9 @@ export function projectDirectories(project: ProjectRef) {
 }
 
 function derivedProjectID(directory: string) {
-  const match = directory.replace(/\\/g, "/").match(/(?:^|\/)(?:batch-)?worktree\/([^/]+)(?:\/|$)/i)
+  const match = directory
+    .replace(/\\/g, "/")
+    .match(/(?:^|\/)(?:(?:batch-)?worktree|build-overlay)\/([^/]+)(?:\/|$)/i)
   return match?.[1]?.toLowerCase()
 }
 

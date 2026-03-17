@@ -1,12 +1,14 @@
 import { table, text, integer } from "../storage/orm-core"
 import { TpUserTable } from "./user.sql"
 import { ProjectTable } from "@/project/project.sql"
+import { TpProductTable } from "./product.sql"
 
 export const TpUserProjectStateTable = table("tp_user_project_state", {
   user_id: text()
     .primaryKey()
     .references(() => TpUserTable.id, { onDelete: "cascade" }),
   last_project_id: text().references(() => ProjectTable.id, { onDelete: "set null" }),
+  last_product_id: text().references(() => TpProductTable.id, { onDelete: "set null" }),
   open_project_ids: text({ mode: "json" }).$type<string[]>(),
   last_session_by_project: text({ mode: "json" }).$type<
     Record<

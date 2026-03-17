@@ -1,5 +1,6 @@
 import { createMemo } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
+import { freshSessionHref } from "@/utils/session-route"
 import { useCommand, type CommandOption } from "@/context/command"
 import { useAccountAuth } from "@/context/account-auth"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -105,7 +106,10 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.new"),
       keybind: "mod+shift+s",
       slash: "new",
-      onSelect: () => navigate(`/${params.dir}/session`),
+      onSelect: () => {
+        if (!params.dir) return
+        navigate(freshSessionHref(params.dir))
+      },
     }),
   ])
 

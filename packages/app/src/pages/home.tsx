@@ -1,9 +1,9 @@
-import { createMemo, For, Match, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, Switch } from "solid-js"
 import { Button } from "@opencode-ai/ui/button"
 import { Logo } from "@opencode-ai/ui/logo"
 import { useAccountAuth } from "@/context/account-auth"
 import { useAccountProject } from "@/context/account-project"
-import { useNavigate } from "@solidjs/router"
+import { useLocation, useNavigate } from "@solidjs/router"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { Icon } from "@opencode-ai/ui/icon"
 import { DateTime } from "luxon"
@@ -13,6 +13,12 @@ import { DialogSelectServer } from "@/components/dialog-select-server"
 import { useServer } from "@/context/server"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
+import {
+  latestRememberedProductSession,
+  productEntryDirectory,
+  productEntryProjectID,
+  productProjectIDs,
+} from "@/context/account-project"
 
 export default function Home() {
   const auth = useAccountAuth()
@@ -20,8 +26,10 @@ export default function Home() {
   const sync = useGlobalSync()
   const dialog = useDialog()
   const navigate = useNavigate()
+  const location = useLocation()
   const server = useServer()
   const language = useLanguage()
+  const [restoring, setRestoring] = createSignal(false)
   const homedir = createMemo(() => sync.data.path.home)
   const recent = createMemo(() => {
     return sync.data.project
@@ -58,12 +66,86 @@ export default function Home() {
     })
     if (!productID) return
     const target = projects.find((item) => item.id === productID)
-    if (!target?.worktree) return
-    const activated = await accountProject.activate(target.project_id, true)
-    if (!activated.ok) return
-    const last = activated.state.last_session_by_project[target.project_id]
-    navigate(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(target.worktree)}/session`)
+    const directory = productEntryDirectory({
+      product: target,
+      projects: sync.data.project,
+      current_project_id: auth.user()?.context_project_id,
+      last_project_id: accountProject.data().last_project_id,
+    })
+    if (!target || !directory) return
+    const selected = await auth.selectProductContext(target.id)
+    if (!selected.ok) return
+    const state = await auth.contextState()
+    const ids = productProjectIDs(target)
+    const last_project_id = productEntryProjectID({
+      product: target,
+      current_project_id: auth.user()?.context_project_id,
+      last_project_id: state?.last_project_id,
+    }) ?? null
+    await auth.updateContextState({
+      last_project_id,
+      open_project_ids: ids,
+    })
+    const last = latestRememberedProductSession({
+      product: target,
+      last_session_by_project: state?.last_session_by_project ?? {},
+    })
+    navigate(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(directory)}/session`)
   }
+
+  /** 中文注释：登录或刷新首页后优先恢复上次进入的产品与会话，避免重新落回 Recent projects。 */
+  createEffect(() => {
+    if (restoring()) return
+    if (location.pathname !== "/") return
+    if (!auth.ready() || !auth.authenticated()) return
+    if (sync.data.project.length === 0) return
+    setRestoring(true)
+    void (async () => {
+      const payload = await auth.contextProducts()
+      const products = payload?.products ?? []
+      const product_id = auth.user()?.context_product_id ?? payload?.last_product_id
+      const target = products.find((item) => item.id === product_id)
+      if (!target) {
+        setRestoring(false)
+        return
+      }
+      const state = await auth.contextState()
+      const ids = productProjectIDs(target)
+      const last_project_id = productEntryProjectID({
+        product: target,
+        current_project_id: auth.user()?.context_project_id,
+        last_project_id: state?.last_project_id,
+      }) ?? null
+      if (
+        ids.join("\n") !== (state?.open_project_ids ?? []).join("\n") ||
+        last_project_id !== (state?.last_project_id ?? null)
+      ) {
+        await auth.updateContextState({
+          last_project_id,
+          open_project_ids: ids,
+        })
+      }
+      const last = latestRememberedProductSession({
+        product: target,
+        last_session_by_project: state?.last_session_by_project ?? {},
+      })
+      const directory = productEntryDirectory({
+        product: target,
+        projects: sync.data.project,
+        current_project_id: auth.user()?.context_project_id,
+        last_project_id: last_project_id ?? undefined,
+      })
+      if (last) {
+        navigate(`/${base64Encode(last.directory)}/session/${last.session_id}`, { replace: true })
+        return
+      }
+      if (!directory) {
+        setRestoring(false)
+        return
+      }
+      navigate(`/${base64Encode(directory)}/session`, { replace: true })
+    })()
+  })
 
   return (
     <div class="mx-auto mt-55 w-full md:w-auto px-4">

@@ -1,12 +1,13 @@
 type SolutionLike = {
   id: string
+  name?: string
 }
 
 type ProductLike = {
   id: string
   name: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
 }
 
 type RootLike = {
@@ -22,6 +23,12 @@ type BuildProfileLike = {
   compile_command?: string
 }
 
+type SubmitLike = {
+  pending: boolean
+  name: string
+  code: string
+}
+
 /** 中文注释：提取目录最后一级名称，兼容 Windows 与 POSIX 路径。 */
 function leaf(input: string) {
   const value = input.trim().replaceAll("\\", "/").replace(/\/+$/g, "")
@@ -30,10 +37,11 @@ function leaf(input: string) {
 
 /** 中文注释：为新增解决方案生成默认草稿，确保管理员只补名称和编码即可先保存。 */
 export function createSolutionDraft(product: ProductLike) {
-  const mount_name = leaf(product.worktree)
+  const directory = product.worktree?.trim() || product.project_id?.trim() || product.id
+  const mount_name = leaf(directory)
   return {
     product_id: product.id,
-    project_id: product.project_id,
+    project_id: product.project_id ?? "",
     build_profile_text: JSON.stringify(
       {
         workdirs: [mount_name],
@@ -49,7 +57,7 @@ export function createSolutionDraft(product: ProductLike) {
       [
         {
           root_type: "single_repo",
-          directory: product.worktree,
+          directory,
           display_name: product.name,
           mount_name,
           sort_order: 0,
@@ -60,6 +68,11 @@ export function createSolutionDraft(product: ProductLike) {
       2,
     ),
   }
+}
+
+/** 中文注释：新增方案时只要求名称和编码，兼容归属产品改为内部字段后不再阻塞保存。 */
+export function solutionLibrarySubmitDisabled(input: SubmitLike) {
+  return input.pending || !input.name.trim() || !input.code.trim()
 }
 
 /** 中文注释：在提交前做一层本地校验，把常见配置错误拦在前端而不是等后端报错。 */
@@ -85,6 +98,26 @@ export function syncSolutionLibrarySelection(items: SolutionLike[], current: str
   if (items.length === 0) return ""
   if (items.some((item) => item.id === current)) return current
   return items[0]!.id
+}
+
+/** 中文注释：统一按名称升序整理解决方案导航，保证管理员定位方案时顺序稳定。 */
+export function sortNamedSolutions<T extends { name?: string }>(items: T[]) {
+  return [...items].sort((a, b) => {
+    const left = a.name ?? ""
+    const right = b.name ?? ""
+    const leftBucket = /^[a-z0-9]/i.test(left) ? 0 : 1
+    const rightBucket = /^[a-z0-9]/i.test(right) ? 0 : 1
+    if (leftBucket !== rightBucket) return leftBucket - rightBucket
+    return left.localeCompare(right, "zh-Hans-CN", { numeric: true, sensitivity: "base" })
+  })
+}
+
+/** 中文注释：按方案名称执行大小写不敏感检索，并复用统一排序结果。 */
+export function filterNamedSolutions<T extends { name?: string }>(items: T[], keyword: string) {
+  const query = keyword.trim().toLocaleLowerCase()
+  const sorted = sortNamedSolutions(items)
+  if (!query) return sorted
+  return sorted.filter((item) => (item.name ?? "").toLocaleLowerCase().includes(query))
 }
 
 /** 中文注释：生成方案库左侧导航项样式，突出当前被查看或编辑的方案。 */

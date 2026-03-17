@@ -31,6 +31,19 @@ describe("default server url", () => {
     ).toBe("http://127.0.0.1:4096")
   })
 
+  test("prefers explicit dev host and port over stored default in dev mode", () => {
+    expect(
+      resolveDefaultServerUrl({
+        stored: "https://www.tphy.com.cn:9149",
+        hostname: "127.0.0.1",
+        origin: "http://127.0.0.1:3008",
+        dev: true,
+        devHost: "127.0.0.1",
+        devPort: "4108",
+      }),
+    ).toBe("http://127.0.0.1:4108")
+  })
+
   test("uses localhost when host is opencode.ai", () => {
     expect(
       resolveDefaultServerUrl({
@@ -51,6 +64,16 @@ describe("default server url", () => {
         devPort: "4098",
       }),
     ).toBe("http://127.0.0.1:4098")
+  })
+
+  test("derives the paired local backend port from the current dev origin when explicit config is absent", () => {
+    expect(
+      resolveDefaultServerUrl({
+        hostname: "127.0.0.1",
+        origin: "http://127.0.0.1:3008",
+        dev: true,
+      }),
+    ).toBe("http://127.0.0.1:4108")
   })
 
   test("falls back to origin in production", () => {

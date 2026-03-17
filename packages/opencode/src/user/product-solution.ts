@@ -1,4 +1,3 @@
-import path from "path"
 import z from "zod"
 import { ulid } from "ulid"
 import { BuildProfile, normalizeBuildProfile, type BuildProfile as BuildProfileType } from "@/build/profile"
@@ -6,6 +5,7 @@ import { ProjectTable } from "@/project/project.sql"
 import { Database, asc, desc, eq, inArray } from "@/storage/db"
 import { Filesystem } from "@/util/filesystem"
 import { TpProductTable } from "./product.sql"
+import { invalidateProductAnchorCache, solutionProjectID } from "./product-anchor"
 import { TpProductSolutionBindingTable } from "./product-solution-binding.sql"
 import { TpProductSolutionRootTable } from "./product-solution-root.sql"
 import { TpProductSolutionTable } from "./product-solution.sql"
@@ -58,7 +58,7 @@ export type ProductSolutionItem = {
 
 /** 中文注释：把目录统一规整为绝对路径，保证解决方案根目录比较和去重稳定。 */
 function resolveDirectory(input: string) {
-  return path.resolve(input.trim())
+  return Filesystem.stablePath(input.trim())
 }
 
 /** 中文注释：校验单个解决方案根目录定义，避免运行期再碰到路径缺失或虚拟组配置不完整。 */
@@ -318,11 +318,16 @@ export namespace ProductSolutionService {
     )
     const hit = duplicate.find((item) => item.product_id === input.product_id)
     if (hit) return { ok: false as const, code: "solution_exists" as const }
-    const primary_project_id = input.primary_project_id?.trim() || product.project_id
-    const project = await Database.use((db) =>
-      db.select({ id: ProjectTable.id }).from(ProjectTable).where(eq(ProjectTable.id, primary_project_id)).get(),
-    )
-    if (!project) return { ok: false as const, code: "solution_project_missing" as const }
+    const primary_project_id = await solutionProjectID({
+      primary_project_id: input.primary_project_id?.trim(),
+      roots: roots.map((item) => item.root),
+    })
+    if (primary_project_id) {
+      const project = await Database.use((db) =>
+        db.select({ id: ProjectTable.id }).from(ProjectTable).where(eq(ProjectTable.id, primary_project_id)).get(),
+      )
+      if (!project) return { ok: false as const, code: "solution_project_missing" as const }
+    }
     const now = Date.now()
     const id = ulid()
     await Database.transaction(async (tx) => {
@@ -334,7 +339,7 @@ export namespace ProductSolutionService {
           name,
           code,
           enabled: input.enabled ?? true,
-          primary_project_id,
+          primary_project_id: primary_project_id ?? null,
           build_profile_json: build_profile.data,
           time_created: now,
           time_updated: now,
@@ -373,6 +378,7 @@ export namespace ProductSolutionService {
     })
     const item = await get(id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
+    invalidateProductAnchorCache()
     return { ok: true as const, item }
   }
 
@@ -393,7 +399,44 @@ export namespace ProductSolutionService {
     if (!code) return { ok: false as const, code: "solution_code_invalid" as const }
     const build_profile =
       input.build_profile === undefined ? normalizeBuildProfile(row.build_profile_json) : normalizeBuildProfile(input.build_profile)
-    const primary_project_id = input.primary_project_id?.trim() || row.primary_project_id || undefined
+    const roots = [] as ProductSolutionRootInput[]
+    if (input.roots) {
+      if (input.roots.length === 0) return { ok: false as const, code: "solution_root_missing" as const }
+      for (const item of input.roots) {
+        const validated = await validateRoot(item)
+        if (!validated.ok) return validated
+        roots.push({
+          ...item,
+          directory: validated.root.directory,
+          mount_name: validated.root.mount_name,
+          meta: validated.root.meta,
+        })
+      }
+    }
+    const current_roots =
+      roots.length > 0
+        ? roots
+        : (
+            await Database.use((db) =>
+              db
+                .select()
+                .from(TpProductSolutionRootTable)
+                .where(eq(TpProductSolutionRootTable.solution_id, input.solution_id))
+                .all(),
+            )
+          ).map((item) => ({
+            root_type: ProductSolutionRootType.parse(item.root_type),
+            directory: item.directory,
+            display_name: item.display_name ?? undefined,
+            mount_name: item.mount_name ?? undefined,
+            sort_order: item.sort_order,
+            enabled: item.enabled,
+            meta: item.meta_json ? ProductSolutionRootMeta.parse(item.meta_json) : undefined,
+          }))
+    const primary_project_id = await solutionProjectID({
+      primary_project_id: input.primary_project_id?.trim() || row.primary_project_id || undefined,
+      roots: current_roots,
+    })
     if (primary_project_id) {
       const project = await Database.use((db) =>
         db.select({ id: ProjectTable.id }).from(ProjectTable).where(eq(ProjectTable.id, primary_project_id)).get(),
@@ -409,21 +452,6 @@ export namespace ProductSolutionService {
     )
     const hit = duplicate.find((item) => item.code === code && item.id !== input.solution_id)
     if (hit) return { ok: false as const, code: "solution_exists" as const }
-
-    const roots = [] as ProductSolutionRootInput[]
-    if (input.roots) {
-      if (input.roots.length === 0) return { ok: false as const, code: "solution_root_missing" as const }
-      for (const item of input.roots) {
-        const validated = await validateRoot(item)
-        if (!validated.ok) return validated
-        roots.push({
-          ...item,
-          directory: validated.root.directory,
-          mount_name: validated.root.mount_name,
-          meta: validated.root.meta,
-        })
-      }
-    }
     const now = Date.now()
     await Database.transaction(async (tx) => {
       await tx
@@ -462,6 +490,7 @@ export namespace ProductSolutionService {
     })
     const item = await get(input.solution_id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
+    invalidateProductAnchorCache()
     return { ok: true as const, item }
   }
 
@@ -506,6 +535,7 @@ export namespace ProductSolutionService {
     )
     const item = await get(input.solution_id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
+    invalidateProductAnchorCache()
     return {
       ok: true as const,
       item: {
@@ -528,6 +558,7 @@ export namespace ProductSolutionService {
     const row = binding.find((item) => item.solution_id === input.solution_id)
     if (!row) return { ok: false as const, code: "solution_binding_missing" as const }
     await Database.use((db) => db.delete(TpProductSolutionBindingTable).where(eq(TpProductSolutionBindingTable.id, row.id)).run())
+    invalidateProductAnchorCache()
     return { ok: true as const }
   }
 
@@ -535,6 +566,7 @@ export namespace ProductSolutionService {
     const row = await Database.use((db) => db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).get())
     if (!row) return { ok: false as const, code: "solution_missing" as const }
     await Database.use((db) => db.delete(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).run())
+    invalidateProductAnchorCache()
     return { ok: true as const }
   }
 
@@ -584,6 +616,7 @@ export namespace ProductSolutionService {
     if (values.length > 0) {
       await Database.use((db) => db.insert(TpProductSolutionBindingTable).values(values).run())
     }
+    if (values.length > 0) invalidateProductAnchorCache()
     return {
       scanned: solutions.length,
       created: values.length,

@@ -23,7 +23,7 @@ import { AccountUserProviderSettingService } from "@/user/user-provider-setting"
 import { UserRbac } from "@/user/rbac"
 import { ProductSolutionService } from "@/user/product-solution"
 import { BuildProfile } from "@/build/profile"
-import { and, Database, desc, eq, inArray, or, sql } from "@/storage/db"
+import { and, Database, desc, eq, inArray, isNull, or, sql } from "@/storage/db"
 import { TpSavedPlanTable } from "@/plan/saved-plan.sql"
 import { TpSavedPlanEvalTable } from "@/plan/saved-plan-eval.sql"
 import { TpProductTable } from "@/user/product.sql"
@@ -43,6 +43,7 @@ const LoginResult = z
       department_id: z.string().optional(),
       force_password_reset: z.boolean(),
       context_project_id: z.string().optional(),
+      context_product_id: z.string().optional(),
       roles: z.array(z.string()),
       permissions: z.array(z.string()),
       feedback_enabled: z.boolean(),
@@ -540,7 +541,7 @@ export const AccountRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        await UserService.ensureSeedOnce()
+        await UserService.ensureSeedReady()
         const body = c.req.valid("json")
         const result = await UserService.register({
           ...body,
@@ -577,7 +578,7 @@ export const AccountRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        await UserService.ensureSeedOnce()
+        await UserService.ensureSeedReady()
         const body = c.req.valid("json")
         const result = await UserService.login({
           ...body,
@@ -614,7 +615,7 @@ export const AccountRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        await UserService.ensureSeedOnce()
+        await UserService.ensureSeedReady()
         const body = c.req.valid("json")
         const result = await UserService.loginVho({
           ...body,
@@ -752,8 +753,9 @@ export const AccountRoutes = lazy(() =>
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
         const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        const context_product_id = c.get("account_context_product_id" as never) as string | undefined
         const cached = c.get("account_user" as never) as z.infer<typeof LoginResult.shape.user> | undefined
-        const me = cached ?? (await UserService.me({ user_id, context_project_id }))
+        const me = cached ?? (await UserService.me({ user_id, context_project_id, context_product_id }))
         if (!me) return c.json({ error: "unauthorized" }, 401)
         return c.json(me)
       },
@@ -798,20 +800,25 @@ export const AccountRoutes = lazy(() =>
       const user_id = requireLogin(c)
       if (typeof user_id !== "string") return user_id
       const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-      return c.json(await AccountContextService.listProjects({ user_id, context_project_id }))
+      const context_product_id = c.get("account_context_product_id" as never) as string | undefined
+      return c.json(await AccountContextService.listProjects({ user_id, context_project_id, context_product_id }))
     })
     .get("/context/products", async (c) => {
       const user_id = requireLogin(c)
       if (typeof user_id !== "string") return user_id
       const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-      return c.json(await AccountContextService.listProducts({ user_id, context_project_id }))
+      const context_product_id = c.get("account_context_product_id" as never) as string | undefined
+      return c.json(await AccountContextService.listProducts({ user_id, context_project_id, context_product_id }))
     })
     .get("/context/current", async (c) => {
       const user_id = requireLogin(c)
       if (typeof user_id !== "string") return user_id
       const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+      const context_product_id = c.get("account_context_product_id" as never) as string | undefined
       return c.json({
+        context_product_id,
         context_project_id,
+        last_product_id: await AccountContextService.lastProduct(user_id),
         last_project_id: await AccountContextService.lastProject(user_id),
       })
     })
@@ -837,7 +844,14 @@ export const AccountRoutes = lazy(() =>
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
         const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-        return c.json(await AccountProjectStateService.get({ user_id, current_project_id: context_project_id }))
+        const context_product_id = c.get("account_context_product_id" as never) as string | undefined
+        return c.json(
+          await AccountProjectStateService.get({
+            user_id,
+            current_project_id: context_project_id,
+            current_product_id: context_product_id,
+          }),
+        )
       },
     )
     .patch(
@@ -863,29 +877,53 @@ export const AccountRoutes = lazy(() =>
         const user_id = requireLogin(c)
         if (typeof user_id !== "string") return user_id
         const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        const context_product_id = c.get("account_context_product_id" as never) as string | undefined
         const body = c.req.valid("json")
         return c.json(
           await AccountProjectStateService.update({
             user_id,
             current_project_id: context_project_id,
+            current_product_id: context_product_id,
             patch: body,
           }),
         )
       },
     )
-    .post("/context/select", validator("json", z.object({ project_id: z.string().min(1) })), async (c) => {
+    .post(
+      "/context/select",
+      validator(
+        "json",
+        z.object({
+          project_id: z.string().min(1).optional(),
+          product_id: z.string().min(1).optional(),
+        }),
+      ),
+      async (c) => {
       const user_id = requireLogin(c)
       if (typeof user_id !== "string") return user_id
       const body = c.req.valid("json")
-      const result = await UserService.selectContext({
-        user_id,
-        project_id: body.project_id,
-        ip: c.req.header("x-forwarded-for"),
-        user_agent: c.req.header("user-agent"),
-      })
+      const context_product_id = c.get("account_context_product_id" as never) as string | undefined
+      if (!body.project_id && !body.product_id) {
+        return c.json({ ok: false, error_code: "context_missing", code: "context_missing" }, 400)
+      }
+      const result = body.product_id
+        ? await UserService.selectProductContext({
+            user_id,
+            product_id: body.product_id,
+            ip: c.req.header("x-forwarded-for"),
+            user_agent: c.req.header("user-agent"),
+          })
+        : await UserService.selectContext({
+            user_id,
+            project_id: body.project_id!,
+            current_product_id: context_product_id,
+            ip: c.req.header("x-forwarded-for"),
+            user_agent: c.req.header("user-agent"),
+          })
       if (!result.ok) return c.json({ ...result, error_code: "code" in result ? result.code : undefined }, 400)
       return c.json(result)
-    })
+      },
+    )
     .post(
       "/vho-feedback/list",
       describeRoute({
@@ -1054,6 +1092,7 @@ export const AccountRoutes = lazy(() =>
         const user = c.get("account_user" as never) as z.infer<typeof LoginResult.shape.user> | undefined
         if (!user) return c.json({ error: "unauthorized" }, 401)
         const context_project_id = c.get("account_context_project_id" as never) as string | undefined
+        const context_product_id = c.get("account_context_product_id" as never) as string | undefined
         const result = await PlanService.save({
           session_id: body.session_id,
           message_id: body.message_id,
@@ -1063,6 +1102,7 @@ export const AccountRoutes = lazy(() =>
           actor: {
             ...user,
             context_project_id,
+            context_product_id,
           },
         })
         if (!result.ok) {
@@ -1655,7 +1695,7 @@ export const AccountRoutes = lazy(() =>
         "json",
         z.object({
           name: z.string(),
-          directory: z.string(),
+          directory: z.string().optional(),
         }),
       ),
       async (c) => {
@@ -2022,7 +2062,14 @@ export const AccountRoutes = lazy(() =>
           )
         }
         const filters = [
-          product ? eq(TpSavedPlanTable.project_id, product.project_id) : undefined,
+          product
+            ? product.project_id
+              ? or(
+                  eq(TpSavedPlanTable.product_id, product.id),
+                  and(isNull(TpSavedPlanTable.product_id), eq(TpSavedPlanTable.project_id, product.project_id)),
+                )
+              : eq(TpSavedPlanTable.product_id, product.id)
+            : undefined,
           savedPlanKeyword(query.keyword),
           savedPlanStatus(query.status),
         ].filter(present)

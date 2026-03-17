@@ -47,9 +47,26 @@ let syncRuntimeModelPending:
       resolve: () => void
     }
   | undefined
-let currentAgentName = "agent"
+let currentAgentName: string | undefined = "agent"
 let projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] as string[] }]
 let handoffWorkspaces: Record<string, { directory: string; branch?: string }> = {}
+let authUser:
+  | {
+      permissions: string[]
+      context_project_id?: string
+      context_product_id?: string
+    }
+  | undefined
+let contextProductsPayload:
+  | {
+      products: Array<{
+        id: string
+        project_id?: string
+        worktree?: string
+      }>
+    }
+  | undefined
+let createdSessionDirectory: string | undefined
 
 const event = { preventDefault: () => undefined } as unknown as Event
 
@@ -64,7 +81,12 @@ const clientFor = (directory: string) => {
       create: async (input?: unknown) => {
         createSessionInputs.push({ directory, input })
         createdSessions.push(directory)
-        return { data: { id: `session-${createdSessions.length}` } }
+        return {
+          data: {
+            id: `session-${createdSessions.length}`,
+            directory: createdSessionDirectory ?? directory,
+          },
+        }
       },
       shell: async (input: { sessionID: string }) => {
         shellCalls.push({ directory, sessionID: input.sessionID })
@@ -136,7 +158,8 @@ beforeAll(async () => {
         variant: { current: () => undefined },
       },
       agent: {
-        current: () => ({ name: currentAgentName }),
+        current: () => ({ name: currentAgentName ?? "plan" }),
+        selected: () => (currentAgentName ? { name: currentAgentName } : undefined),
       },
     }),
   }))
@@ -181,6 +204,16 @@ beforeAll(async () => {
       client: rootClient,
       url: "http://localhost:4096",
       createClient: (opts: { directory: string; throwOnError?: boolean }) => clientFor(opts.directory),
+    }),
+  }))
+
+  mock.module("@/context/server", () => ({
+    useServer: () => ({
+      current: {
+        http: {
+          url: "http://localhost:4096",
+        },
+      },
     }),
   }))
 
@@ -229,7 +262,7 @@ beforeAll(async () => {
       },
       child: (directory: string) => {
         syncedDirectories.push(directory)
-        return [{}, () => undefined]
+        return [{ session: [] }, () => undefined]
       },
     }),
   }))
@@ -237,6 +270,13 @@ beforeAll(async () => {
   mock.module("@/context/platform", () => ({
     usePlatform: () => ({
       fetch,
+    }),
+  }))
+
+  mock.module("@/context/account-auth", () => ({
+    useAccountAuth: () => ({
+      user: () => authUser,
+      contextProducts: async () => contextProductsPayload,
     }),
   }))
 
@@ -276,6 +316,21 @@ beforeEach(() => {
   currentAgentName = "agent"
   projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] }]
   handoffWorkspaces = {}
+  authUser = {
+    permissions: ["agent:use_build"],
+    context_project_id: "project-main",
+    context_product_id: "product-main",
+  }
+  contextProductsPayload = {
+    products: [
+      {
+        id: "product-main",
+        project_id: "project-main",
+        worktree: "/repo/main",
+      },
+    ],
+  }
+  createdSessionDirectory = undefined
   setCalls.length = 0
   workspaceModeCalls.length = 0
   workspaceExpandedCalls.length = 0
@@ -354,7 +409,7 @@ describe("prompt submit session resolution", () => {
     expect(createdClients).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(createdSessions).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(shellCalls.map((item) => item.directory)).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
-    expect(syncedDirectories).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
+    expect(syncedDirectories).toEqual(["/repo/worktree-a", "/repo/worktree-a", "/repo/worktree-b", "/repo/worktree-b"])
   })
 
   test("binds a newly created workspace to the new session", async () => {
@@ -389,6 +444,21 @@ describe("prompt submit session resolution", () => {
         input: undefined,
       },
     ])
+  })
+
+  test("switches to the created overlay directory when backend returns a new session directory", async () => {
+    createdSessionDirectory = "/repo/worktree-a/overlay/session-1"
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual(["/repo/worktree-a"])
+    expect(syncCalls).toContainEqual({
+      directory: "/repo/worktree-a/overlay/session-1",
+      sessionID: "session-1",
+    })
+    expect(navigations).toContain("//repo/worktree-a/overlay/session-1/session/session-1")
   })
 
   test("binds a newly created workspace handoff to the first plan session", async () => {
@@ -432,6 +502,26 @@ describe("prompt submit session resolution", () => {
         variant: undefined,
       },
     ])
+  })
+
+  test("uses plan as the implicit default agent without auto-running the build pipeline", async () => {
+    route = { id: "session-route-implicit-plan" }
+    currentAgentName = undefined
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(prepareBuildCalls).toEqual([])
+    expect(promptAsyncCalls).toEqual([
+      {
+        directory: "/repo/main",
+        sessionID: "session-route-implicit-plan",
+        model: { providerID: "provider", modelID: "model" },
+        variant: undefined,
+      },
+    ])
+    expect((optimisticAdds.at(-1)?.message as UserMessage | undefined)?.agent).toBe("plan")
   })
 
   test("uses route session id for shell mode without creating a session", async () => {
@@ -691,7 +781,10 @@ describe("prompt submit session resolution", () => {
     expect(workspaceExpandedCalls).toEqual([
       { directory: "/repo/main/prepared/session-route-build", value: true },
     ])
-    expect(workspaceSessionLoads).toEqual(["/repo/main/prepared/session-route-build"])
+    expect(workspaceSessionLoads).toEqual([
+      "/repo/main/prepared/session-route-build",
+      "/repo/main/prepared/session-route-build",
+    ])
     expect(navigations).toContain("//repo/main/prepared/session-route-build/session/session-route-build")
   })
 

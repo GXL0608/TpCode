@@ -23,6 +23,7 @@ import { useComments } from "@/context/comments"
 import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { SessionHeader, NewSessionView } from "@/components/session"
 import { same } from "@/utils/same"
+import { decode64 } from "@/utils/base64"
 import { createOpenReviewFile } from "@/pages/session/helpers"
 import { createScrollSpy } from "@/pages/session/scroll-spy"
 import { SessionReviewTab, type DiffStyle, type SessionReviewTabProps } from "@/pages/session/review-tab"
@@ -33,6 +34,7 @@ import { SessionComposerRegion, createSessionComposerState } from "@/pages/sessi
 import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
 import { shouldConsumePromptHandoff } from "@/context/layout"
+import { freshSessionHref } from "@/utils/session-route"
 
 export default function Page() {
   const layout = useLayout()
@@ -100,6 +102,18 @@ export default function Page() {
 
   createEffect(
     on(
+      () => `${params.dir ?? ""}/${params.id ?? ""}`,
+      () => {
+        if (params.id) return
+        // 中文注释：进入新的产品会话入口时重置智能体，避免沿用上一次 build 模式导致首条消息误走构建闭环。
+        local.agent.set(undefined)
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
       () => params.id,
       (id, prev) => {
         if (!id) return
@@ -129,6 +143,21 @@ export default function Page() {
 
         workspaceTabs().setAll([])
         workspaceTabs().setActive(undefined)
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => ({ id: params.id, dir: params.dir, actual: info()?.directory }),
+      (value) => {
+        if (!value.id || !value.dir || !value.actual) return
+        const current = decode64(value.dir)
+        if (!current) return
+        if (current === value.actual) return
+        // 中文注释：旧产品会话可能仍停留在产品根目录路由，这里按后端返回的真实 overlay 目录自动纠偏。
+        navigate(`/${base64Encode(value.actual)}/session/${value.id}`, { replace: true })
       },
       { defer: true },
     ),
@@ -355,7 +384,6 @@ export default function Page() {
           navigate(`/${dir}/session`, { replace: true })
         })
       },
-      { defer: true },
     ),
   )
 
@@ -1153,7 +1181,7 @@ export default function Page() {
                     if (!target) return
                     if (target === sdk.directory) return
                     layout.projects.open(target)
-                    navigate(`/${base64Encode(target)}/session`)
+                    navigate(freshSessionHref(base64Encode(target)))
                   }}
                 />
               </Match>

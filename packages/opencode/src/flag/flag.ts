@@ -186,6 +186,7 @@ export namespace Flag {
   export declare const TPCODE_SYNC_INCREMENTAL: boolean
   export declare const TPCODE_SSE_DROP_DELTA_ON_OVERFLOW: boolean
   export declare const TPCODE_AUTH_BULKHEAD: boolean
+  export declare const TPCODE_AUTH_BULKHEAD_TIMEOUT_MS: number | undefined
   export declare const OPENCODE_WEB_ALLOW_REMOTE_PROXY: boolean
   export const OPENCODE_ENABLE_QUESTION_TOOL = truthy("OPENCODE_ENABLE_QUESTION_TOOL")
 
@@ -407,6 +408,17 @@ Object.defineProperty(Flag, "TPCODE_AUTH_BULKHEAD", {
     const value = process.env["TPCODE_AUTH_BULKHEAD"]?.toLowerCase()
     if (value === undefined) return true
     return value === "true" || value === "1"
+  },
+  enumerable: true,
+  configurable: false,
+})
+
+Object.defineProperty(Flag, "TPCODE_AUTH_BULKHEAD_TIMEOUT_MS", {
+  get() {
+    const value = process.env["TPCODE_AUTH_BULKHEAD_TIMEOUT_MS"]
+    if (!value) return undefined
+    const parsed = Number(value)
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
   },
   enumerable: true,
   configurable: false,

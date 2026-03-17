@@ -35,6 +35,7 @@ export const ReadTool = Tool.define("read", {
     if (!path.isAbsolute(filepath)) {
       filepath = path.resolve(Instance.directory, filepath)
     }
+    if (overlay) filepath = BuildOverlay.remapSourcePath({ overlay, filePath: filepath })
     const title = path.relative(Instance.worktree, filepath)
 
     const stat = overlay ? await BuildOverlay.stat({ overlay, filePath: filepath }) : Filesystem.stat(filepath)

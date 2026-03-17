@@ -31,4 +31,16 @@ export namespace Glob {
   export function match(pattern: string, filepath: string): boolean {
     return minimatch(filepath, pattern, { dot: true })
   }
+
+  /** 中文注释：提取 glob 模式中第一个通配符之前的静态目录前缀，供大目录扫描时缩小起始范围。 */
+  export function prefix(pattern: string): string {
+    const parts = pattern.replaceAll("\\", "/").split("/")
+    const prefix = [] as string[]
+    for (const part of parts) {
+      if (!part || part === ".") continue
+      if (/[*?[{\]()!+@]/.test(part)) break
+      prefix.push(part)
+    }
+    return prefix.join("/")
+  }
 }

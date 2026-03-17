@@ -7,9 +7,7 @@ export const TpProductTable = table(
   {
     id: text().primaryKey(),
     name: text().notNull(),
-    project_id: text()
-      .notNull()
-      .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    project_id: text().references(() => ProjectTable.id, { onDelete: "set null" }),
     ...Timestamps,
   },
   (table) => [

@@ -87,7 +87,7 @@ export const DialogSettings: Component = () => {
                     <Show when={canManageProjects()}>
                       <Tabs.Trigger value="projects">
                         <Icon name="folder-add-left" />
-                        项目管理
+                        产品管理
                       </Tabs.Trigger>
                     </Show>
                     <Show when={canManageSolutions()}>

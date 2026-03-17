@@ -109,6 +109,7 @@ describe("feedback forum routes", () => {
     })
     expect(secondary.ok).toBe(true)
     if (!secondary.ok) throw new Error("secondary_project_missing")
+    if (!secondary.item.project_id) throw new Error("secondary_project_id_missing")
 
     const secondarySet = await AccountContextService.setRoleAccess({
       project_id: secondary.item.project_id,

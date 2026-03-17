@@ -1,15 +1,19 @@
 import { describe, expect, test } from "bun:test"
 import {
   createSolutionDraft,
+  filterNamedSolutions,
   solutionLibraryItemClass,
   solutionLibraryLayoutClass,
+  solutionLibrarySubmitDisabled,
+  sortNamedSolutions,
   syncSolutionLibrarySelection,
   validateSolutionDraft,
 } from "./settings-solution-library-view"
 
 const solutions = [
-  { id: "solution-a" },
-  { id: "solution-b" },
+  { id: "solution-a", name: "医保方案" },
+  { id: "solution-b", name: "电子病历方案" },
+  { id: "solution-c", name: "AAA方案" },
 ]
 
 describe("settings-solution-library-view", () => {
@@ -56,5 +60,19 @@ describe("settings-solution-library-view", () => {
       },
     ])
     expect(validateSolutionDraft(build_profile, roots)).toBe("")
+  })
+
+  test("按名称排序方案导航并支持名称检索", () => {
+    expect(sortNamedSolutions(solutions).map((item) => item.name)).toEqual(["AAA方案", "电子病历方案", "医保方案"])
+    expect(filterNamedSolutions(solutions, "病历").map((item) => item.name)).toEqual(["电子病历方案"])
+    expect(filterNamedSolutions(solutions, "aaa").map((item) => item.name)).toEqual(["AAA方案"])
+    expect(filterNamedSolutions(solutions, "").map((item) => item.name)).toEqual(["AAA方案", "电子病历方案", "医保方案"])
+  })
+
+  test("解决方案保存按钮不再依赖兼容归属产品字段", () => {
+    expect(solutionLibrarySubmitDisabled({ pending: false, name: "前端方案", code: "frontend" })).toBe(false)
+    expect(solutionLibrarySubmitDisabled({ pending: true, name: "前端方案", code: "frontend" })).toBe(true)
+    expect(solutionLibrarySubmitDisabled({ pending: false, name: "", code: "frontend" })).toBe(true)
+    expect(solutionLibrarySubmitDisabled({ pending: false, name: "前端方案", code: "" })).toBe(true)
   })
 })

@@ -5,10 +5,11 @@ import { createStore } from "solid-js/store"
 import {
   type AccountProjectState,
   type AccountProjectStatePatch,
+  type AccountProjectStateLastSession,
   useAccountAuth,
 } from "./account-auth"
 import { useGlobalSync } from "./global-sync"
-import { projectDirectories, resolveProjectByDirectory, sanitizeProjectWorkspaceOrder } from "./project-resolver"
+import { directoryKey, projectDirectories, resolveProjectByDirectory, sanitizeProjectWorkspaceOrder } from "./project-resolver"
 
 export function visibleProjectIDs(input: {
   projects: readonly Pick<Project, "id">[]
@@ -23,12 +24,92 @@ export function visibleProjectIDs(input: {
   return [...open, input.current_project_id]
 }
 
+/** 中文注释：同一真实目录可能同时以 UNC、盘符或挂载路径出现，侧栏只保留一个项目条目并优先显示当前项目。 */
+export function collapseVisibleProjects<T extends Pick<Project, "id" | "worktree">>(input: {
+  projects: readonly T[]
+  current_project_id?: string
+}) {
+  const map = new Map<string, T>()
+  for (const project of input.projects) {
+    const key = directoryKey(project.worktree)
+    const current = map.get(key)
+    if (!current) {
+      map.set(key, project)
+      continue
+    }
+    if (current.id === input.current_project_id) continue
+    if (project.id === input.current_project_id) {
+      map.set(key, project)
+      continue
+    }
+  }
+  return [...map.values()]
+}
+
 export function nextOpenProjectIDs(input: {
   open_project_ids: string[]
   project_id: string
 }) {
   if (input.open_project_ids.includes(input.project_id)) return input.open_project_ids
   return [...input.open_project_ids, input.project_id]
+}
+
+/** 中文注释：产品上下文优先使用后端返回的关联项目集合；旧数据仍回退到单个 project_id。 */
+export function productProjectIDs(input?: {
+  project_id?: string
+  related_project_ids?: string[]
+}) {
+  const ids = [...new Set((input?.related_project_ids ?? []).filter(Boolean))]
+  if (ids.length > 0) return ids
+  if (!input?.project_id) return []
+  return [input.project_id]
+}
+
+/** 中文注释：为产品挑选当前要进入的项目，优先使用产品内最近一次选中的项目，再回退到首个关联项目。 */
+export function productEntryProjectID(input: {
+  product?: {
+    project_id?: string
+    related_project_ids?: string[]
+  }
+  current_project_id?: string
+  last_project_id?: string
+}) {
+  const ids = productProjectIDs(input.product)
+  if (ids.length === 0) return
+  if (input.current_project_id && ids.includes(input.current_project_id)) return input.current_project_id
+  if (input.last_project_id && ids.includes(input.last_project_id)) return input.last_project_id
+  return ids[0]
+}
+
+/** 中文注释：为产品路由选择一个稳定目录，避免继续落回过期锚点或空 worktree。 */
+export function productEntryDirectory<T extends Pick<Project, "id" | "worktree">>(input: {
+  product?: {
+    project_id?: string
+    related_project_ids?: string[]
+    worktree?: string
+  }
+  projects: readonly T[]
+  current_project_id?: string
+  last_project_id?: string
+}) {
+  const project_id = productEntryProjectID(input)
+  const project = input.projects.find((item) => item.id === project_id)
+  if (project?.worktree) return project.worktree
+  return input.product?.worktree
+}
+
+/** 中文注释：从产品关联项目里挑出最近一次会话，供刷新页面和重新登录后恢复到正确的产品会话。 */
+export function latestRememberedProductSession(input: {
+  product?: {
+    project_id?: string
+    related_project_ids?: string[]
+  }
+  last_session_by_project: Record<string, AccountProjectStateLastSession>
+}) {
+  return productProjectIDs(input.product)
+    .map((project_id) => input.last_session_by_project[project_id])
+    .filter((item): item is AccountProjectStateLastSession => !!item?.session_id)
+    .sort((a, b) => b.time_updated - a.time_updated)[0]
 }
 
 export function repairProjectID(input: {
@@ -53,6 +134,16 @@ export function shouldSkipAccountProjectReload(input: {
   context_project_id?: string
 }) {
   return !!input.skip_for && input.skip_for === input.context_project_id
+}
+
+/** 中文注释：产品上下文没有锚点项目时，不能继续沿用上一个产品残留的 current_project_id。 */
+export function currentProjectID(input: {
+  context_project_id?: string
+  context_product_id?: string
+  state_current_project_id?: string
+}) {
+  if (input.context_product_id && !input.context_project_id) return
+  return input.context_project_id ?? input.state_current_project_id
 }
 
 function empty(current_project_id?: string): AccountProjectState {
@@ -99,16 +190,24 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
     })
 
     const projects = createMemo(() => globalSync.data.project)
-    const currentID = createMemo(() => store.data.current_project_id ?? auth.user()?.context_project_id)
+    const currentID = createMemo(() =>
+      currentProjectID({
+        context_project_id: auth.user()?.context_project_id,
+        context_product_id: auth.user()?.context_product_id,
+        state_current_project_id: store.data.current_project_id,
+      }),
+    )
     const list = createMemo(() =>
-      visibleProjectIDs({
-        projects: projects(),
-        open_project_ids: store.data.open_project_ids,
+      collapseVisibleProjects({
+        projects: visibleProjectIDs({
+          projects: projects(),
+          open_project_ids: store.data.open_project_ids,
+          current_project_id: currentID(),
+        })
+          .map((project_id) => projects().find((project) => project.id === project_id))
+          .filter((project): project is Project => !!project),
         current_project_id: currentID(),
-      })
-        .map((project_id) => projects().find((project) => project.id === project_id))
-        .filter((project): project is Project => !!project)
-        .map((project) => ({ ...project, expanded: true })),
+      }).map((project) => ({ ...project, expanded: true })),
     )
 
     const current = createMemo(() => projects().find((project) => project.id === currentID()))

@@ -3,13 +3,21 @@ import { For, Show, createEffect, createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useAccountAuth } from "@/context/account-auth"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
-import { productItemClass, projectsLayoutClass, projectsSolutionLayoutClass, solutionItemClass, syncProductSelection, syncSolutionSelection } from "./settings-projects-view"
+import {
+  filterNamedItems,
+  productItemClass,
+  projectsLayoutClass,
+  projectsSolutionLayoutClass,
+  solutionItemClass,
+  syncProductSelection,
+  syncSolutionSelection,
+} from "./settings-projects-view"
 
 type ProductItem = {
   id: string
   name: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
   vcs?: string
   solutions?: SolutionItem[]
   time_created: number
@@ -88,6 +96,7 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
     error: "",
     message: "",
     products: [] as ProductItem[],
+    productSearch: "",
     selectedProductID: "",
     selectedSolutionID: "",
     createOpen: false,
@@ -106,6 +115,8 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
     scanDirParent: "",
     scanDirEntries: [] as ScanDirEntry[],
   })
+  /** 中文注释：按名称升序并结合关键字过滤产品导航，方便管理员在大量产品中快速定位。 */
+  const visibleProducts = createMemo(() => filterNamedItems(state.products, state.productSearch))
   const currentProduct = createMemo(() => state.products.find((item) => item.id === state.selectedProductID))
   const currentSolution = createMemo(() => currentProduct()?.solutions?.find((item) => item.id === state.selectedSolutionID))
   const bindableSolutions = createMemo(() => {
@@ -163,7 +174,7 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
     setState("editOpen", true)
     setState("formID", item.id)
     setState("formName", item.name)
-    setState("formDirectory", item.worktree)
+    setState("formDirectory", item.worktree ?? "")
   }
 
   const closeForm = () => {
@@ -323,7 +334,7 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
 
   const createProduct = async (event: SubmitEvent) => {
     event.preventDefault()
-    if (!state.formName.trim() || !state.formDirectory.trim()) return
+    if (!state.formName.trim()) return
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -332,7 +343,6 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
       path: "/account/admin/products",
       body: {
         name: state.formName.trim(),
-        directory: state.formDirectory.trim(),
       },
     }).catch(() => undefined)
     setState("pending", false)
@@ -352,7 +362,7 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
 
   const saveProduct = async (event: SubmitEvent) => {
     event.preventDefault()
-    if (!state.formID || !state.formName.trim() || !state.formDirectory.trim()) return
+    if (!state.formID || !state.formName.trim()) return
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -404,7 +414,7 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
   })
 
   createEffect(() => {
-    const product_id = syncProductSelection(state.products, state.selectedProductID)
+    const product_id = syncProductSelection(visibleProducts(), state.selectedProductID)
     if (product_id !== state.selectedProductID) {
       setState("selectedProductID", product_id)
       return
@@ -421,14 +431,14 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
         when={canManage()}
         fallback={
           <section class="rounded-2xl border border-border-weak-base bg-surface-raised-base p-5 text-13-regular text-text-weak">
-            当前账号没有项目管理权限
+            当前账号没有产品管理权限
           </section>
         }
       >
         <section class="rounded-2xl border border-border-weak-base bg-surface-raised-base p-5 flex flex-col gap-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <div class="text-18-medium text-text-strong">产品组合管理</div>
+              <div class="text-18-medium text-text-strong">产品管理</div>
               <div class="text-12-regular text-text-weak mt-1">左侧选择产品，右侧只维护产品与解决方案的绑定关系；方案详情统一到“解决方案库”里维护。</div>
             </div>
             <div class="flex items-center gap-2">
@@ -456,8 +466,16 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
                   <span class="text-12-regular text-text-weak">加载中...</span>
                 </Show>
               </div>
+              <div class="border-b border-border-weak-base px-3 py-3">
+                <input
+                  class="h-10 w-full rounded-md border border-border-weak-base bg-surface-panel/45 px-3 text-13-regular text-text-strong"
+                  placeholder="检索产品名称"
+                  value={state.productSearch}
+                  onInput={(event) => setState("productSearch", event.currentTarget.value)}
+                />
+              </div>
               <div class="max-h-[720px] overflow-auto p-3 flex flex-col gap-2">
-                <For each={state.products}>
+                <For each={visibleProducts()}>
                   {(item) => (
                     <button
                       type="button"
@@ -483,6 +501,11 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
                 <Show when={state.products.length === 0}>
                   <div class="rounded-xl border border-dashed border-border-weak-base px-4 py-8 text-center text-12-regular text-text-weak">
                     暂无产品数据
+                  </div>
+                </Show>
+                <Show when={state.products.length > 0 && visibleProducts().length === 0}>
+                  <div class="rounded-xl border border-dashed border-border-weak-base px-4 py-8 text-center text-12-regular text-text-weak">
+                    没有匹配的产品
                   </div>
                 </Show>
               </div>
@@ -637,23 +660,32 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
               value={state.formName}
               onInput={(event) => setState("formName", event.currentTarget.value)}
             />
-            <div class="flex gap-2">
-              <input
-                class="h-10 flex-1 min-w-0 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                placeholder="请选择绑定目录"
-                value={state.formDirectory}
-                readOnly
-              />
-              <Button type="button" variant="secondary" onClick={() => void openDirectory(state.createOpen ? "create" : "edit")} disabled={state.pending}>
-                选择目录
-              </Button>
-            </div>
-            <div class="text-11-regular text-text-weak">目录可任意选择，保存时会自动校验目录可访问，并生成或关联对应项目。</div>
+            <Show when={state.editOpen}>
+              <div class="flex flex-col gap-3">
+                <div class="flex gap-2">
+                  <input
+                    class="h-10 flex-1 min-w-0 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
+                    placeholder="请选择绑定目录"
+                    value={state.formDirectory}
+                    readOnly
+                  />
+                  <Button type="button" variant="secondary" onClick={() => void openDirectory("edit")} disabled={state.pending}>
+                    选择目录
+                  </Button>
+                </div>
+                <div class="text-11-regular text-text-weak">绑定目录仅作为兼容上下文项目入口使用；新产品可以不配置。</div>
+              </div>
+            </Show>
+            <Show when={state.createOpen}>
+              <div class="rounded-xl bg-surface-panel/45 px-3 py-2 text-11-regular text-text-weak">
+                新增产品时不再要求绑定目录，后续可直接通过解决方案配置源码路径。
+              </div>
+            </Show>
             <div class="flex justify-end gap-2">
               <Button type="button" variant="secondary" onClick={closeForm} disabled={state.pending}>
                 取消
               </Button>
-              <Button type="submit" disabled={state.pending || !state.formName.trim() || !state.formDirectory.trim()}>
+              <Button type="submit" disabled={state.pending || !state.formName.trim()}>
                 {state.pending ? "保存中..." : "保存"}
               </Button>
             </div>

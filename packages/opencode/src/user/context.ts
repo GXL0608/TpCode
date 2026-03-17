@@ -9,6 +9,33 @@ import { TpUserProjectStateTable } from "./user-project-state.sql"
 import { TpUserTable } from "./user.sql"
 import { AccountProductService } from "./product"
 
+/** 中文注释：产品一旦可见，就应该保留完整的解决方案项目集合，不能再把产品内部项目错误裁掉。 */
+function visibleProduct<T extends { project_id?: string; related_project_ids?: string[] }>(item: T, allowed: Set<string>) {
+  const related_project_ids = unique(item.related_project_ids ?? [])
+  if (!item.project_id) {
+    return {
+      ...item,
+      related_project_ids,
+    }
+  }
+  if (allowed.has(item.project_id)) {
+    return {
+      ...item,
+      related_project_ids,
+    }
+  }
+  return {
+    ...item,
+    project_id: undefined,
+    related_project_ids,
+  }
+}
+
+/** 中文注释：产品选择页不应把名称前缀为“删-”的软删除产品继续暴露给用户。 */
+function selectableProduct<T extends { name: string }>(item: T) {
+  return !item.name.trim().startsWith("删-")
+}
+
 function unique(input: string[]) {
   return [...new Set(input)]
 }
@@ -124,17 +151,44 @@ export namespace AccountContextService {
     return ids
   }
 
-  export async function canAccessProject(input: { user_id: string; project_id: string }) {
+  /** 中文注释：当前产品上下文需要临时扩展可见项目集合，把产品绑定的解决方案项目一并带上。 */
+  export async function scopedProjectIDs(input: { user_id: string; context_product_id?: string }) {
+    const ids = new Set(await projectIDs(input.user_id))
+    if (!input.context_product_id) return [...ids]
+    const product = await AccountProductService.get(input.context_product_id, "light")
+    for (const project_id of [product?.project_id, ...(product?.related_project_ids ?? [])].filter(Boolean)) {
+      ids.add(project_id)
+    }
+    return [...ids]
+  }
+
+  export async function canAccessProject(input: { user_id: string; project_id: string; context_product_id?: string }) {
     const cached = cachedAccess(input.user_id, input.project_id)
     if (cached !== undefined) return cached
-    const ids = await projectIDs(input.user_id)
-    const allowed = ids.includes(input.project_id)
+    const ids = await scopedProjectIDs({
+      user_id: input.user_id,
+      context_product_id: input.context_product_id,
+    })
+    if (ids.includes(input.project_id)) {
+      cacheAccess(input.user_id, input.project_id, true)
+      return true
+    }
+    if (!input.context_product_id) {
+      cacheAccess(input.user_id, input.project_id, false)
+      return false
+    }
+    /** 中文注释：轻量模式下若解决方案主项目被旧锚点污染，这里回退到单产品运行时解析一次，确保产品上下文仍能选中真实派生项目。 */
+    const product = await AccountProductService.get(input.context_product_id)
+    const allowed = [product?.project_id, ...(product?.related_project_ids ?? [])].filter(Boolean).includes(input.project_id)
     cacheAccess(input.user_id, input.project_id, allowed)
     return allowed
   }
 
-  export async function listProjects(input: { user_id: string; context_project_id?: string }) {
-    const ids = await projectIDs(input.user_id)
+  export async function listProjects(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
+    const ids = await scopedProjectIDs({
+      user_id: input.user_id,
+      context_product_id: input.context_product_id,
+    })
     const rows =
       ids.length === 0
         ? []
@@ -159,35 +213,22 @@ export namespace AccountContextService {
     }
   }
 
-  export async function listProducts(input: { user_id: string; context_project_id?: string }) {
+  export async function listProducts(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
     const project_ids = await projectIDs(input.user_id)
+    const allowed = new Set(project_ids)
     const state = await Database.use((db) =>
       db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
     )
-    const rows = await AccountProductService.listByProjectIDs(project_ids)
-    const linked = new Set(rows.map((item) => item.project_id))
-    const fallback_ids = project_ids.filter((item) => !linked.has(item))
-    const fallback_rows =
-      fallback_ids.length === 0
-        ? []
-        : await Database.use((db) => db.select().from(ProjectTable).where(inArray(ProjectTable.id, fallback_ids)).all())
-    const fallback = fallback_rows.map((item) => ({
-      id: `project_${item.id}`,
-      name: AccountProductService.label({
-        name: item.name ?? "",
-        worktree: item.worktree,
-      }),
-      project_id: item.id,
-      worktree: item.worktree,
-      vcs: item.vcs ?? undefined,
-      solutions: [],
-      time_created: item.time_created,
-      time_updated: item.time_updated,
-    }))
+    const rows = (await AccountProductService.listByProjectIDs(project_ids))
+      .map((item) => visibleProduct(item, allowed))
+      .filter(selectableProduct)
     return {
+      current_product_id: input.context_product_id,
       current_project_id: input.context_project_id,
+      last_product_id: state?.last_product_id ?? undefined,
       last_project_id: state?.last_project_id ?? undefined,
-      products: [...rows, ...fallback]
+      /** 中文注释：产品选择页只展示真实产品，避免把前端/后端等锚点项目误渲染成可选产品。 */
+      products: rows
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((item) => ({
           id: item.id,
@@ -195,30 +236,43 @@ export namespace AccountContextService {
           project_id: item.project_id,
           worktree: item.worktree,
           vcs: item.vcs,
+          related_project_ids: item.related_project_ids,
+          paths: item.paths,
           solutions: item.solutions,
-          selected: item.project_id === input.context_project_id,
-          last_selected: item.project_id === state?.last_project_id,
+          selected: input.context_product_id ? item.id === input.context_product_id : item.project_id === input.context_project_id,
+          last_selected: state?.last_product_id ? item.id === state.last_product_id : item.project_id === state?.last_project_id,
         })),
     }
   }
 
-  export async function remember(input: { user_id: string; project_id: string }) {
+  /** 中文注释：同时记住当前用户最近一次选择的产品与项目，兼容新旧上下文切换链路。 */
+  export async function remember(input: { user_id: string; project_id?: string; product_id?: string }) {
     await Database.use(async (db) => {
       await db.insert(TpUserProjectStateTable)
         .values({
           user_id: input.user_id,
-          last_project_id: input.project_id,
+          last_project_id: input.project_id ?? null,
+          last_product_id: input.product_id ?? null,
           time_updated: Date.now(),
         })
         .onConflictDoUpdate({
           target: TpUserProjectStateTable.user_id,
           set: {
-            last_project_id: input.project_id,
+            last_project_id: input.project_id ?? null,
+            last_product_id: input.product_id ?? null,
             time_updated: Date.now(),
           },
         })
         .run()
     })
+  }
+
+  /** 中文注释：读取用户最近一次选择的产品，供登录恢复与产品选择页默认值使用。 */
+  export async function lastProduct(user_id: string) {
+    const row = await Database.use((db) =>
+      db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, user_id)).get(),
+    )
+    return row?.last_product_id ?? undefined
   }
 
   export async function lastProject(user_id: string) {

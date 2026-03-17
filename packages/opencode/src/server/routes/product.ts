@@ -24,8 +24,8 @@ async function requireProductAccess(c: Context, product_id: string) {
   }
   if (!Flag.TPCODE_ACCOUNT_ENABLED) return { ok: true as const, product }
   const permissions = (c.get("account_permissions" as never) as string[] | undefined) ?? []
-  const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-  if (permissions.includes("role:manage") || product.project_id === context_project_id) {
+  const context_product_id = c.get("account_context_product_id" as never) as string | undefined
+  if (permissions.includes("role:manage") || product.id === context_product_id) {
     return { ok: true as const, product }
   }
   return {

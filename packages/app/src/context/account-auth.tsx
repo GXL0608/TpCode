@@ -14,6 +14,7 @@ type User = {
   department_id?: string
   force_password_reset: boolean
   context_project_id?: string
+  context_product_id?: string
   roles: string[]
   permissions: string[]
   feedback_enabled: boolean
@@ -28,12 +29,26 @@ type ContextProject = {
   last_selected: boolean
 }
 
-type ContextProduct = {
+export type ContextProduct = {
   id: string
   name?: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
   vcs?: string
+  related_project_ids?: string[]
+  paths?: string[]
+  solutions?: Array<{
+    id: string
+    name?: string
+    code?: string
+    roots?: Array<{
+      directory: string
+      enabled?: boolean
+      meta?: {
+        directories?: string[]
+      }
+    }>
+  }>
   selected: boolean
   last_selected: boolean
 }
@@ -55,7 +70,7 @@ export type AccountProjectState = {
   workspace_alias_by_project_branch: Record<string, Record<string, string>>
 }
 
-export type AccountProjectStatePatch = Partial<Omit<AccountProjectState, "current_project_id">> & {
+export type AccountProjectStatePatch = Omit<Partial<Omit<AccountProjectState, "current_project_id">>, "last_project_id"> & {
   last_project_id?: string | null
 }
 
@@ -362,7 +377,7 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
       authenticated: createMemo(() => !!state.user),
       needsProjectContext: createMemo(() => {
         if (!state.enabled || !state.user) return false
-        if (state.user.context_project_id) return false
+        if (state.user.context_product_id || state.user.context_project_id) return false
         return !state.user.permissions.includes("role:manage")
       }),
       user: createMemo(() => state.user),
@@ -659,7 +674,9 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           return
         }
         const payload = json<{
+          current_product_id?: string
           current_project_id?: string
+          last_product_id?: string
           last_project_id?: string
           products: ContextProduct[]
         }>(await response.json().catch(() => undefined))
@@ -709,6 +726,35 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
           path: "/account/context/select",
           method: "POST",
           body: { project_id },
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) {
+          const code = await responseCode(response)
+          setState("last_error", code ?? "context_select_failed")
+          return {
+            ok: false as const,
+            code: code ?? "context_select_failed",
+          }
+        }
+        const result = json<LoginResult>(await response.json().catch(() => undefined))
+        if (!result?.access_token || !result.refresh_token || !result.user) {
+          setState("last_error", "context_select_failed")
+          return {
+            ok: false as const,
+            code: "context_select_failed",
+          }
+        }
+        writeSession(result)
+        return {
+          ok: true as const,
+        }
+      },
+      /** 中文注释：按产品切换上下文，供产品选择页和 build 场景优先使用产品级上下文。 */
+      async selectProductContext(product_id: string) {
+        const response = await request({
+          path: "/account/context/select",
+          method: "POST",
+          body: { product_id },
           auth: "required",
         }).catch(() => undefined)
         if (!response?.ok) {

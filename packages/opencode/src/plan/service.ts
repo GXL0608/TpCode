@@ -7,6 +7,7 @@ import { TpSavedPlanTable } from "./saved-plan.sql"
 import { PlanEvalService } from "./eval-service"
 import { SessionTable } from "@/session/session.sql"
 import { AccountContextService } from "@/user/context"
+import { AccountProductService } from "@/user/product"
 
 type Actor = {
   id: string
@@ -16,6 +17,7 @@ type Actor = {
   org_id: string
   department_id?: string
   context_project_id?: string
+  context_product_id?: string
 }
 
 function pickPart(input: { parts: MessageV2.Part[]; part_id?: string }) {
@@ -89,6 +91,13 @@ export namespace PlanService {
     const id = ulid()
     const vho_feedback_no = input.vho_feedback_no?.trim()
     const project_name = project?.name?.trim() ? project.name : effective_project_id
+    const product_id =
+      input.actor.context_product_id?.trim() ||
+      (
+        effective_project_id
+          ? (await AccountProductService.listByProjectIDs([effective_project_id])).find((item) => item.project_id === effective_project_id)?.id
+          : undefined
+      )
     const department_id = input.actor.department_id?.trim()
     await Database.use(async (db) => {
       await db.insert(TpSavedPlanTable)
@@ -97,6 +106,7 @@ export namespace PlanService {
           session_id: input.session_id,
           message_id: input.message_id,
           part_id: selected.part.id,
+          product_id: product_id || undefined,
           project_id: effective_project_id,
           project_name,
           project_worktree: project?.worktree ?? session_row.directory,

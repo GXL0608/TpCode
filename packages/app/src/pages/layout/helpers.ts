@@ -1,13 +1,35 @@
 import { getFilename } from "@opencode-ai/util/path"
 import { type Project, type Session } from "@opencode-ai/sdk/v2/client"
 
-type ProjectRef = Pick<Project, "worktree" | "sandboxes">
+type ProjectRef = Pick<Project, "worktree"> & { sandboxes?: string[] }
 
 export const workspaceKey = (directory: string) => {
   const drive = directory.match(/^([A-Za-z]:)[\\/]+$/)
   if (drive) return `${drive[1]}${directory.includes("\\") ? "\\" : "/"}`
   if (/^[\\/]+$/.test(directory)) return directory.includes("\\") ? "\\" : "/"
   return directory.replace(/[\\/]+$/, "")
+}
+
+/** 中文注释：产品会话与 build 使用的 overlay 目录属于临时工作区，不应作为常驻沙盒直接暴露给侧栏。 */
+export const hiddenWorkspaceDirectory = (directory: string) =>
+  /(?:^|[\\/])build-overlay(?:[\\/]|$)/i.test(directory)
+
+/** 中文注释：统一计算项目在侧栏中可见的工作区目录，默认隐藏旧 overlay，但保留当前激活的临时会话目录。 */
+export function projectWorkspaceDirectories(input: {
+  project?: ProjectRef
+  currentDir?: string
+}) {
+  if (!input.project) return [] as string[]
+  const root = input.project.worktree
+  const visible = [
+    root,
+    ...(input.project.sandboxes ?? []).filter((directory) => !hiddenWorkspaceDirectory(directory)),
+  ].filter((directory, index, list) => list.findIndex((item) => workspaceKey(item) === workspaceKey(directory)) === index)
+  const current = input.currentDir
+  if (!current) return visible
+  if (workspaceKey(current) === workspaceKey(root)) return visible
+  if (visible.some((directory) => workspaceKey(directory) === workspaceKey(current))) return visible
+  return [root, current, ...visible.filter((directory) => workspaceKey(directory) !== workspaceKey(root))]
 }
 
 export function sortSessions(now: number) {
@@ -59,7 +81,10 @@ export function buildDirectoryLoadPlan(input: {
     }
   }
 
-  const sessions = [project.worktree, ...(project.sandboxes ?? [])].filter((directory) => {
+  const sessions = projectWorkspaceDirectories({
+    project,
+    currentDir: bootstrap,
+  }).filter((directory) => {
     if (bootstrap && workspaceKey(directory) === workspaceKey(bootstrap)) return false
     return input.expanded[directory] ?? directory === project.worktree
   })

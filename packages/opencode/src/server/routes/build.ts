@@ -49,6 +49,8 @@ function requireBuild(c: Context) {
 async function resolveProductID(c: Context, product_id?: string) {
   const explicit = product_id?.trim()
   if (explicit) return explicit
+  const context_product_id = c.get("account_context_product_id" as never) as string | undefined
+  if (context_product_id) return context_product_id
   const context_project_id = c.get("account_context_project_id" as never) as string | undefined
   if (!context_project_id) return
   const items = await AccountProductService.listByProjectIDs([context_project_id])
@@ -274,6 +276,8 @@ export const BuildRoutes = lazy(() =>
           return c.json({
             ok: true as const,
             jobs,
+            created_count: created.created_count,
+            reused_count: created.reused_count,
           })
         } else {
           created.jobs.forEach((item) => runLater(item.id))
@@ -281,6 +285,8 @@ export const BuildRoutes = lazy(() =>
         return c.json({
           ok: true as const,
           jobs: created.jobs,
+          created_count: created.created_count,
+          reused_count: created.reused_count,
         })
       },
     )

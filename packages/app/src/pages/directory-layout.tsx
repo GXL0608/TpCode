@@ -12,10 +12,11 @@ import { buildPlanFeedbackUrl, getPlanFeedbackPhoneIssue } from "@/components/pl
 
 import { DataProvider } from "@opencode-ai/ui/context"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { base64Encode } from "@opencode-ai/util/encode"
 import { decode64 } from "@/utils/base64"
 import { showToast } from "@opencode-ai/ui/toast"
 import { useLanguage } from "@/context/language"
-import { resolveProjectByDirectory } from "@/context/project-resolver"
+import { projectRootByDirectory, resolveProjectByDirectory } from "@/context/project-resolver"
 
 /**
  * 为目录级上下文注入会话保存计划后的前端行为。
@@ -189,6 +190,20 @@ export default function Layout(props: ParentProps) {
       description: language.t("directory.error.invalidUrl"),
     })
     navigate("/", { replace: true })
+  })
+
+  createEffect(() => {
+    const value = decoded()
+    if (!value) return
+    if (!globalSync.data.ready) return
+    /** 中文注释：带 session id 的目录路由可能就是 overlay/sandbox，会话页需要保留真实目录，不能强行折回项目根目录。 */
+    if (params.id) return
+    const canonical = projectRootByDirectory(globalSync.data.project, value)
+    if (!canonical || canonical === value) return
+    const href = params.id
+      ? `/${base64Encode(canonical)}/session/${params.id}`
+      : `/${base64Encode(canonical)}/session`
+    navigate(href, { replace: true })
   })
 
   createEffect(() => {

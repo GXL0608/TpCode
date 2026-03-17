@@ -79,7 +79,7 @@ export namespace Workspace {
 
   /** 中文注释：为批量沙盒挑选一个未占用的聚合根目录与共享分支名。 */
   async function batchSlot(input: { projectID: string; name: string }) {
-    const root = path.join(Global.Path.data, "batch-worktree", input.projectID)
+    const root = path.join(Global.Path.runtime, "batch-worktree", input.projectID)
     await fs.mkdir(root, { recursive: true })
 
     for (const attempt of Array.from({ length: 26 }, (_, index) => index)) {
@@ -98,7 +98,7 @@ export namespace Workspace {
 
   /** 中文注释：为 overlay 编码工作区挑选独立目录，避免与完整 worktree 批量沙盒混在一起。 */
   async function overlaySlot(input: { projectID: string; name: string }) {
-    const root = path.join(Global.Path.data, "build-overlay", input.projectID)
+    const root = path.join(Global.Path.runtime, "build-overlay", input.projectID)
     await fs.mkdir(root, { recursive: true })
 
     for (const attempt of Array.from({ length: 26 }, (_, index) => index)) {
@@ -116,12 +116,13 @@ export namespace Workspace {
 
   /** 中文注释：扫描父目录的一级子目录，筛出可参与批量沙盒的 git 项目。 */
   async function batchMembers(sourceRoot: string, sandboxRoot: string, branch: string) {
-    const entries = await fs.readdir(sourceRoot, { withFileTypes: true }).catch(() => [])
+    const source = Filesystem.accessPath(sourceRoot)
+    const entries = await fs.readdir(source, { withFileTypes: true }).catch(() => [])
     const members = await Promise.all(
       entries
         .filter((entry) => entry.isDirectory())
         .map(async (entry) => {
-          const source_directory = path.join(sourceRoot, entry.name)
+          const source_directory = path.join(source, entry.name)
           if (!(await Filesystem.exists(path.join(source_directory, ".git")))) return
           return {
             name: entry.name,
@@ -148,10 +149,10 @@ export namespace Workspace {
   }) {
     const seen = new Set<string>()
     const members = input.directories.flatMap((item, index) => {
-      const source_directory = path.resolve(item.directory)
+      const source_directory = Filesystem.accessPath(item.directory)
       if (seen.has(source_directory)) return []
       seen.add(source_directory)
-      const name = item.name?.trim() || path.basename(source_directory) || `repo-${index + 1}`
+      const name = item.name?.trim() || Filesystem.baseName(source_directory) || `repo-${index + 1}`
       const relative_path = item.relative_path?.trim() || name
       return [
         {
@@ -164,6 +165,18 @@ export namespace Workspace {
       ]
     })
     return members
+  }
+
+  /** 中文注释：识别成员目录是否为 Git 仓库，非 Git 目录在编译沙盒里退化为复制模式。 */
+  async function sourceKind(cwd: string) {
+    return (await Filesystem.exists(path.join(cwd, ".git"))) ? "git" : "copy"
+  }
+
+  /** 中文注释：为非 Git 目录创建或刷新复制型成员沙盒，避免 compile 阶段强依赖 git worktree。 */
+  async function copyMember(member: Pick<BatchMember, "source_directory" | "sandbox_directory">) {
+    await fs.rm(member.sandbox_directory, { recursive: true, force: true }).catch(() => undefined)
+    await fs.mkdir(path.dirname(member.sandbox_directory), { recursive: true })
+    await fs.cp(member.source_directory, member.sandbox_directory, { recursive: true, force: true })
   }
 
   /** 中文注释：在新建 worktree 后执行一次硬重置，确保成员目录具备可用工作副本。 */
@@ -203,6 +216,7 @@ export namespace Workspace {
 
   /** 中文注释：复制父目录顶层非 git 条目到聚合根目录，仅用于保留目录壳层，不参与状态管理。 */
   async function copyOverlay(sourceRoot: string, sandboxRoot: string, names: string[]) {
+    sourceRoot = Filesystem.accessPath(sourceRoot)
     const skip = new Set(names)
     const entries = await fs.readdir(sourceRoot, { withFileTypes: true }).catch(() => [])
     await Promise.all(
@@ -230,6 +244,18 @@ export namespace Workspace {
 
   /** 中文注释：把批量成员 worktree 原地重置到受保护默认分支，避免 reset 时删表重建造成 session 失联。 */
   async function resetMember(member: BatchMember) {
+    const kind = member.source_kind ?? (await sourceKind(member.source_directory))
+    if (kind === "copy") {
+      await copyMember(member)
+      return {
+        ...member,
+        source_kind: "copy" as const,
+        base_ref: undefined,
+        default_branch: undefined,
+        status: "ready" as const,
+      }
+    }
+
     const remoteList = await $`git remote`.quiet().nothrow().cwd(member.sandbox_directory)
     const remotes = remoteList.stdout
       .toString()
@@ -278,6 +304,7 @@ export namespace Workspace {
     const nextBase = await baseRef(member.sandbox_directory)
     return {
       ...member,
+      source_kind: "git" as const,
       base_ref: nextBase ?? member.base_ref,
       status: "ready" as const,
     }
@@ -288,6 +315,13 @@ export namespace Workspace {
     const members = row.meta?.members ?? []
     await Promise.all(
       members.map(async (member) => {
+        const kind = member.source_kind ?? (await sourceKind(member.source_directory))
+        if (kind === "copy") {
+          if (await Filesystem.exists(member.sandbox_directory)) {
+            await fs.rm(member.sandbox_directory, { recursive: true, force: true })
+          }
+          return
+        }
         await Instance.provide({
           directory: member.source_directory,
           fn: async () => {
@@ -431,6 +465,17 @@ export namespace Workspace {
 
       try {
         for (const member of members) {
+          const kind = await sourceKind(member.source_directory)
+          if (kind === "copy") {
+            await copyMember(member)
+            ready.push({
+              ...member,
+              source_kind: "copy",
+              status: "ready",
+            })
+            continue
+          }
+
           const created = await Worktree.add({
             cwd: member.source_directory,
             branch: member.branch,
@@ -442,6 +487,7 @@ export namespace Workspace {
 
           ready.push({
             ...member,
+            source_kind: "git",
             base_ref: await baseRef(member.source_directory),
             status: "failed" as const,
           })
@@ -556,10 +602,12 @@ export namespace Workspace {
       const ready: BatchMember[] = []
       for (const member of members) {
         await fs.mkdir(member.sandbox_directory, { recursive: true })
+        const kind = await sourceKind(member.source_directory)
         ready.push({
           ...member,
-          base_ref: await baseRef(member.source_directory),
-          default_branch: await defaultBranch(member.source_directory),
+          source_kind: kind,
+          base_ref: kind === "git" ? await baseRef(member.source_directory) : undefined,
+          default_branch: kind === "git" ? await defaultBranch(member.source_directory) : undefined,
           status: "ready",
         })
       }
@@ -575,6 +623,7 @@ export namespace Workspace {
               solution_code: match.solution_code,
               mount_name: member.relative_path,
               source_directory: member.source_directory,
+              source_kind: member.source_kind,
             },
           ]
         }),
@@ -601,7 +650,6 @@ export namespace Workspace {
           })
           .run(),
       )
-
       return Info.parse({
         id,
         directory: slot.directory,

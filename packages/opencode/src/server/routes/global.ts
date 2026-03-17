@@ -14,6 +14,7 @@ import { errors } from "../error"
 import { Flag } from "../../flag/flag"
 import { ServerDegraded, ServerDegradedEvent } from "../degraded"
 import { GatewayState } from "../gateway-state"
+import { createSSECleanup } from "../sse-cleanup"
 import {
   createEventVisibilityCache,
   eventSessionID,
@@ -268,19 +269,16 @@ export const GlobalRoutes = lazy(() =>
           const sourceID = `${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`
           const pressure = Math.floor(MAX_PENDING_EVENTS * 0.75)
           let timer: ReturnType<typeof setTimeout> | undefined
+          let heartbeat: ReturnType<typeof setInterval> | undefined
           let draining = false
           let closed = false
           let degraded = false
           let droppedDelta = 0
           let lastDegradedAt = 0
+          let cleanup = () => false
 
           const close = (reason: string, error?: unknown) => {
-            if (closed) return
-            closed = true
-            if (timer) {
-              clearTimeout(timer)
-              timer = undefined
-            }
+            if (!cleanup()) return
             if (error) {
               log.error("closing global event stream", { reason, error })
             } else {
@@ -426,10 +424,31 @@ export const GlobalRoutes = lazy(() =>
             if (typeof event?.directory !== "string") return
             queue(event as { directory: string; payload: { type: string; properties: Record<string, unknown> } })
           }
+          cleanup = createSSECleanup({
+            onClosed() {
+              closed = true
+            },
+            tasks: [
+              () => {
+                if (!timer) return
+                clearTimeout(timer)
+                timer = undefined
+              },
+              () => {
+                if (!heartbeat) return
+                clearInterval(heartbeat)
+                heartbeat = undefined
+              },
+              clearDegraded,
+              () => {
+                GlobalBus.off("event", handler)
+              },
+            ],
+          })
           GlobalBus.on("event", handler)
 
           // Send heartbeat every 10s to prevent stalled proxy streams.
-          const heartbeat = setInterval(() => {
+          heartbeat = setInterval(() => {
             if (closed) return
             stream
               .writeSSE({
@@ -447,13 +466,9 @@ export const GlobalRoutes = lazy(() =>
 
           await new Promise<void>((resolve) => {
             stream.onAbort(() => {
-              closed = true
-              if (timer) clearTimeout(timer)
-              clearInterval(heartbeat)
-              clearDegraded()
-              GlobalBus.off("event", handler)
+              const changed = cleanup()
               resolve()
-              log.info("global event disconnected")
+              if (changed) log.info("global event disconnected")
             })
           })
         })

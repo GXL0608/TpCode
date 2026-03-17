@@ -44,8 +44,8 @@ type Filters = {
 
 type AssignedProject = {
   id: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
 }
 
 export type VhoFeedbackApplyResult =

@@ -9,6 +9,7 @@ export const BatchMember = z.object({
   source_directory: z.string(),
   sandbox_directory: z.string(),
   branch: z.string(),
+  source_kind: z.enum(["git", "copy"]).optional(),
   base_ref: z.string().optional(),
   default_branch: z.string().optional(),
   status: z.enum(["ready", "failed"]),
@@ -21,6 +22,8 @@ export const BatchOverlayMount = z.object({
   mount_name: z.string(),
   source_directory: z.string(),
   overlay_directory: z.string(),
+  // 中文注释：标记当前挂载来自 git worktree 还是普通复制目录，供 overlay 精确选择变更采集方式。
+  source_kind: z.enum(["git", "copy"]).optional(),
 })
 export type BatchOverlayMount = z.infer<typeof BatchOverlayMount>
 

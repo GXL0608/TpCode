@@ -161,4 +161,16 @@ describe("Glob", () => {
       expect(Glob.match("*.{js,ts}", "file.py")).toBe(false)
     })
   })
+
+  describe("prefix()", () => {
+    test("extracts static prefix before wildcards", () => {
+      expect(Glob.prefix("CSHIS/**/*Login*")).toBe("CSHIS")
+      expect(Glob.prefix("src/pages/**/index.tsx")).toBe("src/pages")
+    })
+
+    test("returns empty string for full wildcard patterns", () => {
+      expect(Glob.prefix("**/*Login*")).toBe("")
+      expect(Glob.prefix("*.cs")).toBe("")
+    })
+  })
 })

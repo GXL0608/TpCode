@@ -6,8 +6,8 @@ import { For, Show, createMemo, createSignal } from "solid-js"
 type Item = {
   id: string
   name?: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
   selected?: boolean
   last_selected?: boolean
 }
@@ -38,10 +38,10 @@ export function DialogSelectAssignedProject(props: {
                   "border border-border-weak-base bg-surface-base hover:bg-surface-base-hover": selected() !== item.id,
                 }}
                 aria-pressed={selected() === item.id}
-                onClick={() => setSelected(item.id)}
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <div class="text-14-medium text-text-strong">{item.name || item.project_id}</div>
+                  onClick={() => setSelected(item.id)}
+                >
+                  <div class="flex items-center justify-between gap-2">
+                  <div class="text-14-medium text-text-strong">{item.name || item.project_id || item.id}</div>
                   <Show when={selected() === item.id}>
                     <div class="rounded-full bg-icon-success-base/10 px-2 py-0.5 text-11-medium text-icon-success-base">
                       当前选择

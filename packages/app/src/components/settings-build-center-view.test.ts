@@ -4,6 +4,7 @@ import { resolveBuildCenterProducts, syncBuildCenterFilters } from "./settings-b
 const products = [
   {
     id: "product-a",
+    name: "CSHIS",
     solutions: [
       { id: "solution-a1", enabled: true },
       { id: "solution-a2", enabled: true },
@@ -11,15 +12,31 @@ const products = [
   },
   {
     id: "product-b",
+    name: "慢病管理系统",
     solutions: [{ id: "solution-b1", enabled: true }],
   },
 ]
 
 describe("settings-build-center-view", () => {
   test("keeps the current products during filter-only reloads to avoid resetting the dropdown", () => {
-    expect(resolveBuildCenterProducts(products, [{ id: "server-copy", solutions: [] }], false)).toEqual(products)
+    expect(resolveBuildCenterProducts(products, [{ id: "server-copy", name: "server-copy", solutions: [] }], false)).toEqual(products)
     expect(resolveBuildCenterProducts([], products, false)).toEqual(products)
-    expect(resolveBuildCenterProducts(products, [{ id: "server-copy", solutions: [] }], true)).toEqual([{ id: "server-copy", solutions: [] }])
+    expect(resolveBuildCenterProducts(products, [{ id: "server-copy", name: "server-copy", solutions: [] }], true)).toEqual([
+      { id: "server-copy", name: "server-copy", solutions: [] },
+    ])
+  })
+
+  test("filters soft-deleted products from the build center dropdown", () => {
+    expect(
+      resolveBuildCenterProducts(
+        [],
+        [
+          { id: "product-a", name: "CSHIS", solutions: [] },
+          { id: "product-b", name: "删-测试产品", solutions: [] },
+        ],
+        true,
+      ),
+    ).toEqual([{ id: "product-a", name: "CSHIS", solutions: [] }])
   })
 
   test("keeps the explicitly selected product instead of always falling back to the first item", () => {

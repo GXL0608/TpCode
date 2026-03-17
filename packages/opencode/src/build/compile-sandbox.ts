@@ -18,6 +18,7 @@ export namespace BuildCompileSandbox {
     sourceRoots: string[]
     members: Member[]
     overlay: BuildOverlay.Info
+    changes: BuildOverlay.Change[]
     solution: ProductSolutionItem
   }) {
     const workspace = await Workspace.createBatch({
@@ -35,6 +36,7 @@ export namespace BuildCompileSandbox {
     for (const member of ready) {
       const changes = await BuildOverlay.applyToMount({
         overlay: input.overlay,
+        changes: input.changes,
         solution_id: input.solution.id,
         mount_name: member.relative_path,
         target_directory: member.sandbox_directory,

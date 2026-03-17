@@ -1,44 +1,43 @@
-import { Project } from "@/project/project"
-import { ProjectTable } from "@/project/project.sql"
-import { Database, eq, inArray } from "@/storage/db"
-import { Filesystem } from "@/util/filesystem"
-import { createHash } from "crypto"
 import path from "path"
 import { ulid } from "ulid"
+import { Database, eq, inArray } from "@/storage/db"
+import { ProjectTable } from "@/project/project.sql"
+import { TpProjectRoleAccessTable } from "./project-role-access.sql"
+import { TpProductTable } from "./product.sql"
+import { TpProductSolutionBindingTable } from "./product-solution-binding.sql"
+import { TpProductSolutionTable } from "./product-solution.sql"
+import { ProductSolutionService, type ProductSolutionItem } from "./product-solution"
+import { anchorBySolutions, ensureProjectByDirectory, invalidateProductAnchorCache, projectIDsBySolutions } from "./product-anchor"
 import { TpRoleProductAccessTable } from "./role-product-access.sql"
 import { TpRoleTable } from "./role.sql"
-import { TpProductTable } from "./product.sql"
-import { TpProjectRoleAccessTable } from "./project-role-access.sql"
-import { ProductSolutionService, type ProductSolutionItem } from "./product-solution"
+import { Filesystem } from "@/util/filesystem"
 
 export type ProductItem = {
   id: string
   name: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
   vcs?: string
+  related_project_ids: string[]
+  paths: string[]
   solutions?: ProductSolutionItem[]
   time_created: number
   time_updated: number
 }
 
+type ProductViewMode = "runtime" | "light"
+
+/** 中文注释：对产品标识去重，避免后续数据库查询与映射出现重复记录。 */
 function unique(input: string[]) {
   return [...new Set(input)]
 }
 
-function key(input: string) {
-  return Filesystem.windowsPath(path.resolve(input)).toLowerCase()
-}
-
-function folderID(input: string) {
-  const digest = createHash("sha1").update(key(input)).digest("hex").slice(0, 24)
-  return `folder_${digest}`
-}
-
+/** 中文注释：统一按产品名称排序，保证产品列表和权限配置页展示稳定。 */
 function byName(items: ProductItem[]) {
   return items.sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/** 中文注释：为没有显式名称的目录生成友好标签，兼容旧的项目回退展示。 */
 function itemName(project: { name?: string | null; worktree: string }) {
   const name = project.name?.trim()
   if (name) return name
@@ -47,93 +46,208 @@ function itemName(project: { name?: string | null; worktree: string }) {
   return project.worktree
 }
 
-async function ensureProject(directory: string) {
-  const worktree = path.resolve(directory)
-  if (!(await Filesystem.isDir(worktree))) return { ok: false as const, code: "directory_missing" as const }
-  const result = await Project.fromDirectory(worktree)
-    .then((item) => item.project)
-    .catch(() => undefined)
-  if (result && result.id !== "global") return { ok: true as const, project: result }
-  const id = folderID(worktree)
-  const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
-  if (row) return { ok: true as const, project: Project.fromRow(row) }
-  const now = Date.now()
-  await Database.use((db) =>
-    db
-      .insert(ProjectTable)
-      .values({
-        id,
-        worktree,
-        vcs: null,
-        name: path.basename(worktree) || undefined,
-        sandboxes: [],
-        time_created: now,
-        time_updated: now,
+/** 中文注释：把产品解决方案根目录规整成稳定的展示路径，界面应展示用户配置的原始路径而不是本机映射路径。 */
+function itemPaths(input: { solutions: ProductSolutionItem[]; fallback?: string }) {
+  const roots = input.solutions.flatMap((solution) =>
+    solution.roots
+      .filter((root) => root.enabled)
+      .flatMap((root) => {
+        if (root.root_type === "virtual_group") return root.meta?.directories ?? []
+        return [root.directory]
       })
-      .onConflictDoNothing()
-      .run(),
+      .map((directory) => Filesystem.stablePath(directory.trim()))
+      .filter(Boolean),
   )
-  const created = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
-  if (!created) return { ok: false as const, code: "project_missing" as const }
-  return { ok: true as const, project: Project.fromRow(created) }
+  if (roots.length > 0) return unique(roots)
+  if (!input.fallback) return []
+  return [Filesystem.stablePath(input.fallback)]
 }
 
-async function productsByRows(rows: (typeof TpProductTable.$inferSelect)[]) {
-  const project_ids = unique(rows.map((item) => item.project_id))
-  const projects =
-    project_ids.length === 0
-      ? []
-      : await Database.use((db) => db.select().from(ProjectTable).where(inArray(ProjectTable.id, project_ids)).all())
-  const map = new Map(projects.map((item) => [item.id, item]))
-  const list = rows.map((item) => {
-    const project = map.get(item.project_id)
-    return {
-      id: item.id,
-      name: item.name,
-      project_id: item.project_id,
-      worktree: project?.worktree ?? item.project_id,
-      vcs: project?.vcs ?? undefined,
-      time_created: item.time_created,
-      time_updated: item.time_updated,
-    } satisfies ProductItem
-  })
-  const solutions = await ProductSolutionService.listByProductIDs(list.map((item) => item.id))
-  const solutionMap = new Map<string, ProductSolutionItem[]>()
-  for (const item of solutions) {
-    const list = solutionMap.get(item.product_id) ?? []
+/** 中文注释：前端产品上下文只需要真实解决方案 roots 对应的项目集合，不能再把兼容主项目锚点混进来。 */
+async function relatedProjectIDs(solutions: ProductSolutionItem[]) {
+  const rows = await Promise.all(
+    solutions.flatMap((solution) =>
+      solution.roots
+        .filter((root) => root.enabled)
+        .flatMap((root) => {
+          if (root.root_type === "virtual_group") return root.meta?.directories ?? []
+          return [root.directory]
+        })
+        .map((directory) => ensureProjectByDirectory(directory)),
+    ),
+  )
+  const derived = unique(rows.flatMap((project) => (project?.id ? [project.id] : [])))
+  if (derived.length > 0) return derived
+  return unique(solutions.map((solution) => solution.primary_project_id ?? "").filter(Boolean))
+}
+
+/** 中文注释：轻量模式优先读取解决方案显式主项目，避免登录和产品列表同步探测共享目录。 */
+function relatedProjectIDsLight(input: { row: typeof TpProductTable.$inferSelect; solutions: ProductSolutionItem[] }) {
+  const primary_ids = unique(input.solutions.map((solution) => solution.primary_project_id ?? "").filter(Boolean))
+  if (primary_ids.length > 0) return primary_ids
+  return unique([input.row.project_id ?? ""].filter(Boolean))
+}
+
+/** 中文注释：按产品分组解决方案，供产品列表、权限推导和锚点解析统一复用。 */
+function solutionMap(items: ProductSolutionItem[]) {
+  const map = new Map<string, ProductSolutionItem[]>()
+  for (const item of items) {
+    const list = map.get(item.product_id) ?? []
     list.push(item)
-    solutionMap.set(item.product_id, list)
+    map.set(item.product_id, list)
   }
-  const hydrated = list.map((item) => ({
-    ...item,
-    solutions: solutionMap.get(item.id) ?? [],
-  }))
-  return byName(hydrated)
+  return map
+}
+
+/** 中文注释：把产品主表记录补齐为前后端共用的产品视图；轻量模式不扫描共享盘，运行时模式再做完整锚点推导。 */
+async function productsByRows(rows: (typeof TpProductTable.$inferSelect)[], mode: ProductViewMode = "runtime") {
+  const solutions = await ProductSolutionService.listByProductIDs(rows.map((item) => item.id))
+  const grouped = solutionMap(solutions)
+  const fallback_ids = unique(
+    rows
+      .flatMap((item) => {
+        const current = grouped.get(item.id) ?? []
+        if (mode === "light") return [item.project_id ?? "", ...current.map((solution) => solution.primary_project_id ?? "")]
+        return [item.project_id ?? ""]
+      })
+      .filter(Boolean),
+  )
+  const project_rows =
+    fallback_ids.length === 0
+      ? []
+      : await Database.use((db) => db.select().from(ProjectTable).where(inArray(ProjectTable.id, fallback_ids)).all())
+  const legacy = new Map(project_rows.map((item) => [item.id, item]))
+  const list = await Promise.all(
+    rows.map(async (row) => {
+      const current = grouped.get(row.id) ?? []
+      const preferred_project_id = current.map((solution) => solution.primary_project_id ?? "").find(Boolean) ?? row.project_id ?? undefined
+      const fallback = legacy.get(preferred_project_id ?? "") ?? legacy.get(row.project_id ?? "")
+      const anchor = mode === "light"
+        ? fallback
+          ? {
+              project_id: fallback.id,
+              worktree: fallback.worktree,
+              vcs: fallback.vcs ?? undefined,
+            }
+          : preferred_project_id
+            ? {
+                project_id: preferred_project_id,
+                worktree: fallback?.worktree,
+                vcs: fallback?.vcs ?? undefined,
+              }
+            : undefined
+        : await anchorBySolutions(current)
+      const related_project_ids = current.length > 0
+        ? mode === "light"
+          ? relatedProjectIDsLight({ row, solutions: current })
+          : await relatedProjectIDs(current)
+        : unique(fallback?.id ? [fallback.id] : [])
+      return {
+        id: row.id,
+        name: row.name,
+        project_id: anchor?.project_id ?? row.project_id ?? undefined,
+        worktree: anchor?.worktree ?? fallback?.worktree ?? undefined,
+        vcs: anchor?.vcs ?? fallback?.vcs ?? undefined,
+        related_project_ids,
+        paths: itemPaths({
+          solutions: current,
+          fallback: anchor?.worktree ?? fallback?.worktree ?? undefined,
+        }),
+        solutions: current,
+        time_created: row.time_created,
+        time_updated: row.time_updated,
+      } satisfies ProductItem
+    }),
+  )
+  return byName(list)
+}
+
+/** 中文注释：按产品集合推导关联的全部项目，用于角色授权和产品可见性判断。 */
+async function productProjectIDs(product_ids: string[]) {
+  const ids = unique(product_ids.filter(Boolean))
+  if (ids.length === 0) return [] as string[]
+  const rows = await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.id, ids)).all())
+  const products = await productsByRows(rows)
+  const legacy = new Map(rows.map((item) => [item.id, item.project_id ?? undefined]))
+  const derived = await Promise.all(
+    products.map(async (item) => {
+      const current = item.solutions ?? []
+      const ids = await projectIDsBySolutions(current)
+      return [...(legacy.get(item.id) ? [legacy.get(item.id)!] : []), ...(item.project_id ? [item.project_id] : []), ...ids]
+    }),
+  )
+  return unique(derived.flat())
+}
+
+/** 中文注释：同步角色的项目访问镜像，保证旧的项目权限链仍能感知产品关联的解决方案目录。 */
+async function syncRoleProjects(role_id: string, product_ids: string[]) {
+  const project_ids = await productProjectIDs(product_ids)
+  await Database.use(async (db) => {
+    await db.delete(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.role_id, role_id)).run()
+    if (project_ids.length === 0) return
+    await db.insert(TpProjectRoleAccessTable)
+      .values(
+        project_ids.map((project_id) => ({
+          project_id,
+          role_id,
+          time_created: Date.now(),
+        })),
+      )
+      .run()
+  })
 }
 
 export namespace AccountProductService {
-  export async function list() {
+  /** 中文注释：列出所有产品，并自动附带从解决方案推导出来的上下文锚点。 */
+  export async function list(mode: ProductViewMode = "runtime") {
     const rows = await Database.use((db) => db.select().from(TpProductTable).all())
-    return productsByRows(rows)
+    return productsByRows(rows, mode)
   }
 
-  export async function listByProjectIDs(project_ids: string[]) {
-    const ids = unique(project_ids)
-    if (ids.length === 0) return [] as ProductItem[]
-    const rows = await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.project_id, ids)).all())
-    return productsByRows(rows)
+  /** 中文注释：按产品标识读取单个产品，避免登录恢复上次产品时再把全量产品全部做一轮锚点推导。 */
+  export async function get(product_id: string, mode: ProductViewMode = "runtime") {
+    const row = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, product_id)).get())
+    if (!row) return
+    return (await productsByRows([row], mode))[0]
   }
 
-  export async function create(input: { name: string; directory: string }) {
+  /** 中文注释：按项目过滤产品时，改为匹配产品关联解决方案的全部锚点项目，而不是产品自身目录。 */
+  export async function listByProjectIDs(project_ids: string[], mode: ProductViewMode = "runtime") {
+    const ids = new Set(unique(project_ids.filter(Boolean)))
+    if (ids.size === 0) return [] as ProductItem[]
+    const rows = await Database.use((db) => db.select().from(TpProductTable).all())
+    const items = await productsByRows(rows, mode)
+    const legacy = new Map(rows.map((item) => [item.id, item.project_id ?? undefined]))
+    const derived = await Promise.all(
+      items.map(async (item) => ({
+        item,
+        project_ids: new Set(
+          [
+            ...(legacy.get(item.id) ? [legacy.get(item.id)!] : []),
+            ...(item.project_id ? [item.project_id] : []),
+            ...(mode === "light"
+              ? unique((item.solutions ?? []).map((solution) => solution.primary_project_id ?? "").filter(Boolean))
+              : await projectIDsBySolutions(item.solutions ?? [])),
+          ],
+        ),
+      })),
+    )
+    return derived.filter((item) => [...item.project_ids].some((project_id) => ids.has(project_id))).map((item) => item.item)
+  }
+
+  /** 中文注释：创建产品时允许目录为空；若显式提供目录，则仅把它作为兼容上下文项目保存。 */
+  export async function create(input: { name: string; directory?: string }) {
     const name = input.name.trim()
     if (!name) return { ok: false as const, code: "product_name_invalid" as const }
-    const resolved = await ensureProject(input.directory)
-    if (!resolved.ok) return resolved
-    const project = resolved.project
+    const directory = input.directory?.trim()
+    const project = directory ? await ensureProjectByDirectory(directory) : undefined
+    if (directory && !project) return { ok: false as const, code: "directory_missing" as const }
     const nameHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.name, name)).get())
     if (nameHit) return { ok: false as const, code: "product_exists" as const }
-    const projectHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.project_id, project.id)).get())
-    if (projectHit) return { ok: false as const, code: "product_directory_exists" as const }
+    if (project) {
+      const projectHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.project_id, project.id)).get())
+      if (projectHit) return { ok: false as const, code: "product_directory_exists" as const }
+    }
     const now = Date.now()
     const id = ulid()
     await Database.use((db) =>
@@ -142,69 +256,93 @@ export namespace AccountProductService {
         .values({
           id,
           name,
-          project_id: project.id,
+          project_id: project?.id,
           time_created: now,
           time_updated: now,
         })
         .run(),
     )
-    return {
-      ok: true as const,
-      item: {
-        id,
-        name,
-        project_id: project.id,
-        worktree: project.worktree,
-        vcs: project.vcs,
-        time_created: now,
-        time_updated: now,
-      } satisfies ProductItem,
-    }
+    const rows = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, id)).all())
+    const item = (await productsByRows(rows))[0]
+    if (!item) return { ok: false as const, code: "product_missing" as const }
+    invalidateProductAnchorCache()
+    return { ok: true as const, item }
   }
 
+  /** 中文注释：更新产品时允许清空目录绑定，让产品退化为纯虚拟组合。 */
   export async function update(input: { product_id: string; name?: string; directory?: string }) {
     const row = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
     if (!row) return { ok: false as const, code: "product_missing" as const }
     const name = input.name === undefined ? row.name : input.name.trim()
     if (!name) return { ok: false as const, code: "product_name_invalid" as const }
-    const resolved = input.directory ? await ensureProject(input.directory) : undefined
-    if (resolved && !resolved.ok) return resolved
-    const project_id = resolved?.project.id ?? row.project_id
+    const directory = input.directory === undefined ? undefined : input.directory.trim()
+    const project = directory ? await ensureProjectByDirectory(directory) : undefined
+    if (input.directory !== undefined && directory && !project) {
+      return { ok: false as const, code: "directory_missing" as const }
+    }
+    const project_id = input.directory === undefined ? row.project_id ?? undefined : project?.id
     const nameHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.name, name)).get())
     if (nameHit && nameHit.id !== input.product_id) return { ok: false as const, code: "product_exists" as const }
-    const projectHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.project_id, project_id)).get())
-    if (projectHit && projectHit.id !== input.product_id) return { ok: false as const, code: "product_directory_exists" as const }
-    const now = Date.now()
+    if (project_id) {
+      const projectHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.project_id, project_id)).get())
+      if (projectHit && projectHit.id !== input.product_id) return { ok: false as const, code: "product_directory_exists" as const }
+    }
     await Database.use((db) =>
       db
         .update(TpProductTable)
         .set({
           name,
-          project_id,
-          time_updated: now,
+          project_id: project_id ?? null,
+          time_updated: Date.now(),
         })
         .where(eq(TpProductTable.id, input.product_id))
         .run(),
     )
-    const next = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
-    if (!next) return { ok: false as const, code: "product_missing" as const }
-    const items = await productsByRows([next])
-    const item = items[0]
-    if (!item) return { ok: false as const, code: "project_missing" as const }
+    const rows = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).all())
+    const item = (await productsByRows(rows))[0]
+    if (!item) return { ok: false as const, code: "product_missing" as const }
+    invalidateProductAnchorCache()
     return { ok: true as const, item }
   }
 
+  /** 中文注释：删除产品时仅清理产品本体与角色产品绑定，避免再把共享解决方案误删。 */
   export async function remove(product_id: string) {
     const row = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, product_id)).get())
     if (!row) return { ok: false as const, code: "product_missing" as const }
+    const role_links = await Database.use((db) =>
+      db.select().from(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.product_id, product_id)).all(),
+    )
+    const owned = await Database.use((db) =>
+      db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.product_id, product_id)).all(),
+    )
     await Database.use(async (db) => {
+      for (const solution of owned) {
+        const bindings = await db.select().from(TpProductSolutionBindingTable).where(eq(TpProductSolutionBindingTable.solution_id, solution.id)).all()
+        const next = bindings.find((item) => item.product_id !== product_id)
+        if (!next) continue
+        await db
+          .update(TpProductSolutionTable)
+          .set({
+            product_id: next.product_id,
+            time_updated: Date.now(),
+          })
+          .where(eq(TpProductSolutionTable.id, solution.id))
+          .run()
+      }
       await db.delete(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.product_id, product_id)).run()
-      await db.delete(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.project_id, row.project_id)).run()
       await db.delete(TpProductTable).where(eq(TpProductTable.id, product_id)).run()
     })
+    for (const link of role_links) {
+      const links = await Database.use((db) =>
+        db.select().from(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.role_id, link.role_id)).all(),
+      )
+      await syncRoleProjects(link.role_id, links.map((item) => item.product_id))
+    }
+    invalidateProductAnchorCache()
     return { ok: true as const }
   }
 
+  /** 中文注释：读取角色关联产品时，返回的产品锚点同样基于解决方案动态推导。 */
   export async function roleProducts(role_code: string) {
     const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, role_code)).get())
     if (!role) return { ok: false as const, code: "role_missing" as const }
@@ -216,15 +354,15 @@ export namespace AccountProductService {
       ids.length === 0
         ? []
         : await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.id, ids)).all())
-    const product_ids = products.map((item) => item.id)
     return {
       ok: true as const,
       role_code,
-      product_ids,
+      product_ids: products.map((item) => item.id),
       products: await productsByRows(products),
     }
   }
 
+  /** 中文注释：设置角色可访问产品时，同时重建衍生的项目授权镜像，保持旧链路兼容。 */
   export async function setRoleProducts(input: { role_code: string; product_ids: string[] }) {
     const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
     if (!role) return { ok: false as const, code: "role_missing" as const }
@@ -232,48 +370,27 @@ export namespace AccountProductService {
     const products =
       product_ids.length === 0
         ? []
-        : await Database.use((db) =>
-            db
-              .select({
-                id: TpProductTable.id,
-                project_id: TpProductTable.project_id,
-              })
-              .from(TpProductTable)
-              .where(inArray(TpProductTable.id, product_ids))
-              .all(),
-          )
+        : await Database.use((db) => db.select({ id: TpProductTable.id }).from(TpProductTable).where(inArray(TpProductTable.id, product_ids)).all())
     if (products.length !== product_ids.length) return { ok: false as const, code: "product_missing" as const }
-    const project_ids = unique(products.map((item) => item.project_id))
     const now = Date.now()
     await Database.use(async (db) => {
       await db.delete(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.role_id, role.id)).run()
-      await db.delete(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.role_id, role.id)).run()
-      if (product_ids.length > 0) {
-        await db.insert(TpRoleProductAccessTable)
-          .values(
-            product_ids.map((product_id) => ({
-              product_id,
-              role_id: role.id,
-              time_created: now,
-            })),
-          )
-          .run()
-      }
-      if (project_ids.length > 0) {
-        await db.insert(TpProjectRoleAccessTable)
-          .values(
-            project_ids.map((project_id) => ({
-              project_id,
-              role_id: role.id,
-              time_created: now,
-            })),
-          )
-          .run()
-      }
+      if (product_ids.length === 0) return
+      await db.insert(TpRoleProductAccessTable)
+        .values(
+          product_ids.map((product_id) => ({
+            product_id,
+            role_id: role.id,
+            time_created: now,
+          })),
+        )
+        .run()
     })
+    await syncRoleProjects(role.id, product_ids)
     return { ok: true as const }
   }
 
+  /** 中文注释：角色产品权限映射到项目权限时，改为读取产品关联解决方案的全部项目锚点。 */
   export async function roleProjectIDs(role_ids: string[]) {
     const ids = unique(role_ids)
     if (ids.length === 0) return [] as string[]
@@ -284,18 +401,10 @@ export namespace AccountProductService {
         .where(inArray(TpRoleProductAccessTable.role_id, ids))
         .all(),
     )
-    const product_ids = unique(links.map((item) => item.product_id))
-    if (product_ids.length === 0) return [] as string[]
-    const rows = await Database.use((db) =>
-      db
-        .select({ project_id: TpProductTable.project_id })
-        .from(TpProductTable)
-        .where(inArray(TpProductTable.id, product_ids))
-        .all(),
-    )
-    return unique(rows.map((item) => item.project_id))
+    return productProjectIDs(links.map((item) => item.product_id))
   }
 
+  /** 中文注释：统一生成项目回退展示名称，兼容上下文产品列表中的历史项目入口。 */
   export function label(input: { name: string; worktree: string }) {
     return itemName(input)
   }

@@ -12,6 +12,13 @@ import { Process } from "../util/process"
 
 export namespace BunProc {
   const log = Log.create({ service: "bun" })
+  const INSTALL_BACKOFF_MS = 300_000
+  const installBackoff = new Map<string, { expires_at: number; error: string }>()
+
+  /** 中文注释：把包名和版本收敛成稳定键，供安装失败退避缓存复用。 */
+  function installKey(pkg: string, version: string) {
+    return `${pkg}@${version}`
+  }
 
   export async function run(cmd: string[], options?: Process.Options) {
     log.info("running", {
@@ -54,9 +61,38 @@ export namespace BunProc {
     }),
   )
 
+  export const InstallBackoffError = NamedError.create(
+    "BunInstallBackoffError",
+    z.object({
+      pkg: z.string(),
+      version: z.string(),
+      retry_at: z.number(),
+    }),
+  )
+
+  /** 中文注释：测试与运维排障时可主动清空安装失败退避状态，避免历史失败影响新结论。 */
+  export function resetInstallBackoff() {
+    installBackoff.clear()
+  }
+
   export async function install(pkg: string, version = "latest") {
     // Use lock to ensure only one install at a time
     using _ = await Lock.write("bun-install")
+    const key = installKey(pkg, version)
+    const cooled = installBackoff.get(key)
+    if (cooled && cooled.expires_at > Date.now()) {
+      throw new InstallBackoffError(
+        {
+          pkg,
+          version,
+          retry_at: cooled.expires_at,
+        },
+        {
+          cause: new Error(cooled.error),
+        },
+      )
+    }
+    if (cooled) installBackoff.delete(key)
 
     const mod = path.join(Global.Path.cache, "node_modules", pkg)
     const pkgjsonPath = path.join(Global.Path.cache, "package.json")
@@ -104,6 +140,11 @@ export namespace BunProc {
     await BunProc.run(args, {
       cwd: Global.Path.cache,
     }).catch((e) => {
+      const cause = e instanceof Error && e.cause instanceof Error ? e.cause.message : e instanceof Error ? e.message : String(e)
+      installBackoff.set(key, {
+        expires_at: Date.now() + INSTALL_BACKOFF_MS,
+        error: cause,
+      })
       throw new InstallFailedError(
         { pkg, version },
         {
@@ -111,6 +152,7 @@ export namespace BunProc {
         },
       )
     })
+    installBackoff.delete(key)
 
     // Resolve actual version from installed package when using "latest"
     // This ensures subsequent starts use the cached version until explicitly updated

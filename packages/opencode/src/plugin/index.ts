@@ -62,6 +62,10 @@ export namespace Plugin {
         const pkg = lastAtIndex > 0 ? plugin.substring(0, lastAtIndex) : plugin
         const version = lastAtIndex > 0 ? plugin.substring(lastAtIndex + 1) : "latest"
         plugin = await BunProc.install(pkg, version).catch((err) => {
+          if (err instanceof BunProc.InstallBackoffError) {
+            log.debug("plugin install backoff active", { pkg, version, retry_at: err.data.retry_at })
+            return ""
+          }
           const cause = err instanceof Error ? err.cause : err
           const detail = cause instanceof Error ? cause.message : String(cause ?? err)
           log.error("failed to install plugin", { pkg, version, error: detail })

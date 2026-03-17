@@ -46,6 +46,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     let setModel: (model: ModelKey | undefined, options?: { recent?: boolean }) => void = () => undefined
 
     const agent = (() => {
+      /** 中文注释：进入产品后的默认模式固定回到 plan，避免用户一进来就误触发 build 闭环。 */
+      const fallback = (items: ReturnType<typeof list>) => {
+        const plan = items.find((x) => x.name === "plan")
+        if (plan) return plan
+        return items[0]
+      }
+
       const list = createMemo(() =>
         sync.data.agent.filter((x) => {
           if (x.mode === "subagent") return false
@@ -54,18 +61,23 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return true
         }),
       )
-      const first = (items: ReturnType<typeof list>) => items.find((x) => x.name === "plan") ?? items[0]
       const [store, setStore] = createStore<{
         current?: string
       }>({
-        current: first(list())?.name,
+        current: undefined,
       })
       return {
         list,
+        /** 中文注释：selected 只返回用户显式点击过的智能体，用于区分“默认模式”和“手动切换到 build”。 */
+        selected() {
+          const available = list()
+          if (!store.current) return undefined
+          return available.find((x) => x.name === store.current)
+        },
         current() {
           const available = list()
           if (available.length === 0) return undefined
-          return available.find((x) => x.name === store.current) ?? first(available)
+          return available.find((x) => x.name === store.current) ?? fallback(available)
         },
         set(name: string | undefined) {
           const available = list()
@@ -73,11 +85,15 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             setStore("current", undefined)
             return
           }
-          if (name && available.some((x) => x.name === name)) {
+          if (!name) {
+            setStore("current", undefined)
+            return
+          }
+          if (available.some((x) => x.name === name)) {
             setStore("current", name)
             return
           }
-          setStore("current", first(available)?.name)
+          setStore("current", undefined)
         },
         move(direction: 1 | -1) {
           const available = list()
@@ -85,7 +101,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             setStore("current", undefined)
             return
           }
-          let next = available.findIndex((x) => x.name === store.current) + direction
+          const current = available.find((x) => x.name === store.current) ?? fallback(available)
+          let next = available.findIndex((x) => x.name === current?.name) + direction
           if (next < 0) next = available.length - 1
           if (next >= available.length) next = 0
           const value = available[next]

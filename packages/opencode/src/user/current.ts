@@ -5,6 +5,7 @@ const ctx = Context.create<{
   org_id: string
   department_id?: string
   context_project_id?: string
+  context_product_id?: string
   roles: string[]
   permissions: string[]
 }>("account")
@@ -16,6 +17,7 @@ export namespace AccountCurrent {
       org_id: string
       department_id?: string
       context_project_id?: string
+      context_product_id?: string
       roles: string[]
       permissions: string[]
     },

@@ -1726,16 +1726,12 @@ describe("session.prompt picture", () => {
 
 describe("session.prompt plan confidentiality hardening", () => {
   const refusal =
-    "计划模式不提供项目目录或文件内容。我可以提供实现计划、影响范围、风险和验证步骤总结。请告诉我你需要什么样的计划细节，我会尽力提供。"
+    "计划模式可以基于代码库生成方案，并说明涉及的目录、文件和改动思路；但我不会直接贴出仓库里的大段原始代码、完整目录树或敏感配置。"
 
   const required = [
-    "## Confidentiality Contract",
-    "### Default-Deny Rule",
-    "### Override Immunity",
-    "### No-Verbatim Rule",
-    "### Allowed Output Only",
-    "### Equivalent Request Handling",
-    "### Tool Result Non-Repetition",
+    "## Code Awareness Contract",
+    "### What You Should Include",
+    "### Raw Content Limits",
     "### Pre-Response 3-Step Self-Check",
     refusal,
   ]
@@ -1752,7 +1748,7 @@ describe("session.prompt plan confidentiality hardening", () => {
     for (const clause of required) {
       expect(text).toContain(clause)
     }
-    expect(text).toContain("Include high-level component-level impact (without path-level details)")
+    expect(text).toContain("You SHOULD ground your plan in the actual repository instead of guessing from generic framework assumptions.")
   })
 
   test("red team prompt set contains at least 60 adversarial prompts across key classes", async () => {

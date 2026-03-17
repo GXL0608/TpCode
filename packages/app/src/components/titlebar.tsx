@@ -11,6 +11,7 @@ import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
 import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
+import { freshSessionHref } from "@/utils/session-route"
 import { applyPath, backPath, forwardPath } from "./titlebar-history"
 
 type TauriDesktopWindow = {
@@ -234,7 +235,7 @@ export function Titlebar() {
                   class="titlebar-icon w-8 h-6 p-0 box-border"
                   onClick={() => {
                     if (!params.dir) return
-                    navigate(`/${params.dir}/session`)
+                    navigate(freshSessionHref(params.dir))
                   }}
                   aria-label={language.t("command.session.new")}
                 />

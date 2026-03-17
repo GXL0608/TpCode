@@ -7,8 +7,10 @@ import {
   errorMessage,
   getDraggableId,
   hasProjectPermissions,
+  hiddenWorkspaceDirectory,
   latestRootSession,
   projectSupportsWorkspace,
+  projectWorkspaceDirectories,
   syncWorkspaceOrder,
   workspaceModeEnabled,
   workspaceKey,
@@ -225,6 +227,32 @@ describe("layout workspace helpers", () => {
       bootstrap: "/root/b",
       sessions: ["/root", "/root/a"],
     })
+  })
+
+  test("keeps the current overlay workspace visible but hides stale overlay sandboxes", () => {
+    expect(
+      projectWorkspaceDirectories({
+        project: {
+          worktree: "/root",
+          sandboxes: [
+            "/Users/demo/.local/share/opencode/build-overlay/project_a/stale-1",
+            "/root/a",
+          ],
+        },
+        currentDir: "/Users/demo/.local/share/opencode/build-overlay/project_a/current-session",
+      }),
+    ).toEqual([
+      "/root",
+      "/Users/demo/.local/share/opencode/build-overlay/project_a/current-session",
+      "/root/a",
+    ])
+  })
+
+  test("treats build overlay directories as hidden workspaces", () => {
+    expect(hiddenWorkspaceDirectory("/Users/demo/.local/share/opencode/build-overlay/project_a/current-session")).toBe(
+      true,
+    )
+    expect(hiddenWorkspaceDirectory("/root/a")).toBe(false)
   })
 
   test("keeps workspace-disabled projects on root session loading while bootstrapping the active sandbox", () => {

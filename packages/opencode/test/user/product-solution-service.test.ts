@@ -23,8 +23,14 @@ async function createRepo(root: string, name: string) {
   return directory
 }
 
+/** 中文注释：按共享目录组件拼装稳定 UNC 路径，避免测试源码中的中文路径被反斜杠转义干扰。 */
+function unc(...parts: string[]) {
+  return ["", "", "192.168.1.202", ...parts].join("\\")
+}
+
 describe("product solution service", () => {
   afterEach(async () => {
+    delete process.env.TPCODE_SHARED_MOUNT_ROOT
     await Database.use(async (db) => {
       await db.delete(TpProductSolutionRootTable).run()
       await db.delete(TpProductSolutionBindingTable).run()
@@ -85,6 +91,50 @@ describe("product solution service", () => {
     expect(listed[0]?.build_profile.compile_command).toBe("echo build")
   })
 
+  test("allows products without bound directories and derives anchor project from solutions", async () => {
+    await using tmp = await tmpdir()
+    const frontend = await createRepo(tmp.path, "virtual-product-frontend")
+
+    const product = await AccountProductService.create({
+      name: "虚拟产品",
+      directory: "",
+    })
+
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+    expect(product.item.project_id).toBeUndefined()
+
+    const solution = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "虚拟产品前端",
+      code: "virtual-product-frontend",
+      build_profile: {
+        workdirs: ["frontend"],
+        compile_command: "echo build",
+        artifact_include: ["dist/**"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: frontend,
+          display_name: "前端",
+          mount_name: "frontend",
+          sort_order: 1,
+        },
+      ],
+    })
+
+    expect(solution.ok).toBe(true)
+    if (!solution.ok) return
+    expect(solution.item.primary_project_id).toBeTruthy()
+
+    const listed = await AccountProductService.list()
+    const item = listed.find((row) => row.id === product.item.id)
+
+    expect(item?.project_id).toBe(solution.item.primary_project_id)
+    expect(item?.worktree).toBe(frontend)
+  })
+
   test("supports virtual_group roots with explicit member directories", async () => {
     await using tmp = await tmpdir()
     const shared = await createRepo(tmp.path, "shared-backend")
@@ -123,6 +173,50 @@ describe("product solution service", () => {
     expect(created.ok).toBe(true)
     if (!created.ok) return
     expect(created.item.roots[0]?.meta?.directories).toEqual([shared, api])
+  })
+
+  test("accepts UNC solution roots for products without bound directories", async () => {
+    await using tmp = await tmpdir()
+    process.env.TPCODE_SHARED_MOUNT_ROOT = tmp.path
+    const share = path.join(tmp.path, "共享", "test_project", "aaa")
+    await fs.mkdir(share, { recursive: true })
+
+    const product = await AccountProductService.create({
+      name: "UNC虚拟产品",
+      directory: "",
+    })
+
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+
+    const created = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "UNC目录方案",
+      code: "unc-folder-solution",
+      build_profile: {
+        workdirs: ["aaa"],
+        compile_command: "true",
+        artifact_include: ["a.txt"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: unc("共享", "test_project", "aaa"),
+          display_name: "UNC共享目录",
+          mount_name: "aaa",
+          sort_order: 1,
+        },
+      ],
+    })
+
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+    expect(created.item.roots[0]?.directory).toBe(unc("共享", "test_project", "aaa"))
+
+    const listed = await AccountProductService.list()
+    const item = listed.find((row) => row.id === product.item.id)
+    expect(item?.project_id).toBeTruthy()
+    expect(item?.worktree).toBe(share)
   })
 
   test("allows one solution to be bound by multiple products", async () => {

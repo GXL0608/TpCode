@@ -13,7 +13,7 @@ import {
   lazy,
   type JSX,
 } from "solid-js"
-import { A, useNavigate, useParams } from "@solidjs/router"
+import { A, useLocation, useNavigate, useParams } from "@solidjs/router"
 import { useLayout, LocalProject } from "@/context/layout"
 import { useAccountProject } from "@/context/account-project"
 import { useGlobalSync } from "@/context/global-sync"
@@ -63,7 +63,8 @@ import { DialogSelectAssignedProject } from "@/components/dialog-select-assigned
 import { Titlebar } from "@/components/titlebar"
 import { useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
-import { useAccountAuth } from "@/context/account-auth"
+import { useAccountAuth, type ContextProduct } from "@/context/account-auth"
+import { latestRememberedProductSession, productEntryDirectory, productProjectIDs } from "@/context/account-project"
 import {
   projectRootByDirectory,
   resolveProjectByDirectory,
@@ -75,8 +76,11 @@ import {
   displayName,
   errorMessage,
   getDraggableId,
+  hiddenWorkspaceDirectory,
   latestRootSession,
+  projectWorkspaceDirectories,
   projectSupportsWorkspace,
+  sortSessions,
   sortedRootSessions,
   syncWorkspaceOrder,
   workspaceKey,
@@ -92,6 +96,13 @@ import {
 import { workspaceOpenState, workspaceVisibleName } from "./layout/sidebar-workspace-helpers"
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
+import { sidebarProductContext } from "./layout/sidebar-product-context"
+import {
+  SidebarProductContent,
+  SidebarProductPanel,
+} from "./layout/sidebar-product-view"
+import { productSidebarDirectories, productSidebarName, productSidebarProducts, useProductSidebar } from "./layout/sidebar-product-view-helpers"
+import { freshSessionHref, isFreshSessionSearch } from "@/utils/session-route"
 
 const FeedbackLauncher = lazy(() => import("@/components/feedback-launcher").then((item) => ({ default: item.FeedbackLauncher })))
 
@@ -127,6 +138,7 @@ export default function Layout(props: ParentProps) {
   const notification = useNotification()
   const permission = usePermission()
   const navigate = useNavigate()
+  const location = useLocation()
   const providers = useProviders()
   const dialog = useDialog()
   const command = useCommand()
@@ -144,6 +156,41 @@ export default function Layout(props: ParentProps) {
   const currentDir = createMemo(() => decode64(params.dir) ?? "")
   const projectState = createMemo(() => accountProject.data())
   const isSuperAdmin = createMemo(() => !!auth.user()?.roles.includes("super_admin"))
+  /** 中文注释：侧栏会话排序依赖当前时间窗口，必须先初始化时钟信号，避免后面的 memo 在模块首次执行时访问未初始化变量。 */
+  const [sortNow, setSortNow] = createSignal(Date.now())
+  const [contextProducts, setContextProducts] = createSignal<ContextProduct[]>([])
+  /** 中文注释：用户存在产品上下文时，左侧导航必须切成产品视图，避免把内部解决方案项目暴露出来。 */
+  const productSidebarEnabled = createMemo(() => useProductSidebar(auth.user()?.context_product_id))
+
+  /** 中文注释：侧栏需要拿到当前产品及其解决方案路径，所以在登录态变化时补拉一次产品上下文列表。 */
+  createEffect(() => {
+    const ready = auth.ready()
+    const authenticated = auth.authenticated()
+    const product_id = auth.user()?.context_product_id ?? ""
+    if (!ready || !authenticated) {
+      setContextProducts([])
+      return
+    }
+    let cancelled = false
+    void auth.contextProducts().then((payload) => {
+      if (cancelled) return
+      if (product_id !== (auth.user()?.context_product_id ?? "")) return
+      if (!payload?.products) return
+      setContextProducts(payload.products)
+    })
+    onCleanup(() => {
+      cancelled = true
+    })
+  })
+  /** 中文注释：产品接口首屏未返回或短暂失败时，左侧至少保留当前产品占位，避免用户看到空导航。 */
+  const sidebarProducts = createMemo(() =>
+    productSidebarProducts({
+      products: contextProducts(),
+      current_product_id: auth.user()?.context_product_id,
+    }),
+  )
+  const currentContextProduct = createMemo(() => sidebarProducts().find((item) => item.id === auth.user()?.context_product_id))
+  const currentContextProjectIDs = createMemo(() => productProjectIDs(currentContextProduct()))
 
   const projectByRoot = (root: string) => globalSync.data.project.find((project) => project.worktree === root)
   const projectIDByRoot = (root: string) => projectByRoot(root)?.id
@@ -162,6 +209,43 @@ export default function Layout(props: ParentProps) {
     if (!project_id) return
     return projectState().last_session_by_project[project_id]
   }
+  /** 中文注释：按当前产品关联项目汇总最近一次会话，供刷新页面和重新登录后恢复产品历史会话。 */
+  const latestProductSession = createMemo(() =>
+    latestRememberedProductSession({
+      product: currentContextProduct(),
+      last_session_by_project: projectState().last_session_by_project,
+    }),
+  )
+  /** 中文注释：产品侧栏统一从产品关联项目、最近会话目录和当前目录汇总会话来源，不再直接把解决方案项目当导航项展示。 */
+  const currentProductDirectories = createMemo(() =>
+    productSidebarDirectories({
+      product: currentContextProduct(),
+      projects: globalSync.data.project,
+      current_directory: currentDir() || undefined,
+      last_session_by_project: projectState().last_session_by_project,
+    }),
+  )
+  /** 中文注释：产品侧栏会话列表按目录聚合最近会话，用户看到的是产品历史，不是解决方案项目列表。 */
+  const currentProductSessions = createMemo(() => {
+    if (!productSidebarEnabled()) return [] as Array<{
+      session: Session
+      children: Map<string, string[]>
+    }>
+    const map = new Map<string, { session: Session; children: Map<string, string[]> }>()
+    for (const directory of currentProductDirectories()) {
+      const [store] = globalSync.child(directory, { bootstrap: false })
+      const sessions = Array.isArray(store.session) ? store.session : []
+      const children = childMapByParent(sessions)
+      for (const session of sessions
+        .filter((item) => workspaceKey(item.directory) === workspaceKey(directory) && !item.parentID && !item.time?.archived)
+        .sort(sortSessions(sortNow()))) {
+        const key = `${session.directory}:${session.id}`
+        if (map.has(key)) continue
+        map.set(key, { session, children })
+      }
+    }
+    return [...map.values()].sort((a, b) => sortSessions(sortNow())(a.session, b.session))
+  })
   const rememberSessionForRoot = (root: string, session: { directory: string; id: string; at?: number }) => {
     const project_id = projectIDByRoot(root)
     if (!project_id) return
@@ -202,7 +286,6 @@ export default function Layout(props: ParentProps) {
   }
   const isBusy = (directory: string) => !!state.busyWorkspaces[workspaceKey(directory)]
   const navLeave = { current: undefined as number | undefined }
-  const [sortNow, setSortNow] = createSignal(Date.now())
   let sortNowInterval: ReturnType<typeof setInterval> | undefined
   const sortNowTimeout = setTimeout(
     () => {
@@ -232,6 +315,43 @@ export default function Layout(props: ParentProps) {
 
   const sidebarHovering = createMemo(() => !layout.sidebar.opened() && state.hoverProject !== undefined)
   const sidebarExpanded = createMemo(() => layout.sidebar.opened() || sidebarHovering())
+
+  createEffect(() => {
+    if (!auth.ready() || !auth.authenticated()) return
+    if (!currentContextProduct()) return
+    const ids = currentContextProjectIDs()
+    const open = ids
+    const same =
+      open.length === projectState().open_project_ids.length &&
+      open.every((item, index) => item === projectState().open_project_ids[index])
+    const last_project_id = ids.length === 0
+      ? null
+      : (ids.includes(projectState().last_project_id ?? "") ? projectState().last_project_id ?? ids[0] : ids[0])
+    if (same && last_project_id === projectState().last_project_id) return
+    void accountProject.patch({
+      last_project_id,
+      open_project_ids: open,
+    })
+  })
+
+  createEffect(
+    on(
+      () => ({
+        product_id: auth.user()?.context_product_id ?? "",
+        session_id: params.id ?? "",
+        current: currentDir(),
+        remembered: latestProductSession()?.session_id ?? "",
+        remembered_dir: latestProductSession()?.directory ?? "",
+        fresh: isFreshSessionSearch(location.search),
+      }),
+      (value) => {
+        if (!value.product_id || value.session_id || value.fresh) return
+        if (!value.remembered || !value.remembered_dir) return
+        navigateWithSidebarReset(`/${base64Encode(value.remembered_dir)}/session/${value.remembered}`)
+      },
+      { defer: true },
+    ),
+  )
   const setHoverProject = (value: string | undefined) => {
     setState("hoverProject", value)
     if (value !== undefined) return
@@ -522,7 +642,6 @@ export default function Layout(props: ParentProps) {
       expanded: true,
     } satisfies LocalProject
   })
-
   createEffect(
     on(
       () => ({ ready: pageReady(), project: currentProject() }),
@@ -660,6 +779,7 @@ export default function Layout(props: ParentProps) {
   })
 
   const currentSessions = createMemo(() => {
+    if (productSidebarEnabled()) return (currentProductSessions() ?? []).map((item) => item.session)
     const project = currentProject()
     if (!project) return [] as Session[]
     const now = Date.now()
@@ -1241,9 +1361,53 @@ export default function Layout(props: ParentProps) {
 
   const showEditProjectDialog = (project: LocalProject) => dialog.show(() => <DialogEditProject project={project} />)
 
+  /** 中文注释：用户侧所有产品切换统一走产品上下文，切换成功后直接恢复该产品最近会话或落到产品入口目录。 */
+  async function switchProduct(target: Pick<ContextProduct, "id" | "name" | "project_id" | "related_project_ids" | "worktree">) {
+    const selected = await auth.selectProductContext(target.id)
+    if (!selected.ok) {
+      showToast({
+        title: "找不到文件夹",
+        description: "请联系管理员检查项目路径",
+      })
+      return
+    }
+    const state = await auth.contextState()
+    const ids = productProjectIDs(target)
+    const last_project_id =
+      ids.length === 0
+        ? null
+        : ids.includes(state?.last_project_id ?? "")
+          ? (state?.last_project_id ?? ids[0])
+          : ids[0]
+    await auth.updateContextState({
+      last_project_id,
+      open_project_ids: ids,
+    })
+    const last = latestRememberedProductSession({
+      product: target,
+      last_session_by_project: state?.last_session_by_project ?? {},
+    })
+    const directory =
+      last?.directory ??
+      productEntryDirectory({
+        product: target,
+        projects: globalSync.data.project,
+        current_project_id: auth.user()?.context_project_id,
+        last_project_id: last_project_id ?? undefined,
+      })
+    if (!directory) {
+      showToast({
+        title: "找不到文件夹",
+        description: "请联系管理员检查产品关联的解决方案路径",
+      })
+      return
+    }
+    navigateWithSidebarReset(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(directory)}/session`)
+  }
+
   async function chooseProject() {
     const payload = await auth.contextProducts()
-    const projects = payload?.products ?? []
+    const projects = [...(payload?.products ?? sidebarProducts())]
     if (projects.length === 0) {
       showToast({
         title: "无可用产品",
@@ -1259,25 +1423,8 @@ export default function Layout(props: ParentProps) {
     })
     if (!projectID) return
     const target = projects.find((item) => item.id === projectID)
-    if (!target?.worktree?.trim()) {
-      showToast({
-        title: "找不到文件夹",
-        description: "请联系管理员检查项目路径",
-      })
-      return
-    }
-    const activated = await accountProject.activate(target.project_id, true)
-    if (!activated.ok) {
-      showToast({
-        title: "找不到文件夹",
-        description: "请联系管理员检查项目路径",
-      })
-      return
-    }
-    const last = activated.state.last_session_by_project[target.project_id]
-    navigateWithSidebarReset(
-      last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(target.worktree)}/session`,
-    )
+    if (!target) return
+    await switchProduct(target)
   }
 
   const deleteWorkspace = async (root: string, directory: string) => {
@@ -1594,16 +1741,26 @@ export default function Layout(props: ParentProps) {
 
   createEffect(
     on(
-      () => ({ ready: pageReady(), dir: params.dir, id: params.id }),
+      () => {
+        const dir = params.dir
+        const id = params.id
+        const directory = dir ? decode64(dir) : undefined
+        const count =
+          directory && id
+            ? (globalSync.child(directory, { bootstrap: false })[0].message[id]?.length ?? 0)
+            : 0
+        return { ready: pageReady(), dir, id, directory, count }
+      },
       (value) => {
         if (!value.ready) return
-        const dir = value.dir
+        const directory = value.directory
         const id = value.id
-        if (!dir || !id) return
-        const directory = decode64(dir)
         if (!directory) return
         const at = Date.now()
-        rememberSessionForRoot(projectRoot(directory), { directory, id, at })
+        if (id && value.count > 0) {
+          rememberSessionForRoot(projectRoot(directory), { directory, id, at })
+        }
+        if (!id) return
         notification.session.markViewed(id)
         const expanded = untrack(() => workspaceExpandedMap()[directory])
         if (expanded === false) {
@@ -1623,6 +1780,22 @@ export default function Layout(props: ParentProps) {
   const loadedSessionDirs = new Set<string>()
 
   createEffect(() => {
+    if (productSidebarEnabled()) {
+      const dirs = currentProductDirectories()
+      for (const directory of dirs) {
+        if (currentDir() && workspaceKey(directory) === workspaceKey(currentDir())) {
+          globalSync.child(directory, { bootstrap: true })
+          continue
+        }
+        if (loadedSessionDirs.has(directory)) continue
+        globalSync.project.loadSessions(directory)
+      }
+      loadedSessionDirs.clear()
+      for (const directory of dirs) {
+        loadedSessionDirs.add(directory)
+      }
+      return
+    }
     const project = currentProject()
     if (!project) {
       loadedSessionDirs.clear()
@@ -1674,13 +1847,16 @@ export default function Layout(props: ParentProps) {
   function workspaceIds(project: LocalProject | undefined) {
     if (!project) return []
     const local = project.worktree
-    const dirs = [local, ...(project.sandboxes ?? [])]
+    const dirs = projectWorkspaceDirectories({
+      project,
+      currentDir: currentProject()?.worktree === project.worktree ? currentDir() : undefined,
+    })
     const active = currentProject()
     const directory = active?.worktree === project.worktree ? currentDir() : undefined
     const extra = directory && directory !== local && !dirs.includes(directory) ? directory : undefined
     const pending = extra ? WorktreeState.get(extra)?.status === "pending" : false
 
-    const existing = workspaceOrderFor(project.worktree)
+    const existing = workspaceOrderFor(project.worktree).filter((item) => !hiddenWorkspaceDirectory(item))
 
     const merged = syncWorkspaceOrder(local, dirs, existing)
     if (pending && extra) return [local, extra, ...merged.filter((directory) => directory !== local)]
@@ -1836,12 +2012,20 @@ export default function Layout(props: ParentProps) {
   }
 
   const SidebarPanel = (panelProps: { project: LocalProject | undefined; mobile?: boolean }) => {
+    const productSummary = createMemo(() =>
+      sidebarProductContext({
+        product: currentContextProduct(),
+        project: panelProps.project,
+        current_directory: currentDir(),
+      }),
+    )
     const projectName = createMemo(() => {
       const project = panelProps.project
       if (!project) return ""
-      return project.name || getFilename(project.worktree)
+      return productSummary()?.name || project.name || getFilename(project.worktree)
     })
     const projectId = createMemo(() => panelProps.project?.id ?? "")
+    const projectPaths = createMemo(() => productSummary()?.paths ?? (panelProps.project ? [panelProps.project.worktree] : []))
     const workspaces = createMemo(() => workspaceIds(panelProps.project))
     const unseenCount = createMemo(() =>
       workspaces().reduce((total, directory) => total + notification.project.unseenCount(directory), 0),
@@ -1872,29 +2056,56 @@ export default function Layout(props: ParentProps) {
               <div class="shrink-0 px-2 py-1">
                 <div class="group/project flex items-start justify-between gap-2 p-2 pr-1">
                   <div class="flex flex-col min-w-0">
-                    <InlineEditor
-                      id={`project:${projectId()}`}
-                      value={projectName}
-                      onSave={(next) => renameProject(p(), next)}
-                      class="text-14-medium text-text-strong truncate"
-                      displayClass="text-14-medium text-text-strong truncate"
-                      stopPropagation
-                    />
+                    <Show
+                      when={productSummary()}
+                      fallback={
+                        <>
+                          <InlineEditor
+                            id={`project:${projectId()}`}
+                            value={projectName}
+                            onSave={(next) => renameProject(p(), next)}
+                            class="text-14-medium text-text-strong truncate"
+                            displayClass="text-14-medium text-text-strong truncate"
+                            stopPropagation
+                          />
 
-                    <Tooltip
-                      placement="bottom"
-                      gutter={2}
-                      value={p().worktree}
-                      class="shrink-0"
-                      contentStyle={{
-                        "max-width": "640px",
-                        transform: "translate3d(52px, 0, 0)",
-                      }}
+                          <Tooltip
+                            placement="bottom"
+                            gutter={2}
+                            value={p().worktree}
+                            class="shrink-0"
+                            contentStyle={{
+                              "max-width": "640px",
+                              transform: "translate3d(52px, 0, 0)",
+                            }}
+                          >
+                            <span class="text-12-regular text-text-base truncate select-text">
+                              {p().worktree.replace(homedir(), "~")}
+                            </span>
+                          </Tooltip>
+                        </>
+                      }
                     >
-                      <span class="text-12-regular text-text-base truncate select-text">
-                        {p().worktree.replace(homedir(), "~")}
-                      </span>
-                    </Tooltip>
+                      <div class="text-14-medium text-text-strong truncate">{projectName()}</div>
+                      <For each={projectPaths()}>
+                        {(item) => (
+                          <Tooltip
+                            placement="bottom"
+                            gutter={2}
+                            value={item}
+                            class="shrink-0"
+                            contentStyle={{
+                              "max-width": "640px",
+                              transform: "translate3d(52px, 0, 0)",
+                            }}
+                          >
+                            <span class="text-12-regular text-text-base truncate select-text">
+                              {item.replace(homedir(), "~")}
+                            </span>
+                          </Tooltip>
+                        )}
+                      </For>
+                    </Show>
                   </div>
 
                   <DropdownMenu modal={!sidebarHovering()}>
@@ -1910,11 +2121,13 @@ export default function Layout(props: ParentProps) {
                       }}
                       aria-label={language.t("common.moreOptions")}
                     />
-                    <DropdownMenu.Portal mount={!panelProps.mobile ? state.nav : undefined}>
-                      <DropdownMenu.Content class="mt-1">
-                        <DropdownMenu.Item onSelect={() => showEditProjectDialog(p())}>
-                          <DropdownMenu.ItemLabel>{language.t("common.edit")}</DropdownMenu.ItemLabel>
-                        </DropdownMenu.Item>
+                      <DropdownMenu.Portal mount={!panelProps.mobile ? state.nav : undefined}>
+                        <DropdownMenu.Content class="mt-1">
+                        <Show when={!productSummary()}>
+                          <DropdownMenu.Item onSelect={() => showEditProjectDialog(p())}>
+                            <DropdownMenu.ItemLabel>{language.t("common.edit")}</DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                        </Show>
                         <DropdownMenu.Item
                           data-action="project-clear-notifications"
                           data-project={base64Encode(p().worktree)}
@@ -2028,6 +2241,57 @@ export default function Layout(props: ParentProps) {
           )}
         </Show>
 
+        <Show when={!panelProps.project && productSummary()}>
+          {(summary) => (
+            <>
+              <div class="shrink-0 px-2 py-1">
+                <div class="flex items-start justify-between gap-2 p-2 pr-1">
+                  <div class="flex flex-col min-w-0">
+                    <div class="text-14-medium text-text-strong truncate">{summary().name}</div>
+                    <For each={summary().paths}>
+                      {(item) => (
+                        <Tooltip
+                          placement="bottom"
+                          gutter={2}
+                          value={item}
+                          class="shrink-0"
+                          contentStyle={{
+                            "max-width": "640px",
+                            transform: "translate3d(52px, 0, 0)",
+                          }}
+                        >
+                          <span class="text-12-regular text-text-base truncate select-text">
+                            {item.replace(homedir(), "~")}
+                          </span>
+                        </Tooltip>
+                      )}
+                    </For>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex-1 min-h-0 flex flex-col">
+                <div class="shrink-0 py-4 px-3">
+                  <TooltipKeybind
+                    title={language.t("command.session.new")}
+                    keybind={command.keybind("session.new")}
+                    placement="top"
+                  >
+                    <Button
+                      size="large"
+                      icon="plus-small"
+                      class="w-full"
+                      onClick={() => navigateWithSidebarReset(`/${base64Encode(currentDir())}/session`)}
+                    >
+                      {language.t("command.session.new")}
+                    </Button>
+                  </TooltipKeybind>
+                </div>
+              </div>
+            </>
+          )}
+        </Show>
+
         <div
           class="shrink-0 px-2 py-3 border-t border-border-weak-base"
           classList={{
@@ -2043,6 +2307,35 @@ export default function Layout(props: ParentProps) {
           </div>
         </div>
       </div>
+    )
+  }
+
+  /** 中文注释：产品视图下的侧栏面板只展示产品名和产品历史会话，避免继续把解决方案信息暴露给用户。 */
+  const SidebarProductSessionsPanel = (panelProps: { mobile?: boolean }) => {
+    const name = createMemo(() => productSidebarName(currentContextProduct()))
+    const directory = createMemo(
+      () =>
+        productEntryDirectory({
+          product: currentContextProduct(),
+          projects: globalSync.data.project,
+          current_project_id: auth.user()?.context_project_id,
+          last_project_id: projectState().last_project_id,
+        }) ?? currentDir(),
+    )
+    return (
+      <SidebarProductPanel
+        mobile={panelProps.mobile}
+        name={name}
+        sessions={currentProductSessions}
+        sessionProps={projectSidebarCtx.sessionProps}
+        onCreateSession={() => {
+          const target = directory()
+          if (!target) return
+          navigateWithSidebarReset(freshSessionHref(base64Encode(target)))
+        }}
+        newSessionLabel={() => language.t("command.session.new")}
+        newSessionKeybind={() => command.keybind("session.new")}
+      />
     )
   }
 
@@ -2079,29 +2372,47 @@ export default function Layout(props: ParentProps) {
           }}
         >
           <div class="@container w-full h-full contain-strict">
-            <SidebarContent
-              opened={() => layout.sidebar.opened()}
-              aimMove={aim.move}
-              projects={() => layout.projects.list()}
-              renderProject={(project) => (
-                <SortableProject ctx={projectSidebarCtx} project={project} sortNow={sortNow} />
-              )}
-              handleDragStart={handleDragStart}
-              handleDragEnd={handleDragEnd}
-              handleDragOver={handleDragOver}
-              openProjectLabel={language.t("command.project.open")}
-              openProjectKeybind={() => command.keybind("project.open")}
-              onOpenProject={chooseProject}
-              renderProjectOverlay={() => (
-                <ProjectDragOverlay projects={() => layout.projects.list()} activeProject={() => store.activeProject} />
-              )}
-              settingsLabel={() => language.t("sidebar.settings")}
-              settingsKeybind={() => command.keybind("settings.open")}
-              onOpenSettings={openSettings}
-              renderPanel={() => <SidebarPanel project={currentProject()} />}
-            />
+            <Show
+              when={productSidebarEnabled()}
+              fallback={
+                <SidebarContent
+                  opened={() => layout.sidebar.opened()}
+                  aimMove={aim.move}
+                  projects={() => layout.projects.list()}
+                  renderProject={(project) => (
+                    <SortableProject ctx={projectSidebarCtx} project={project} sortNow={sortNow} />
+                  )}
+                  handleDragStart={handleDragStart}
+                  handleDragEnd={handleDragEnd}
+                  handleDragOver={handleDragOver}
+                  openProjectLabel={language.t("command.project.open")}
+                  openProjectKeybind={() => command.keybind("project.open")}
+                  onOpenProject={chooseProject}
+                  renderProjectOverlay={() => (
+                    <ProjectDragOverlay projects={() => layout.projects.list()} activeProject={() => store.activeProject} />
+                  )}
+                  settingsLabel={() => language.t("sidebar.settings")}
+                  settingsKeybind={() => command.keybind("settings.open")}
+                  onOpenSettings={openSettings}
+                  renderPanel={() => <SidebarPanel project={currentProject()} />}
+                />
+              }
+            >
+              <SidebarProductContent
+                products={sidebarProducts}
+                current_product_id={() => auth.user()?.context_product_id}
+                onSelectProduct={(product) => void switchProduct(product)}
+                onOpenProductPicker={chooseProject}
+                openProductLabel={() => language.t("command.project.open")}
+                openProductKeybind={() => command.keybind("project.open")}
+                settingsLabel={() => language.t("sidebar.settings")}
+                settingsKeybind={() => command.keybind("settings.open")}
+                onOpenSettings={openSettings}
+                renderPanel={() => <SidebarProductSessionsPanel />}
+              />
+            </Show>
           </div>
-          <Show when={!layout.sidebar.opened() ? hoverProjectData()?.worktree : undefined} keyed>
+          <Show when={!productSidebarEnabled() && !layout.sidebar.opened() ? hoverProjectData()?.worktree : undefined} keyed>
             {(worktree) => (
               <div class="absolute inset-y-0 left-16 z-50 flex" onMouseEnter={aim.reset}>
                 <SidebarPanel project={hoverProjectData()} />
@@ -2141,29 +2452,48 @@ export default function Layout(props: ParentProps) {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <SidebarContent
-              mobile
-              onMobileBlankPress={() => layout.mobileSidebar.hide()}
-              opened={() => layout.sidebar.opened()}
-              aimMove={aim.move}
-              projects={() => layout.projects.list()}
-              renderProject={(project) => (
-                <SortableProject ctx={projectSidebarCtx} project={project} sortNow={sortNow} mobile />
-              )}
-              handleDragStart={handleDragStart}
-              handleDragEnd={handleDragEnd}
-              handleDragOver={handleDragOver}
-              openProjectLabel={language.t("command.project.open")}
-              openProjectKeybind={() => command.keybind("project.open")}
-              onOpenProject={chooseProject}
-              renderProjectOverlay={() => (
-                <ProjectDragOverlay projects={() => layout.projects.list()} activeProject={() => store.activeProject} />
-              )}
-              settingsLabel={() => language.t("sidebar.settings")}
-              settingsKeybind={() => command.keybind("settings.open")}
-              onOpenSettings={openSettings}
-              renderPanel={() => <SidebarPanel project={currentProject()} mobile />}
-            />
+            <Show
+              when={productSidebarEnabled()}
+              fallback={
+                <SidebarContent
+                  mobile
+                  onMobileBlankPress={() => layout.mobileSidebar.hide()}
+                  opened={() => layout.sidebar.opened()}
+                  aimMove={aim.move}
+                  projects={() => layout.projects.list()}
+                  renderProject={(project) => (
+                    <SortableProject ctx={projectSidebarCtx} project={project} sortNow={sortNow} mobile />
+                  )}
+                  handleDragStart={handleDragStart}
+                  handleDragEnd={handleDragEnd}
+                  handleDragOver={handleDragOver}
+                  openProjectLabel={language.t("command.project.open")}
+                  openProjectKeybind={() => command.keybind("project.open")}
+                  onOpenProject={chooseProject}
+                  renderProjectOverlay={() => (
+                    <ProjectDragOverlay projects={() => layout.projects.list()} activeProject={() => store.activeProject} />
+                  )}
+                  settingsLabel={() => language.t("sidebar.settings")}
+                  settingsKeybind={() => command.keybind("settings.open")}
+                  onOpenSettings={openSettings}
+                  renderPanel={() => <SidebarPanel project={currentProject()} mobile />}
+                />
+              }
+            >
+              <SidebarProductContent
+                mobile
+                products={sidebarProducts}
+                current_product_id={() => auth.user()?.context_product_id}
+                onSelectProduct={(product) => void switchProduct(product)}
+                onOpenProductPicker={chooseProject}
+                openProductLabel={() => language.t("command.project.open")}
+                openProductKeybind={() => command.keybind("project.open")}
+                settingsLabel={() => language.t("sidebar.settings")}
+                settingsKeybind={() => command.keybind("settings.open")}
+                onOpenSettings={openSettings}
+                renderPanel={() => <SidebarProductSessionsPanel mobile />}
+              />
+            </Show>
           </nav>
         </div>
 

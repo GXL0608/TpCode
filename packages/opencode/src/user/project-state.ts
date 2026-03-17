@@ -1,9 +1,10 @@
 import path from "path"
 import { ProjectTable } from "@/project/project.sql"
-import { SessionTable } from "@/session/session.sql"
-import { Database, eq, inArray } from "@/storage/db"
+import { MessageTable, SessionTable } from "@/session/session.sql"
+import { Database, eq, inArray, or } from "@/storage/db"
 import { Filesystem } from "@/util/filesystem"
 import { AccountContextService } from "./context"
+import { AccountProductService } from "./product"
 import { TpUserProjectStateTable } from "./user-project-state.sql"
 
 type LastSession = {
@@ -32,7 +33,100 @@ function uniq(input: string[]) {
 }
 
 function norm(input: string) {
-  return Filesystem.windowsPath(path.resolve(input)).toLowerCase()
+  return Filesystem.normalizePath(input).toLowerCase()
+}
+
+/** 中文注释：从 overlay 或 worktree 目录中反推出所属项目，保证隐藏沙盒会话刷新后仍能恢复。 */
+function derivedProjectID(input: string) {
+  const match = input
+    .replace(/\\/g, "/")
+    .match(/(?:^|\/)(?:(?:batch-)?worktree|build-overlay)\/([^/]+)(?:\/|$)/i)
+  return match?.[1]?.toLowerCase()
+}
+
+/** 中文注释：判断会话目录是否仍然属于目标项目，避免把其他项目或失效沙盒误当成当前产品历史会话。 */
+function belongsProject(input: {
+  directory: string
+  project_id: string
+  directories: Map<string, string>
+}) {
+  const direct = input.directories.get(norm(input.directory))
+  const derived = derivedProjectID(input.directory)
+  return direct === input.project_id || derived === input.project_id.toLowerCase()
+}
+
+/** 中文注释：当前产品上下文应把绑定解决方案的项目一并纳入有效项目集合，否则产品下的前后端目录会在状态清洗时被错误裁掉。 */
+async function scopedProjectRows(input: { user_id: string; current_product_id?: string }) {
+  const ids = new Set(await AccountContextService.projectIDs(input.user_id))
+  if (input.current_product_id) {
+    const product = await AccountProductService.get(input.current_product_id, "light")
+    for (const project_id of [product?.project_id, ...(product?.related_project_ids ?? [])].filter(Boolean)) {
+      ids.add(project_id)
+    }
+  }
+  const rows =
+    ids.size === 0
+      ? []
+      : await Database.use((db) => db.select().from(ProjectTable).where(inArray(ProjectTable.id, [...ids])).all())
+  return {
+    ids: [...ids],
+    rows,
+  }
+}
+
+/** 中文注释：为每个项目挑选最近一条真正有消息的会话，供刷新页面和重新登录后兜底恢复历史对话。 */
+async function fallbackSessions(input: {
+  user_id: string
+  project_ids: string[]
+  projectByID: Map<string, typeof ProjectTable.$inferSelect>
+  directories: Map<string, string>
+}) {
+  const project_ids = uniq(input.project_ids.filter((project_id) => input.projectByID.has(project_id)))
+  if (project_ids.length === 0) return new Map<string, typeof SessionTable.$inferSelect>()
+  const sessions = await Database.use((db) =>
+    db
+      .select({
+        id: SessionTable.id,
+        project_id: SessionTable.project_id,
+        context_project_id: SessionTable.context_project_id,
+        user_id: SessionTable.user_id,
+        directory: SessionTable.directory,
+        time_updated: SessionTable.time_updated,
+      })
+      .from(SessionTable)
+      .where(
+        or(
+          inArray(SessionTable.project_id, project_ids),
+          inArray(SessionTable.context_project_id, project_ids),
+        ),
+      )
+      .all(),
+  )
+  const own = sessions.filter((session) => session.user_id === input.user_id)
+  const message_ids = own.map((session) => session.id)
+  const nonempty =
+    message_ids.length === 0
+      ? new Set<string>()
+      : new Set(
+          (
+            await Database.use((db) =>
+              db
+                .select({ session_id: MessageTable.session_id })
+                .from(MessageTable)
+                .where(inArray(MessageTable.session_id, message_ids))
+                .all(),
+            )
+          ).map((row) => row.session_id),
+        )
+  const map = new Map<string, typeof own[number]>()
+  for (const session of own.sort((a, b) => b.time_updated - a.time_updated)) {
+    const project_id = session.context_project_id ?? session.project_id
+    if (!project_id || map.has(project_id)) continue
+    if (!nonempty.has(session.id)) continue
+    if (!belongsProject({ directory: session.directory, project_id, directories: input.directories })) continue
+    map.set(project_id, session)
+  }
+  return map
 }
 
 function empty(input?: { current_project_id?: string; last_project_id?: string }): Info {
@@ -84,25 +178,33 @@ export namespace AccountProjectStateService {
   export type State = Info
   export type StatePatch = Patch
 
-  export async function get(input: { user_id: string; current_project_id?: string }) {
+  export async function get(input: { user_id: string; current_project_id?: string; current_product_id?: string }) {
     const row = await Database.use((db) =>
       db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
     )
     return sanitize({
       user_id: input.user_id,
       current_project_id: input.current_project_id,
+      current_product_id: input.current_product_id,
       state: rowState(row, input),
     })
   }
 
-  export async function update(input: { user_id: string; current_project_id?: string; patch: Patch }) {
+  export async function update(input: {
+    user_id: string
+    current_project_id?: string
+    current_product_id?: string
+    patch: Patch
+  }) {
     const current = await get({
       user_id: input.user_id,
       current_project_id: input.current_project_id,
+      current_product_id: input.current_product_id,
     })
     const next = await sanitize({
       user_id: input.user_id,
       current_project_id: input.current_project_id,
+      current_product_id: input.current_product_id,
       state: merge(current, input.patch),
     })
     await Database.use((db) =>
@@ -136,12 +238,17 @@ export namespace AccountProjectStateService {
     return next
   }
 
-  export async function sanitize(input: { user_id: string; current_project_id?: string; state: Info }) {
-    const allowed = await AccountContextService.projectIDs(input.user_id)
-    const projects =
-      allowed.length === 0
-        ? []
-        : await Database.use((db) => db.select().from(ProjectTable).where(inArray(ProjectTable.id, allowed)).all())
+  export async function sanitize(input: {
+    user_id: string
+    current_project_id?: string
+    current_product_id?: string
+    state: Info
+  }) {
+    const scoped = await scopedProjectRows({
+      user_id: input.user_id,
+      current_product_id: input.current_product_id,
+    })
+    const projects = scoped.rows
     const projectByID = new Map(projects.map((project) => [project.id, project]))
     const directories = new Map(
       projects.flatMap((project) =>
@@ -178,23 +285,64 @@ export namespace AccountProjectStateService {
               .all(),
           )
     const sessionByID = new Map(sessions.map((session) => [session.id, session]))
+    const nonempty =
+      last_session_ids.length === 0
+        ? new Set<string>()
+        : new Set(
+            (
+              await Database.use((db) =>
+                db
+                  .select({ session_id: MessageTable.session_id })
+                  .from(MessageTable)
+                  .where(inArray(MessageTable.session_id, last_session_ids))
+                  .all(),
+              )
+            ).map((row) => row.session_id),
+          )
+    const candidate_project_ids = uniq(
+      [
+        ...Object.keys(input.state.last_session_by_project),
+        ...open_project_ids,
+        last_project_id,
+        input.current_project_id,
+      ].filter((project_id): project_id is string => !!project_id && projectByID.has(project_id)),
+    )
+    const fallback = await fallbackSessions({
+      user_id: input.user_id,
+      project_ids: candidate_project_ids,
+      projectByID,
+      directories,
+    })
 
     const last_session_by_project = Object.fromEntries(
-      Object.entries(input.state.last_session_by_project).flatMap(([project_id, value]) => {
-        if (!value || !projectByID.has(project_id)) return []
-        const session = sessionByID.get(value.session_id)
-        if (!session) return []
-        if (session.user_id !== input.user_id) return []
-        const current = session.context_project_id ?? session.project_id
-        if (session.project_id !== project_id || current !== project_id) return []
-        if (directories.get(norm(session.directory)) !== project_id) return []
+      candidate_project_ids.flatMap((project_id) => {
+        const value = input.state.last_session_by_project[project_id]
+        const session = value ? sessionByID.get(value.session_id) : undefined
+        const current = session?.context_project_id ?? session?.project_id
+        const remembered =
+          session &&
+          current === project_id &&
+          session.user_id === input.user_id &&
+          nonempty.has(session.id) &&
+          belongsProject({ directory: session.directory, project_id, directories })
+            ? {
+                session_id: session.id,
+                directory: session.directory,
+                time_updated: value?.time_updated || session.time_updated,
+              }
+            : undefined
+        if (remembered) {
+          return [[project_id, remembered] as const]
+        }
+        const next = fallback.get(project_id)
+        if (!next) return []
         return [
           [
             project_id,
             {
-              session_id: session.id,
-              directory: session.directory,
-              time_updated: value.time_updated || session.time_updated,
+              session_id: next.id,
+              directory: next.directory,
+              time_updated: next.time_updated,
             } satisfies LastSession,
           ] as const,
         ]

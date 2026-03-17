@@ -23,6 +23,8 @@ function local() {
 export function resolvePaths(input: {
   local: boolean
   sharedRoot?: string
+  runtimeRoot?: string
+  platform?: NodeJS.Platform
   xdg: {
     data: string
     cache: string
@@ -37,6 +39,7 @@ export function resolvePaths(input: {
     const state = path.join(input.xdg.state, app)
     return {
       data,
+      runtime: data,
       cache,
       config,
       state,
@@ -47,8 +50,11 @@ export function resolvePaths(input: {
 
   const root = input.sharedRoot || sharedRoot
   const data = join(root, ".local", "share", app)
+  const runtime = input.runtimeRoot?.trim() ||
+    ((input.platform ?? process.platform) === "win32" ? path.join(input.xdg.cache, `${app}-runtime`) : data)
   return {
     data,
+    runtime,
     cache: join(root, ".cache", app),
     config: join(root, ".config", app),
     state: join(root, ".local", "state", app),
@@ -60,6 +66,8 @@ export function resolvePaths(input: {
 const paths = resolvePaths({
   local: local(),
   sharedRoot: process.env.TPCODE_SHARED_ROOT?.trim() || undefined,
+  runtimeRoot: process.env.TPCODE_RUNTIME_ROOT?.trim() || undefined,
+  platform: process.platform,
   xdg: {
     data: xdgData!,
     cache: xdgCache!,
@@ -75,6 +83,7 @@ export namespace Global {
       return process.env.OPENCODE_TEST_HOME || os.homedir()
     },
     data: paths.data,
+    runtime: paths.runtime,
     bin: paths.bin,
     log: paths.log,
     cache: paths.cache,
@@ -85,6 +94,7 @@ export namespace Global {
 
 await Promise.all([
   fs.mkdir(Global.Path.data, { recursive: true }),
+  fs.mkdir(Global.Path.runtime, { recursive: true }),
   fs.mkdir(Global.Path.config, { recursive: true }),
   fs.mkdir(Global.Path.state, { recursive: true }),
   fs.mkdir(Global.Path.log, { recursive: true }),

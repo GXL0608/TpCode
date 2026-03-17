@@ -79,6 +79,12 @@ type BuildJobDetail = {
   artifacts: BuildArtifact[]
 }
 
+type BuildJobBatchResult = {
+  jobs?: BuildJobItem[]
+  created_count?: number
+  reused_count?: number
+}
+
 /** 中文注释：把未知值安全收窄为对象，便于读取接口返回。 */
 function obj(input: unknown) {
   if (!input || typeof input !== "object") return
@@ -239,7 +245,15 @@ export const SettingsBuildCenter = () => {
       setState("error", await parseAccountError(response))
       return
     }
-    setState("message", `已提交 ${state.selected_plan_ids.length} 条计划，后台开始构建`)
+    const body = obj(await response.json().catch(() => undefined)) as BuildJobBatchResult | undefined
+    const created_count = typeof body?.created_count === "number" ? body.created_count : state.selected_plan_ids.length
+    const reused_count = typeof body?.reused_count === "number" ? body.reused_count : 0
+    setState(
+      "message",
+      reused_count > 0
+        ? `已提交 ${created_count} 条新计划，复用 ${reused_count} 条执行中的任务，后台开始构建`
+        : `已提交 ${created_count} 条计划，后台开始构建`,
+    )
     setState("selected_plan_ids", [])
     await load()
   }
