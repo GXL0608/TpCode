@@ -45,8 +45,6 @@ describe("settings-solution-library-view", () => {
     const build_profile = JSON.parse(draft.build_profile_text)
     const roots = JSON.parse(draft.roots_text)
 
-    expect(draft.product_id).toBe("product-a")
-    expect(draft.project_id).toBe("project-a")
     expect(build_profile.compile_command).toBe("echo build")
     expect(build_profile.workdirs).toEqual(["product-a"])
     expect(roots).toEqual([

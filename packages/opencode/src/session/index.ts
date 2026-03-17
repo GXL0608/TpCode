@@ -84,6 +84,12 @@ export namespace Session {
     if (!a) return true
     if (!row.user_id) return false
     if (row.user_id !== a.user_id) return false
+    if (a.context_product_id) {
+      if (row.context_product_id) return row.context_product_id === a.context_product_id
+      const project_id = row.context_project_id ?? row.project_id
+      if (!a.context_project_id) return project_id === "global"
+      return project_id === a.context_project_id
+    }
     const project_id = row.context_project_id ?? row.project_id
     if (!a.context_project_id) return project_id === "global"
     return project_id === a.context_project_id
@@ -94,6 +100,12 @@ export namespace Session {
     if (!a) return true
     if (!row.user_id) return false
     if (row.user_id !== a.user_id) return false
+    if (a.context_product_id) {
+      if (row.context_product_id) return row.context_product_id === a.context_product_id
+      const project_id = row.context_project_id ?? row.project_id
+      if (!a.context_project_id) return project_id === "global"
+      return project_id === a.context_project_id
+    }
     const project_id = row.context_project_id ?? row.project_id
     if (!a.context_project_id) return project_id === "global"
     return project_id === a.context_project_id
@@ -543,6 +555,7 @@ export namespace Session {
       id: row.id,
       slug: row.slug,
       projectID: row.project_id,
+      contextProductID: row.context_product_id ?? undefined,
       directory: row.directory,
       workspaceID: row.workspace_id ?? undefined,
       workspaceDirectory: row.workspace_directory ?? undefined,
@@ -573,6 +586,7 @@ export namespace Session {
     return {
       id: info.id,
       project_id: info.projectID,
+      context_product_id: info.contextProductID ?? null,
       parent_id: info.parentID,
       slug: info.slug,
       directory: info.directory,
@@ -618,6 +632,7 @@ export namespace Session {
       slug: z.string(),
       projectID: z.string(),
       directory: z.string(),
+      contextProductID: z.string().optional(),
       workspaceID: Identifier.schema("workspace").optional(),
       workspaceDirectory: z.string().optional(),
       workspaceBranch: z.string().optional(),
@@ -829,6 +844,7 @@ export namespace Session {
     const a = actor()
     /** 中文注释：管理员等显式按目录打开项目时，允许回落到当前实例项目作为 session 上下文，避免没有预选产品时普通会话直接 500。 */
     const context_project_id = a?.context_project_id ?? Instance.project.id
+    const context_product_id = a?.context_product_id
     const directory = Filesystem.accessPath(input.directory)
     const visibility = a ? "private" : (input.visibility ?? "public")
     const result: Info = {
@@ -859,6 +875,7 @@ export namespace Session {
         .values({
           ...toRow(result),
           context_project_id,
+          context_product_id,
           user_id: a?.user_id,
           org_id: a?.org_id,
           department_id: a?.department_id,
@@ -1403,7 +1420,9 @@ export namespace Session {
     if (input?.search) {
       conditions.push(like(SessionTable.title, `%${input.search}%`))
     }
-    if (a?.context_project_id) {
+    if (a?.context_product_id) {
+      conditions.push(eq(SessionTable.context_product_id, a.context_product_id))
+    } else if (a?.context_project_id) {
       const scope = or(
         eq(SessionTable.context_project_id, a.context_project_id),
         and(isNull(SessionTable.context_project_id), eq(SessionTable.project_id, a.context_project_id)),
@@ -1462,7 +1481,9 @@ export namespace Session {
     if (!input?.archived) {
       conditions.push(isNull(SessionTable.time_archived))
     }
-    if (a?.context_project_id) {
+    if (a?.context_product_id) {
+      conditions.push(eq(SessionTable.context_product_id, a.context_product_id))
+    } else if (a?.context_project_id) {
       const scope = or(
         eq(SessionTable.context_project_id, a.context_project_id),
         and(isNull(SessionTable.context_project_id), eq(SessionTable.project_id, a.context_project_id)),
@@ -1517,6 +1538,9 @@ export namespace Session {
     const conditions: SQL[] = [eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID)]
     if (a) {
       conditions.push(eq(SessionTable.user_id, a.user_id))
+      if (a.context_product_id) {
+        conditions.push(eq(SessionTable.context_product_id, a.context_product_id))
+      }
     }
     const rows = await Database.use((db) =>
       db

@@ -36,6 +36,18 @@ function selectableProduct<T extends { name: string }>(item: T) {
   return !item.name.trim().startsWith("删-")
 }
 
+/** 中文注释：产品选中态需要兼容关联项目命中，不能只用主项目判断。 */
+function matchesProductProject(input: {
+  item: {
+    project_id?: string
+    related_project_ids?: string[]
+  }
+  project_id?: string
+}) {
+  if (!input.project_id) return false
+  return [input.item.project_id, ...(input.item.related_project_ids ?? [])].filter(Boolean).includes(input.project_id)
+}
+
 function unique(input: string[]) {
   return [...new Set(input)]
 }
@@ -214,12 +226,20 @@ export namespace AccountContextService {
   }
 
   export async function listProducts(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
+    const roles = await userRoles(input.user_id)
     const project_ids = await projectIDs(input.user_id)
     const allowed = new Set(project_ids)
     const state = await Database.use((db) =>
       db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
     )
-    const rows = (await AccountProductService.listByProjectIDs(project_ids))
+    /** 中文注释：用户侧产品列表应优先按“产品可见性”返回；超级管理员直接看全部产品，其它角色取“项目推导 + 显式产品授权”的并集。 */
+    const source = roles.codes.includes("super_admin")
+      ? await AccountProductService.list("light")
+      : [
+          ...(await AccountProductService.listByProjectIDs(project_ids, "light")),
+          ...(await AccountProductService.listByRoleIDs(roles.ids, "light")),
+        ]
+    const rows = [...new Map(source.map((item) => [item.id, item])).values()]
       .map((item) => visibleProduct(item, allowed))
       .filter(selectableProduct)
     return {
@@ -239,8 +259,12 @@ export namespace AccountContextService {
           related_project_ids: item.related_project_ids,
           paths: item.paths,
           solutions: item.solutions,
-          selected: input.context_product_id ? item.id === input.context_product_id : item.project_id === input.context_project_id,
-          last_selected: state?.last_product_id ? item.id === state.last_product_id : item.project_id === state?.last_project_id,
+          selected: input.context_product_id
+            ? item.id === input.context_product_id
+            : matchesProductProject({ item, project_id: input.context_project_id }),
+          last_selected: state?.last_product_id
+            ? item.id === state.last_product_id
+            : matchesProductProject({ item, project_id: state?.last_project_id }),
         })),
     }
   }

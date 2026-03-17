@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { $ } from "bun"
-import { ulid } from "ulid"
 import { Database } from "../../src/storage/db"
 import { TpProductSolutionBindingTable } from "../../src/user/product-solution-binding.sql"
 import { TpProductTable } from "../../src/user/product.sql"
@@ -126,12 +125,10 @@ describe("product solution service", () => {
 
     expect(solution.ok).toBe(true)
     if (!solution.ok) return
-    expect(solution.item.primary_project_id).toBeTruthy()
-
     const listed = await AccountProductService.list()
     const item = listed.find((row) => row.id === product.item.id)
 
-    expect(item?.project_id).toBe(solution.item.primary_project_id)
+    expect(item?.project_id).toBeTruthy()
     expect(item?.worktree).toBe(frontend)
   })
 
@@ -407,71 +404,13 @@ describe("product solution service", () => {
     expect(library[0]?.id).toBe(solution.item.id)
   })
 
-  test("backfills legacy product solution bindings without duplicating existing rows", async () => {
-    await using tmp = await tmpdir()
-    const repo = await createRepo(tmp.path, "legacy-product")
-
-    const product = await AccountProductService.create({
-      name: "历史产品",
-      directory: repo,
-    })
-
-    expect(product.ok).toBe(true)
-    if (!product.ok) return
-
-    const now = Date.now()
-    const solution_id = ulid()
-    await Database.use(async (db) => {
-      await db
-        .insert(TpProductSolutionTable)
-        .values({
-          id: solution_id,
-          product_id: product.item.id,
-          name: "历史方案",
-          code: "legacy-solution",
-          enabled: true,
-          primary_project_id: product.item.project_id,
-          build_profile_json: {
-            workdirs: ["legacy-product"],
-            compile_command: "echo build",
-            artifact_include: ["dist/**"],
-          },
-          time_created: now,
-          time_updated: now,
-        })
-        .run()
-      await db
-        .insert(TpProductSolutionRootTable)
-        .values({
-          id: ulid(),
-          solution_id,
-          root_type: "single_repo",
-          directory: repo,
-          display_name: "历史方案",
-          mount_name: "legacy-product",
-          sort_order: 0,
-          enabled: true,
-          time_created: now,
-          time_updated: now,
-        })
-        .run()
-    })
-
-    const before = await ProductSolutionService.list(product.item.id)
-    expect(before).toHaveLength(1)
-
+  test("backfill bindings becomes a no-op after legacy solution fields are removed", async () => {
     const first = await ProductSolutionService.backfillBindings()
     const second = await ProductSolutionService.backfillBindings()
-    const bindings = await Database.use((db) => db.select().from(TpProductSolutionBindingTable).all())
-    const listed = await ProductSolutionService.list(product.item.id)
 
-    expect(first.created).toBe(1)
-    expect(first.scanned).toBe(1)
+    expect(first.created).toBe(0)
+    expect(first.scanned).toBe(0)
     expect(second.created).toBe(0)
-    expect(bindings).toHaveLength(1)
-    expect(bindings[0]?.product_id).toBe(product.item.id)
-    expect(bindings[0]?.solution_id).toBe(solution_id)
-    expect(listed).toHaveLength(1)
-    expect(listed[0]?.id).toBe(solution_id)
+    expect(second.scanned).toBe(0)
   })
 })

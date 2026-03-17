@@ -1,5 +1,6 @@
-import { directoryKey } from "@/context/project-resolver"
-import { productProjectIDs } from "@/context/account-project"
+import { directoryKey, resolveProjectByDirectory } from "@/context/project-resolver"
+import { productProjectIDs, productSessionDirectoryMatches, productSharesProjects } from "@/context/account-project"
+import type { Session } from "@opencode-ai/sdk/v2/client"
 
 type ProductLike = {
   id: string
@@ -13,17 +14,21 @@ type ProductLike = {
 type ProjectLike = {
   id: string
   worktree: string
+  sandboxes?: string[]
 }
 
 type LastSessionLike = {
   directory: string
   session_id: string
+  time_updated?: number
 }
 
 /** 中文注释：产品侧栏统一按产品关联项目与最近会话目录推导需要展示/预加载的目录集合。 */
 export function productSidebarDirectories(input: {
   product?: ProductLike
+  products?: readonly ProductLike[]
   projects: readonly ProjectLike[]
+  last_session_by_product: Record<string, LastSessionLike | undefined>
   current_directory?: string
   last_session_by_project: Record<string, LastSessionLike | undefined>
 }) {
@@ -34,10 +39,61 @@ export function productSidebarDirectories(input: {
   const remembered = ids
     .map((project_id) => input.last_session_by_project[project_id]?.directory)
     .filter((item): item is string => !!item)
-  const current = input.current_directory ? [input.current_directory] : []
-  return [...current, ...remembered, ...roots].filter(
+  const rememberedDirectory = input.product?.id ? input.last_session_by_product[input.product.id]?.directory : undefined
+  const productRemembered =
+    productSharesProjects({ product: input.product, products: input.products }) && !productSessionDirectoryMatches(input.product?.id, rememberedDirectory)
+      ? undefined
+      : rememberedDirectory
+  const current = productSidebarCurrentDirectory({
+    product: input.product,
+    products: input.products,
+    projects: input.projects,
+    last_session_by_product: input.last_session_by_product,
+    current_directory: input.current_directory,
+    last_session_by_project: input.last_session_by_project,
+  })
+  if (productSharesProjects({ product: input.product, products: input.products }) && !productRemembered) {
+    return current
+  }
+  const preferred = [...current, ...(productRemembered ? [productRemembered] : remembered)].filter(
     (directory, index, list) => list.findIndex((item) => directoryKey(item) === directoryKey(directory)) === index,
   )
+  if (preferred.length > 0) return preferred
+  return roots.filter(
+    (directory, index, list) => list.findIndex((item) => directoryKey(item) === directoryKey(directory)) === index,
+  )
+}
+
+/** 中文注释：产品切换时只允许把当前目录带入当前产品，避免旧产品会话污染新产品侧栏。 */
+export function productSidebarCurrentDirectory(input: {
+  product?: ProductLike
+  products?: readonly ProductLike[]
+  projects: readonly ProjectLike[]
+  last_session_by_product: Record<string, LastSessionLike | undefined>
+  current_directory?: string
+  last_session_by_project: Record<string, LastSessionLike | undefined>
+}) {
+  if (!input.current_directory) return [] as string[]
+  const productRemembered = input.product?.id ? input.last_session_by_product[input.product.id]?.directory : undefined
+  if (productRemembered && directoryKey(productRemembered) === directoryKey(input.current_directory)) {
+    return [input.current_directory]
+  }
+  if (productSharesProjects({ product: input.product, products: input.products })) return [] as string[]
+  const ids = productProjectIDs(input.product)
+  if (ids.length === 0) return [] as string[]
+  const remembered = ids
+    .map((project_id) => input.last_session_by_project[project_id]?.directory)
+    .filter((item): item is string => !!item)
+  if (remembered.some((directory) => directoryKey(directory) === directoryKey(input.current_directory!))) {
+    return [input.current_directory]
+  }
+  const project = resolveProjectByDirectory(
+    input.projects.map((item) => ({ ...item, sandboxes: item.sandboxes ?? [] })),
+    input.current_directory,
+  )
+  if (!project?.id) return [] as string[]
+  if (!ids.includes(project.id)) return [] as string[]
+  return [input.current_directory]
 }
 
 /** 中文注释：产品侧栏显示的产品名称优先使用产品名，缺失时回退到产品编号。 */
@@ -66,6 +122,47 @@ export function productSidebarProducts(input: {
       last_selected: true,
     },
   ]
+}
+
+export type ProductSidebarSessionBase = {
+  id: string
+  directory: string
+  parentID?: string
+  contextProductID?: string
+  time?: Session["time"]
+}
+
+export type ProductSidebarSessionInfo = Session & {
+  contextProductID?: string
+}
+
+/** 中文注释：产品侧栏直接按当前产品上下文筛选会话，避免继续从目录拼接导致只显示一条或串到其它产品。 */
+export function productSidebarSessions<T extends ProductSidebarSessionBase>(input: {
+  sessions: readonly T[]
+  product_id?: string
+  sort: (a: T, b: T) => number
+}) {
+  const children = new Map<string, string[]>()
+  for (const session of input.sessions) {
+    if (!session.parentID) continue
+    const list = children.get(session.parentID) ?? []
+    list.push(session.id)
+    children.set(session.parentID, list)
+  }
+  return input.sessions
+    .filter((session) => {
+      if (session.parentID) return false
+      if (session.time?.archived) return false
+      if (!input.product_id) return true
+      if (session.contextProductID) return session.contextProductID === input.product_id
+      return productSessionDirectoryMatches(input.product_id, session.directory)
+    })
+    .sort(input.sort)
+    .slice(0, 10)
+    .map((session) => ({
+      session,
+      children,
+    }))
 }
 
 /** 中文注释：产品上下文存在时，左侧用户导航必须切到产品视图，不能继续暴露解决方案项目。 */

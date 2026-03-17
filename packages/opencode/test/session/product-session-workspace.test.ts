@@ -341,4 +341,164 @@ describe("product session workspace", () => {
     expect(session.workspaceID).toBeUndefined()
     expect(await Workspace.getByDirectory(anchor)).toBeUndefined()
   }, 20_000)
+
+  test("isolates product sessions by context_product_id even when solutions share the same project roots", async () => {
+    await using tmp = await tmpdir()
+    const backend = await repo(tmp.path, "backend")
+    const frontend = await repo(tmp.path, "frontend")
+
+    const productA = await AccountProductService.create({
+      name: "慢病管理系统-A",
+      directory: backend,
+    })
+    expect(productA.ok).toBe(true)
+    if (!productA.ok) return
+
+    const productB = await AccountProductService.create({
+      name: "慢病管理系统-B",
+      directory: "",
+    })
+    expect(productB.ok).toBe(true)
+    if (!productB.ok) return
+
+    const backendSolution = await ProductSolutionService.create({
+      product_id: productA.item.id,
+      name: "后端",
+      code: "backend-shared",
+      build_profile: {
+        workdirs: ["backend"],
+        compile_command: "echo build",
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: backend,
+          mount_name: "backend",
+        },
+      ],
+    })
+    expect(backendSolution.ok).toBe(true)
+    if (!backendSolution.ok) return
+
+    const frontendSolution = await ProductSolutionService.create({
+      product_id: productA.item.id,
+      name: "前端",
+      code: "frontend-shared",
+      build_profile: {
+        workdirs: ["frontend"],
+        compile_command: "echo build",
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: frontend,
+          mount_name: "frontend",
+        },
+      ],
+    })
+    expect(frontendSolution.ok).toBe(true)
+    if (!frontendSolution.ok) return
+
+    await Database.use((db) =>
+      db.insert(TpProductSolutionBindingTable)
+        .values([
+          {
+            id: crypto.randomUUID(),
+            product_id: productA.item.id,
+            solution_id: backendSolution.item.id,
+            enabled: true,
+            sort_order: 1,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          },
+          {
+            id: crypto.randomUUID(),
+            product_id: productA.item.id,
+            solution_id: frontendSolution.item.id,
+            enabled: true,
+            sort_order: 2,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          },
+          {
+            id: crypto.randomUUID(),
+            product_id: productB.item.id,
+            solution_id: backendSolution.item.id,
+            enabled: true,
+            sort_order: 1,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          },
+          {
+            id: crypto.randomUUID(),
+            product_id: productB.item.id,
+            solution_id: frontendSolution.item.id,
+            enabled: true,
+            sort_order: 2,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          },
+        ])
+        .onConflictDoNothing()
+        .run(),
+    )
+
+    const created = await Instance.provide({
+      directory: backend,
+      fn: async () => {
+        const a = await AccountCurrent.provide(
+          {
+            user_id: "user_product_a",
+            org_id: "org_product",
+            context_project_id: productA.item.project_id,
+            context_product_id: productA.item.id,
+            roles: [],
+            permissions: [],
+          },
+          () => Session.create({ title: "产品A会话" }),
+        )
+        const b = await AccountCurrent.provide(
+          {
+            user_id: "user_product_a",
+            org_id: "org_product",
+            context_project_id: backendSolution.item.primary_project_id,
+            context_product_id: productB.item.id,
+            roles: [],
+            permissions: [],
+          },
+          () => Session.create({ title: "产品B会话" }),
+        )
+        return { a, b }
+      },
+    })
+
+    const rows = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.user_id, "user_product_a")).all())
+    const rowA = rows.find((item) => item.id === created.a.id)
+    const rowB = rows.find((item) => item.id === created.b.id)
+    expect(rowA?.context_product_id).toBe(productA.item.id)
+    expect(rowB?.context_product_id).toBe(productB.item.id)
+
+    const listedA = await Instance.provide({
+      directory: backend,
+      fn: () =>
+        AccountCurrent.provide(
+          {
+            user_id: "user_product_a",
+            org_id: "org_product",
+            context_project_id: backendSolution.item.primary_project_id,
+            context_product_id: productA.item.id,
+            roles: [],
+            permissions: [],
+          },
+          async () => {
+            const list = [] as string[]
+            for await (const item of Session.listGlobal()) {
+              list.push(item.id)
+            }
+            return list
+          },
+        ),
+    })
+    expect(listedA).toEqual([created.a.id])
+  }, 20_000)
 })

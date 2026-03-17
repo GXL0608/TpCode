@@ -6,6 +6,10 @@ describe("session-route", () => {
     expect(freshSessionHref("L2RlbW8")).toBe("/L2RlbW8/session?fresh=1")
   })
 
+  test("共享目录产品切换时保留产品标识，避免路由字符串不变", () => {
+    expect(freshSessionHref("L2RlbW8", "prod_1")).toBe("/L2RlbW8/session?fresh=1&product=prod_1")
+  })
+
   test("识别显式新会话路由查询参数", () => {
     expect(isFreshSessionSearch("?fresh=1")).toBe(true)
     expect(isFreshSessionSearch("?a=1&fresh=1")).toBe(true)

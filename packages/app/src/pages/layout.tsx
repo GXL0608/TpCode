@@ -64,14 +64,16 @@ import { Titlebar } from "@/components/titlebar"
 import { useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
 import { useAccountAuth, type ContextProduct } from "@/context/account-auth"
-import { latestRememberedProductSession, productEntryDirectory, productProjectIDs } from "@/context/account-project"
+import {
+  productEntryDirectory,
+  productProjectIDs,
+} from "@/context/account-project"
 import {
   projectRootByDirectory,
   resolveProjectByDirectory,
   sanitizeProjectWorkspaceOrder,
 } from "@/context/project-resolver"
 import {
-  childMapByParent,
   buildDirectoryLoadPlan,
   displayName,
   errorMessage,
@@ -101,7 +103,13 @@ import {
   SidebarProductContent,
   SidebarProductPanel,
 } from "./layout/sidebar-product-view"
-import { productSidebarDirectories, productSidebarName, productSidebarProducts, useProductSidebar } from "./layout/sidebar-product-view-helpers"
+import {
+  productSidebarName,
+  productSidebarProducts,
+  type ProductSidebarSessionInfo,
+  productSidebarSessions,
+  useProductSidebar,
+} from "./layout/sidebar-product-view-helpers"
 import { freshSessionHref, isFreshSessionSearch } from "@/utils/session-route"
 
 const FeedbackLauncher = lazy(() => import("@/components/feedback-launcher").then((item) => ({ default: item.FeedbackLauncher })))
@@ -159,6 +167,7 @@ export default function Layout(props: ParentProps) {
   /** 中文注释：侧栏会话排序依赖当前时间窗口，必须先初始化时钟信号，避免后面的 memo 在模块首次执行时访问未初始化变量。 */
   const [sortNow, setSortNow] = createSignal(Date.now())
   const [contextProducts, setContextProducts] = createSignal<ContextProduct[]>([])
+  const [productSessionsReady, setProductSessionsReady] = createSignal(false)
   /** 中文注释：用户存在产品上下文时，左侧导航必须切成产品视图，避免把内部解决方案项目暴露出来。 */
   const productSidebarEnabled = createMemo(() => useProductSidebar(auth.user()?.context_product_id))
 
@@ -190,6 +199,8 @@ export default function Layout(props: ParentProps) {
     }),
   )
   const currentContextProduct = createMemo(() => sidebarProducts().find((item) => item.id === auth.user()?.context_product_id))
+  /** 中文注释：默认登录恢复产品时，产品详情列表可能稍后才返回，会话列表过滤必须直接以当前产品上下文为准，避免首屏短暂空白。 */
+  const currentContextProductID = createMemo(() => auth.user()?.context_product_id ?? currentContextProduct()?.id)
   const currentContextProjectIDs = createMemo(() => productProjectIDs(currentContextProduct()))
 
   const projectByRoot = (root: string) => globalSync.data.project.find((project) => project.worktree === root)
@@ -209,43 +220,15 @@ export default function Layout(props: ParentProps) {
     if (!project_id) return
     return projectState().last_session_by_project[project_id]
   }
-  /** 中文注释：按当前产品关联项目汇总最近一次会话，供刷新页面和重新登录后恢复产品历史会话。 */
-  const latestProductSession = createMemo(() =>
-    latestRememberedProductSession({
-      product: currentContextProduct(),
-      last_session_by_project: projectState().last_session_by_project,
+  const [productSessions, setProductSessions] = createSignal<ProductSidebarSessionInfo[]>([])
+  /** 中文注释：产品侧栏会话直接按当前产品上下文从服务端拉取，避免继续从目录拼装导致只显示一条、切换串产品或刷新滞后。 */
+  const currentProductSessions = createMemo(() =>
+    productSidebarSessions({
+      sessions: productSessions(),
+      product_id: currentContextProductID(),
+      sort: sortSessions(sortNow()),
     }),
   )
-  /** 中文注释：产品侧栏统一从产品关联项目、最近会话目录和当前目录汇总会话来源，不再直接把解决方案项目当导航项展示。 */
-  const currentProductDirectories = createMemo(() =>
-    productSidebarDirectories({
-      product: currentContextProduct(),
-      projects: globalSync.data.project,
-      current_directory: currentDir() || undefined,
-      last_session_by_project: projectState().last_session_by_project,
-    }),
-  )
-  /** 中文注释：产品侧栏会话列表按目录聚合最近会话，用户看到的是产品历史，不是解决方案项目列表。 */
-  const currentProductSessions = createMemo(() => {
-    if (!productSidebarEnabled()) return [] as Array<{
-      session: Session
-      children: Map<string, string[]>
-    }>
-    const map = new Map<string, { session: Session; children: Map<string, string[]> }>()
-    for (const directory of currentProductDirectories()) {
-      const [store] = globalSync.child(directory, { bootstrap: false })
-      const sessions = Array.isArray(store.session) ? store.session : []
-      const children = childMapByParent(sessions)
-      for (const session of sessions
-        .filter((item) => workspaceKey(item.directory) === workspaceKey(directory) && !item.parentID && !item.time?.archived)
-        .sort(sortSessions(sortNow()))) {
-        const key = `${session.directory}:${session.id}`
-        if (map.has(key)) continue
-        map.set(key, { session, children })
-      }
-    }
-    return [...map.values()].sort((a, b) => sortSessions(sortNow())(a.session, b.session))
-  })
   const rememberSessionForRoot = (root: string, session: { directory: string; id: string; at?: number }) => {
     const project_id = projectIDByRoot(root)
     if (!project_id) return
@@ -339,15 +322,60 @@ export default function Layout(props: ParentProps) {
       () => ({
         product_id: auth.user()?.context_product_id ?? "",
         session_id: params.id ?? "",
-        current: currentDir(),
-        remembered: latestProductSession()?.session_id ?? "",
-        remembered_dir: latestProductSession()?.directory ?? "",
+        ready: productSessionsReady(),
+        latest_session_id: currentProductSessions()[0]?.session.id ?? "",
+        latest_directory: currentProductSessions()[0]?.session.directory ?? "",
         fresh: isFreshSessionSearch(location.search),
       }),
       (value) => {
         if (!value.product_id || value.session_id || value.fresh) return
-        if (!value.remembered || !value.remembered_dir) return
-        navigateWithSidebarReset(`/${base64Encode(value.remembered_dir)}/session/${value.remembered}`)
+        if (!value.ready) return
+        if (!value.latest_session_id || !value.latest_directory) return
+        navigateWithSidebarReset(`/${base64Encode(value.latest_directory)}/session/${value.latest_session_id}`)
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => ({
+        enabled: productSidebarEnabled(),
+        ready: auth.ready(),
+        user_id: auth.user()?.id ?? "",
+        product_id: currentContextProduct()?.id ?? auth.user()?.context_product_id ?? "",
+        url: globalSDK.url,
+      }),
+      (value) => {
+        if (!value.enabled || !value.user_id) {
+          setProductSessions([])
+          setProductSessionsReady(false)
+          return
+        }
+        if (!value.ready || !value.product_id) {
+          setProductSessionsReady(false)
+          return
+        }
+        setProductSessionsReady(false)
+        let cancelled = false
+        void globalSDK.client.session
+          .list({
+            limit: 10,
+          })
+          .then((result) => {
+            if (cancelled) return
+            const sessions = (result.data ?? []).filter((item): item is ProductSidebarSessionInfo => !!item?.id)
+            setProductSessions(sessions)
+            setProductSessionsReady(true)
+          })
+          .catch(() => {
+            if (cancelled) return
+            setProductSessions([])
+            setProductSessionsReady(true)
+          })
+        onCleanup(() => {
+          cancelled = true
+        })
       },
       { defer: true },
     ),
@@ -666,11 +694,14 @@ export default function Layout(props: ParentProps) {
         list: layout.projects.list(),
         last: projectState().last_project_id,
         projects: globalSync.data.project,
+        product_id: auth.user()?.context_product_id ?? "",
       }),
       (value) => {
         if (!value.ready) return
         if (!value.layoutReady) return
         if (!state.autoselect) return
+        /** 中文注释：用户侧已经进入产品上下文时，不能再沿用旧的“自动打开最近项目”逻辑，否则会把页面抢跳回过期项目会话。 */
+        if (value.product_id) return
         if (value.dir) return
 
         const last = value.last
@@ -934,6 +965,7 @@ export default function Layout(props: ParentProps) {
     const directory = session.directory
     if (!directory) return
 
+    globalSync.child(directory)
     const [store] = globalSync.child(directory, { bootstrap: false })
     const cached = untrack(() => store.message[session.id] !== undefined)
     if (cached) return
@@ -959,6 +991,15 @@ export default function Layout(props: ParentProps) {
 
     pumpPrefetch(directory)
   }
+
+  createEffect(() => {
+    if (!productSidebarEnabled()) return
+    const sessions = currentProductSessions()
+    if (sessions.length === 0) return
+    for (const item of sessions.slice(0, 3)) {
+      prefetchSession(item.session, "high")
+    }
+  })
 
   createEffect(() => {
     const sessions = currentSessions()
@@ -1283,6 +1324,8 @@ export default function Layout(props: ParentProps) {
 
   function navigateToSession(session: Session | undefined) {
     if (!session) return
+    globalSync.child(session.directory)
+    prefetchSession(session, "high")
     navigateWithSidebarReset(`/${base64Encode(session.directory)}/session/${session.id}`)
   }
 
@@ -1371,30 +1414,15 @@ export default function Layout(props: ParentProps) {
       })
       return
     }
-    const state = await auth.contextState()
-    const ids = productProjectIDs(target)
-    const last_project_id =
-      ids.length === 0
-        ? null
-        : ids.includes(state?.last_project_id ?? "")
-          ? (state?.last_project_id ?? ids[0])
-          : ids[0]
-    await auth.updateContextState({
-      last_project_id,
-      open_project_ids: ids,
+    const payload = await auth.contextProducts()
+    const current = payload?.products.find((item) => item.id === target.id) ?? target
+    const state = projectState()
+    const directory = productEntryDirectory({
+      product: current,
+      projects: globalSync.data.project,
+      current_project_id: auth.user()?.context_project_id,
+      last_project_id: state.last_project_id,
     })
-    const last = latestRememberedProductSession({
-      product: target,
-      last_session_by_project: state?.last_session_by_project ?? {},
-    })
-    const directory =
-      last?.directory ??
-      productEntryDirectory({
-        product: target,
-        projects: globalSync.data.project,
-        current_project_id: auth.user()?.context_project_id,
-        last_project_id: last_project_id ?? undefined,
-      })
     if (!directory) {
       showToast({
         title: "找不到文件夹",
@@ -1402,7 +1430,7 @@ export default function Layout(props: ParentProps) {
       })
       return
     }
-    navigateWithSidebarReset(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(directory)}/session`)
+    navigateWithSidebarReset(freshSessionHref(base64Encode(directory), current.id))
   }
 
   async function chooseProject() {
@@ -1781,19 +1809,7 @@ export default function Layout(props: ParentProps) {
 
   createEffect(() => {
     if (productSidebarEnabled()) {
-      const dirs = currentProductDirectories()
-      for (const directory of dirs) {
-        if (currentDir() && workspaceKey(directory) === workspaceKey(currentDir())) {
-          globalSync.child(directory, { bootstrap: true })
-          continue
-        }
-        if (loadedSessionDirs.has(directory)) continue
-        globalSync.project.loadSessions(directory)
-      }
       loadedSessionDirs.clear()
-      for (const directory of dirs) {
-        loadedSessionDirs.add(directory)
-      }
       return
     }
     const project = currentProject()
@@ -2331,7 +2347,7 @@ export default function Layout(props: ParentProps) {
         onCreateSession={() => {
           const target = directory()
           if (!target) return
-          navigateWithSidebarReset(freshSessionHref(base64Encode(target)))
+          navigateWithSidebarReset(freshSessionHref(base64Encode(target), currentContextProduct()?.id))
         }}
         newSessionLabel={() => language.t("command.session.new")}
         newSessionKeybind={() => command.keybind("session.new")}

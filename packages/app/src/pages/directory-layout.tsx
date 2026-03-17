@@ -17,6 +17,7 @@ import { decode64 } from "@/utils/base64"
 import { showToast } from "@opencode-ai/ui/toast"
 import { useLanguage } from "@/context/language"
 import { projectRootByDirectory, resolveProjectByDirectory } from "@/context/project-resolver"
+import { shouldAlignDirectoryProjectContext } from "@/pages/directory-layout-helpers"
 
 /**
  * 为目录级上下文注入会话保存计划后的前端行为。
@@ -166,6 +167,8 @@ export default function Layout(props: ParentProps) {
     if (!directory()) return false
     if (!auth.enabled() || !auth.authenticated()) return true
     if (!globalSync.data.ready) return false
+    /** 中文注释：产品上下文由产品本身负责约束，会话目录允许落在产品 overlay 上，不再要求某个 project_id 先完成对齐。 */
+    if (auth.user()?.context_product_id) return true
     const project = target()
     if (!project?.id) return true
     const current = accountProject.current()?.id ?? auth.user()?.context_project_id
@@ -207,13 +210,21 @@ export default function Layout(props: ParentProps) {
   })
 
   createEffect(() => {
-    if (!auth.enabled() || !auth.authenticated()) return
-    if (!globalSync.data.ready) return
     const project = target()
+    if (
+      !shouldAlignDirectoryProjectContext({
+        authenticated: auth.enabled() && auth.authenticated(),
+        global_ready: globalSync.data.ready,
+        directory: directory(),
+        context_product_id: auth.user()?.context_product_id,
+        target_project_id: project?.id,
+        current_project_id: accountProject.current()?.id ?? auth.user()?.context_project_id,
+        aligning: store.aligning,
+      })
+    ) {
+      return
+    }
     if (!project?.id) return
-    const current = accountProject.current()?.id ?? auth.user()?.context_project_id
-    if (current === project.id) return
-    if (store.aligning === project.id) return
     setStore("aligning", project.id)
     void accountProject
       .activate(project.id, true)

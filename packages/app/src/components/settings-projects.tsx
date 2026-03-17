@@ -42,7 +42,6 @@ type SolutionItem = {
   name: string
   code: string
   enabled: boolean
-  primary_project_id?: string
   build_profile: Record<string, unknown>
   roots: SolutionRootItem[]
   time_created: number
@@ -624,10 +623,6 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
                             <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.code}</div>
                           </div>
                           <div class="rounded-xl bg-surface-panel/45 p-3">
-                            <div class="text-11-medium text-text-weak">默认项目 ID</div>
-                            <div class="mt-2 text-12-regular text-text-strong break-all">{currentSolution()?.primary_project_id || currentProduct()?.project_id || "-"}</div>
-                          </div>
-                          <div class="rounded-xl bg-surface-panel/45 p-3">
                             <div class="text-11-medium text-text-weak">状态</div>
                             <div class="mt-2 text-12-regular text-text-strong">{currentSolution()?.enabled ? "启用" : "停用"}</div>
                           </div>
@@ -713,9 +708,7 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
                       <div class="min-w-0">
                         <div class="text-13-medium text-text-strong break-all">{item.name}</div>
                         <div class="mt-1 text-11-regular text-text-weak break-all">{item.code}</div>
-                        <div class="mt-2 text-11-regular text-text-weak">
-                          roots：{item.roots.length} · 默认项目：{item.primary_project_id || "-"}
-                        </div>
+                        <div class="mt-2 text-11-regular text-text-weak">roots：{item.roots.length}</div>
                       </div>
                       <Button
                         type="button"

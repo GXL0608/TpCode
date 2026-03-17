@@ -5,7 +5,6 @@ import { ProjectTable } from "@/project/project.sql"
 import { TpProjectRoleAccessTable } from "./project-role-access.sql"
 import { TpProductTable } from "./product.sql"
 import { TpProductSolutionBindingTable } from "./product-solution-binding.sql"
-import { TpProductSolutionTable } from "./product-solution.sql"
 import { ProductSolutionService, type ProductSolutionItem } from "./product-solution"
 import { anchorBySolutions, ensureProjectByDirectory, invalidateProductAnchorCache, projectIDsBySolutions } from "./product-anchor"
 import { TpRoleProductAccessTable } from "./role-product-access.sql"
@@ -77,14 +76,13 @@ async function relatedProjectIDs(solutions: ProductSolutionItem[]) {
     ),
   )
   const derived = unique(rows.flatMap((project) => (project?.id ? [project.id] : [])))
-  if (derived.length > 0) return derived
-  return unique(solutions.map((solution) => solution.primary_project_id ?? "").filter(Boolean))
+  return derived
 }
 
 /** 中文注释：轻量模式优先读取解决方案显式主项目，避免登录和产品列表同步探测共享目录。 */
-function relatedProjectIDsLight(input: { row: typeof TpProductTable.$inferSelect; solutions: ProductSolutionItem[] }) {
-  const primary_ids = unique(input.solutions.map((solution) => solution.primary_project_id ?? "").filter(Boolean))
-  if (primary_ids.length > 0) return primary_ids
+async function relatedProjectIDsLight(input: { row: typeof TpProductTable.$inferSelect; solutions: ProductSolutionItem[] }) {
+  const derived = await relatedProjectIDs(input.solutions)
+  if (derived.length > 0) return derived
   return unique([input.row.project_id ?? ""].filter(Boolean))
 }
 
@@ -107,7 +105,7 @@ async function productsByRows(rows: (typeof TpProductTable.$inferSelect)[], mode
     rows
       .flatMap((item) => {
         const current = grouped.get(item.id) ?? []
-        if (mode === "light") return [item.project_id ?? "", ...current.map((solution) => solution.primary_project_id ?? "")]
+        if (mode === "light") return [item.project_id ?? ""]
         return [item.project_id ?? ""]
       })
       .filter(Boolean),
@@ -120,8 +118,18 @@ async function productsByRows(rows: (typeof TpProductTable.$inferSelect)[], mode
   const list = await Promise.all(
     rows.map(async (row) => {
       const current = grouped.get(row.id) ?? []
-      const preferred_project_id = current.map((solution) => solution.primary_project_id ?? "").find(Boolean) ?? row.project_id ?? undefined
-      const fallback = legacy.get(preferred_project_id ?? "") ?? legacy.get(row.project_id ?? "")
+      const related_project_ids = current.length > 0
+        ? mode === "light"
+          ? await relatedProjectIDsLight({ row, solutions: current })
+          : await relatedProjectIDs(current)
+        : unique([row.project_id ?? ""].filter(Boolean))
+      const preferred_project_id = related_project_ids[0] ?? row.project_id ?? undefined
+      const fallback =
+        legacy.get(preferred_project_id ?? "") ??
+        legacy.get(row.project_id ?? "") ??
+        (preferred_project_id
+          ? await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, preferred_project_id)).get())
+          : undefined)
       const anchor = mode === "light"
         ? fallback
           ? {
@@ -137,11 +145,6 @@ async function productsByRows(rows: (typeof TpProductTable.$inferSelect)[], mode
               }
             : undefined
         : await anchorBySolutions(current)
-      const related_project_ids = current.length > 0
-        ? mode === "light"
-          ? relatedProjectIDsLight({ row, solutions: current })
-          : await relatedProjectIDs(current)
-        : unique(fallback?.id ? [fallback.id] : [])
       return {
         id: row.id,
         name: row.name,
@@ -225,14 +228,29 @@ export namespace AccountProductService {
           [
             ...(legacy.get(item.id) ? [legacy.get(item.id)!] : []),
             ...(item.project_id ? [item.project_id] : []),
-            ...(mode === "light"
-              ? unique((item.solutions ?? []).map((solution) => solution.primary_project_id ?? "").filter(Boolean))
-              : await projectIDsBySolutions(item.solutions ?? [])),
+            ...(mode === "light" ? [] : await projectIDsBySolutions(item.solutions ?? [])),
           ],
         ),
       })),
     )
     return derived.filter((item) => [...item.project_ids].some((project_id) => ids.has(project_id))).map((item) => item.item)
+  }
+
+  /** 中文注释：按角色显式绑定的产品读取列表，供用户侧产品可见性从“项目驱动”切回“产品驱动”。 */
+  export async function listByRoleIDs(role_ids: string[], mode: ProductViewMode = "runtime") {
+    const ids = unique(role_ids.filter(Boolean))
+    if (ids.length === 0) return [] as ProductItem[]
+    const links = await Database.use((db) =>
+      db
+        .select({ product_id: TpRoleProductAccessTable.product_id })
+        .from(TpRoleProductAccessTable)
+        .where(inArray(TpRoleProductAccessTable.role_id, ids))
+        .all(),
+    )
+    const product_ids = unique(links.map((item) => item.product_id))
+    if (product_ids.length === 0) return [] as ProductItem[]
+    const rows = await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.id, product_ids)).all())
+    return productsByRows(rows, mode)
   }
 
   /** 中文注释：创建产品时允许目录为空；若显式提供目录，则仅把它作为兼容上下文项目保存。 */
@@ -312,23 +330,7 @@ export namespace AccountProductService {
     const role_links = await Database.use((db) =>
       db.select().from(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.product_id, product_id)).all(),
     )
-    const owned = await Database.use((db) =>
-      db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.product_id, product_id)).all(),
-    )
     await Database.use(async (db) => {
-      for (const solution of owned) {
-        const bindings = await db.select().from(TpProductSolutionBindingTable).where(eq(TpProductSolutionBindingTable.solution_id, solution.id)).all()
-        const next = bindings.find((item) => item.product_id !== product_id)
-        if (!next) continue
-        await db
-          .update(TpProductSolutionTable)
-          .set({
-            product_id: next.product_id,
-            time_updated: Date.now(),
-          })
-          .where(eq(TpProductSolutionTable.id, solution.id))
-          .run()
-      }
       await db.delete(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.product_id, product_id)).run()
       await db.delete(TpProductTable).where(eq(TpProductTable.id, product_id)).run()
     })

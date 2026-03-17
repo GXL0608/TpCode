@@ -64,6 +64,7 @@ export type AccountProjectState = {
   last_project_id?: string
   open_project_ids: string[]
   last_session_by_project: Record<string, AccountProjectStateLastSession>
+  last_session_by_product: Record<string, AccountProjectStateLastSession>
   workspace_mode_by_project: Record<string, boolean>
   workspace_order_by_project: Record<string, string[]>
   workspace_expanded_by_directory: Record<string, boolean>

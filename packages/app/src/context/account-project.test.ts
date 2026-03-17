@@ -3,10 +3,12 @@ import {
   collapseVisibleProjects,
   currentProjectID,
   latestRememberedProductSession,
+  nextProductContextState,
   nextOpenProjectIDs,
   productEntryDirectory,
   productEntryProjectID,
   productProjectIDs,
+  productSessionDirectoryMatches,
   repairProjectID,
   shouldSkipAccountProjectReload,
   visibleProjectIDs,
@@ -106,8 +108,10 @@ describe("account project list", () => {
     expect(
       latestRememberedProductSession({
         product: {
+          id: "product_slow",
           related_project_ids: ["frontend", "backend"],
         },
+        last_session_by_product: {},
         last_session_by_project: {
           frontend: {
             session_id: "ses_frontend",
@@ -125,6 +129,139 @@ describe("account project list", () => {
       session_id: "ses_backend",
       directory: "/backend",
       time_updated: 20,
+    })
+  })
+
+  test("prefers product-specific remembered session over shared project history", () => {
+    expect(
+      latestRememberedProductSession({
+        product: {
+          id: "product_slow_1",
+          related_project_ids: ["frontend", "backend"],
+        },
+        products: [
+          {
+            id: "product_slow",
+            related_project_ids: ["frontend", "backend"],
+          },
+          {
+            id: "product_slow_1",
+            related_project_ids: ["frontend", "backend"],
+          },
+        ],
+        last_session_by_product: {
+          product_slow_1: {
+            session_id: "ses_product",
+            directory: "/tmp/product_slow_1-abcd",
+            time_updated: 30,
+          },
+        },
+        last_session_by_project: {
+          frontend: {
+            session_id: "ses_frontend",
+            directory: "/slow/session",
+            time_updated: 20,
+          },
+          backend: {
+            session_id: "ses_backend",
+            directory: "/slow/backend",
+            time_updated: 10,
+          },
+        },
+      }),
+    ).toEqual({
+      session_id: "ses_product",
+      directory: "/tmp/product_slow_1-abcd",
+      time_updated: 30,
+    })
+  })
+
+  test("does not fall back to project-level history when another product shares the same project set", () => {
+    expect(
+      latestRememberedProductSession({
+        product: {
+          id: "product_slow_1",
+          related_project_ids: ["frontend", "backend"],
+        },
+        products: [
+          {
+            id: "product_slow",
+            related_project_ids: ["frontend", "backend"],
+          },
+          {
+            id: "product_slow_1",
+            related_project_ids: ["frontend", "backend"],
+          },
+        ],
+        last_session_by_product: {},
+        last_session_by_project: {
+          frontend: {
+            session_id: "ses_frontend",
+            directory: "/slow/session",
+            time_updated: 20,
+          },
+        },
+      }),
+    ).toBeUndefined()
+  })
+
+  test("switching products can disable project-level history fallback even when no product-specific session exists", () => {
+    expect(
+      latestRememberedProductSession({
+        product: {
+          id: "product_cshis",
+          related_project_ids: ["api", "client"],
+        },
+        last_session_by_product: {},
+        last_session_by_project: {
+          api: {
+            session_id: "ses_api",
+            directory: "/api/session",
+            time_updated: 20,
+          },
+          client: {
+            session_id: "ses_client",
+            directory: "/client/session",
+            time_updated: 10,
+          },
+        },
+        allow_project_fallback: false,
+      }),
+    ).toBeUndefined()
+  })
+
+  test("switching product reuses local remembered state without extra queries", () => {
+    expect(
+      nextProductContextState({
+        product: {
+          id: "product_backend",
+          related_project_ids: ["frontend", "backend"],
+        },
+        state: {
+          last_project_id: "backend",
+          last_session_by_product: {},
+          last_session_by_project: {
+            frontend: {
+              session_id: "ses_frontend",
+              directory: "/frontend/session",
+              time_updated: 10,
+            },
+            backend: {
+              session_id: "ses_backend",
+              directory: "/backend/session",
+              time_updated: 20,
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      open_project_ids: ["frontend", "backend"],
+      last_project_id: "backend",
+      remembered: {
+        session_id: "ses_backend",
+        directory: "/backend/session",
+        time_updated: 20,
+      },
     })
   })
 
@@ -237,5 +374,41 @@ describe("account project list", () => {
         context_project_id: "b",
       }),
     ).toBe(false)
+  })
+
+  test("matches product overlay directories by product id", () => {
+    expect(productSessionDirectoryMatches("01KKTWF3TKC952B85RT8SRQHY6", "/tmp/01kktwf3tkc952b85rt8srqhy6-abcd")).toBe(true)
+    expect(productSessionDirectoryMatches("01KKTWF3TKC952B85RT8SRQHY6", "C:\\tmp\\01kktwf3tkc952b85rt8srqhy6-abcd")).toBe(true)
+    expect(productSessionDirectoryMatches("01KKTWF3TKC952B85RT8SRQHY6", "/tmp/01kkv6wvyajesjrrewwpmm8cr7-abcd")).toBe(false)
+  })
+
+  test("ignores stale remembered sessions from another product when projects are shared", () => {
+    expect(
+      latestRememberedProductSession({
+        product: {
+          id: "01KKV6WVYAJESJRREWWPMM8CR7",
+          related_project_ids: ["backend", "frontend"],
+        },
+        products: [
+          {
+            id: "01KKTWF3TKC952B85RT8SRQHY6",
+            related_project_ids: ["backend", "frontend"],
+          },
+          {
+            id: "01KKV6WVYAJESJRREWWPMM8CR7",
+            related_project_ids: ["backend", "frontend"],
+          },
+        ],
+        last_session_by_product: {
+          "01KKV6WVYAJESJRREWWPMM8CR7": {
+            session_id: "ses_wrong",
+            directory: "/tmp/01kktwf3tkc952b85rt8srqhy6-abcd",
+            time_updated: 100,
+          },
+        },
+        last_session_by_project: {},
+        allow_project_fallback: false,
+      }),
+    ).toBeUndefined()
   })
 })

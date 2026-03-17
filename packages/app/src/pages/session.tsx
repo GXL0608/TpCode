@@ -1120,17 +1120,6 @@ export default function Page() {
             <Switch>
               <Match when={params.id}>
                 <MessageTimeline
-                  mobileChanges={!isDesktop()}
-                  mobileFallback={reviewContent({
-                    diffStyle: "unified",
-                    classes: {
-                      root: "pb-8",
-                      header: "px-4",
-                      container: "px-4",
-                    },
-                    loadingClass: "px-4 py-4 text-text-weak",
-                    emptyClass: "h-full pb-30 flex flex-col items-center justify-center text-center gap-6",
-                  })}
                   scroll={ui.scroll}
                   onResumeScroll={resumeScroll}
                   setScrollRef={setScrollRef}

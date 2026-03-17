@@ -63,7 +63,6 @@ function signature(solutions: ProductSolutionItem[]) {
     .map((item) => ({
       id: item.id,
       time_updated: item.time_updated,
-      primary_project_id: item.primary_project_id ?? "",
       roots: item.roots.map((root) => ({
         root_type: root.root_type,
         directory: root.directory,
@@ -148,39 +147,31 @@ export async function ensureProjectByDirectory(directory?: string) {
   return task
 }
 
-/** 中文注释：为解决方案推导默认主项目，优先显式配置，其次取 roots 中第一个真实目录。 */
+/** 中文注释：为解决方案推导默认主项目，直接取 roots 中第一个能解析出的真实目录。 */
 export async function solutionProjectID(input: {
-  primary_project_id?: string
   roots: RootLike[]
 }) {
-  const explicit = input.primary_project_id?.trim()
-  if (explicit) return explicit
   for (const root of input.roots) {
     const project = await ensureProjectByDirectory(rootDirectory(root))
     if (project) return project.id
   }
 }
 
-/** 中文注释：为运行时入口优先挑选 roots 对应的真实项目，只有 roots 无法解析时才回退到显式主项目。 */
+/** 中文注释：为运行时入口优先挑选 roots 对应的真实项目，产品和解决方案都不再依赖兼容主项目字段。 */
 async function runtimeProjectID(input: {
-  primary_project_id?: string
   roots: RootLike[]
 }) {
   for (const root of input.roots) {
     const project = await ensureProjectByDirectory(rootDirectory(root))
     if (project) return project.id
   }
-  return input.primary_project_id?.trim() || undefined
 }
 
 /** 中文注释：为单个解决方案推导全部项目锚点，供产品权限与上下文可见性统一复用。 */
 export async function solutionProjectIDs(input: {
-  primary_project_id?: string
   roots: RootLike[]
 }) {
   const ids = new Set<string>()
-  const explicit = input.primary_project_id?.trim()
-  if (explicit) ids.add(explicit)
   for (const root of input.roots) {
     const project = await ensureProjectByDirectory(rootDirectory(root))
     if (project) ids.add(project.id)
@@ -209,7 +200,6 @@ export async function anchorBySolutions(solutions: ProductSolutionItem[]) {
       await Promise.all(
         solutions.map((item) =>
           runtimeProjectID({
-            primary_project_id: item.primary_project_id,
             roots: item.roots,
           }),
         ),
@@ -245,7 +235,6 @@ export async function projectIDsBySolutions(solutions: ProductSolutionItem[]) {
       await Promise.all(
         solutions.map((item) =>
           solutionProjectIDs({
-            primary_project_id: item.primary_project_id,
             roots: item.roots,
           }),
         ),

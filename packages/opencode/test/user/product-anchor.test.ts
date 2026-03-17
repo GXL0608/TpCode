@@ -3,7 +3,7 @@ import fs from "fs/promises"
 import path from "path"
 import { $ } from "bun"
 import { Project } from "../../src/project/project"
-import { anchorBySolutions, ensureProjectByDirectory, invalidateProductAnchorCache } from "../../src/user/product-anchor"
+import { anchorBySolutions, ensureProjectByDirectory, invalidateProductAnchorCache, projectIDsBySolutions } from "../../src/user/product-anchor"
 import { tmpdir } from "../fixture/fixture"
 
 /** 中文注释：创建最小 Git 仓库，供产品锚点缓存测试复用。 */
@@ -72,7 +72,6 @@ describe("product anchor", () => {
         name: "前端方案",
         code: "frontend",
         enabled: true,
-        primary_project_id: staleProject?.id,
         build_profile: {
           workdirs: ["frontend"],
           compile_command: "echo build",
@@ -102,5 +101,86 @@ describe("product anchor", () => {
 
     expect(anchor?.project_id).not.toBe(staleProject?.id)
     expect(anchor?.worktree).toBe(frontend)
+  })
+
+  test("prefers root-derived related project ids over stale primary project ids", async () => {
+    await using tmp = await tmpdir()
+    const stale = await createRepo(tmp.path, "stale-project")
+    const frontend = await createRepo(tmp.path, "frontend-project")
+    const backend = await createRepo(tmp.path, "backend-project")
+    const staleProject = await ensureProjectByDirectory(stale)
+    const frontendProject = await ensureProjectByDirectory(frontend)
+    const backendProject = await ensureProjectByDirectory(backend)
+
+    expect(staleProject?.id).toBeTruthy()
+    expect(frontendProject?.id).toBeTruthy()
+    expect(backendProject?.id).toBeTruthy()
+
+    const ids = await projectIDsBySolutions([
+      {
+        id: "solution_frontend",
+        product_id: "product_a",
+        name: "前端方案",
+        code: "frontend",
+        enabled: true,
+        build_profile: {
+          workdirs: ["frontend"],
+          compile_command: "echo build",
+          package_mode: "zip",
+          artifact_include: ["dist/**"],
+          artifact_exclude: [],
+          output_name_template: "{{solution}}.zip",
+        },
+        roots: [
+          {
+            id: "root_frontend",
+            solution_id: "solution_frontend",
+            root_type: "single_repo",
+            directory: frontend,
+            display_name: "前端",
+            mount_name: "frontend",
+            sort_order: 0,
+            enabled: true,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          },
+        ],
+        time_created: Date.now(),
+        time_updated: Date.now(),
+      },
+      {
+        id: "solution_backend",
+        product_id: "product_b",
+        name: "后端方案",
+        code: "backend",
+        enabled: true,
+        build_profile: {
+          workdirs: ["backend"],
+          compile_command: "echo build",
+          package_mode: "zip",
+          artifact_include: ["dist/**"],
+          artifact_exclude: [],
+          output_name_template: "{{solution}}.zip",
+        },
+        roots: [
+          {
+            id: "root_backend",
+            solution_id: "solution_backend",
+            root_type: "single_repo",
+            directory: backend,
+            display_name: "后端",
+            mount_name: "backend",
+            sort_order: 0,
+            enabled: true,
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          },
+        ],
+        time_created: Date.now(),
+        time_updated: Date.now(),
+      },
+    ])
+
+    expect(ids).toEqual([frontendProject?.id, backendProject?.id])
   })
 })

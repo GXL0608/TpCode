@@ -14,11 +14,11 @@ import { useServer } from "@/context/server"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import {
-  latestRememberedProductSession,
   productEntryDirectory,
   productEntryProjectID,
   productProjectIDs,
 } from "@/context/account-project"
+import { freshSessionHref } from "@/utils/session-route"
 
 export default function Home() {
   const auth = useAccountAuth()
@@ -86,11 +86,7 @@ export default function Home() {
       last_project_id,
       open_project_ids: ids,
     })
-    const last = latestRememberedProductSession({
-      product: target,
-      last_session_by_project: state?.last_session_by_project ?? {},
-    })
-    navigate(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(directory)}/session`)
+    navigate(freshSessionHref(base64Encode(directory), target.id))
   }
 
   /** 中文注释：登录或刷新首页后优先恢复上次进入的产品与会话，避免重新落回 Recent projects。 */
@@ -125,25 +121,17 @@ export default function Home() {
           open_project_ids: ids,
         })
       }
-      const last = latestRememberedProductSession({
-        product: target,
-        last_session_by_project: state?.last_session_by_project ?? {},
-      })
       const directory = productEntryDirectory({
         product: target,
         projects: sync.data.project,
         current_project_id: auth.user()?.context_project_id,
         last_project_id: last_project_id ?? undefined,
       })
-      if (last) {
-        navigate(`/${base64Encode(last.directory)}/session/${last.session_id}`, { replace: true })
-        return
-      }
       if (!directory) {
         setRestoring(false)
         return
       }
-      navigate(`/${base64Encode(directory)}/session`, { replace: true })
+      navigate(freshSessionHref(base64Encode(directory), target.id), { replace: true })
     })()
   })
 

@@ -304,6 +304,7 @@ const AccountProjectState = z
     last_project_id: z.string().optional(),
     open_project_ids: z.array(z.string()),
     last_session_by_project: z.record(z.string(), AccountProjectStateLastSession),
+    last_session_by_product: z.record(z.string(), AccountProjectStateLastSession),
     workspace_mode_by_project: z.record(z.string(), z.boolean()),
     workspace_order_by_project: z.record(z.string(), z.array(z.string())),
     workspace_expanded_by_directory: z.record(z.string(), z.boolean()),
@@ -315,6 +316,7 @@ const AccountProjectStatePatch = z.object({
   last_project_id: z.string().nullable().optional(),
   open_project_ids: z.array(z.string()).optional(),
   last_session_by_project: z.record(z.string(), AccountProjectStateLastSession).optional(),
+  last_session_by_product: z.record(z.string(), AccountProjectStateLastSession).optional(),
   workspace_mode_by_project: z.record(z.string(), z.boolean()).optional(),
   workspace_order_by_project: z.record(z.string(), z.array(z.string())).optional(),
   workspace_expanded_by_directory: z.record(z.string(), z.boolean()).optional(),
@@ -372,20 +374,14 @@ const ProductSolutionBody = z.object({
   name: z.string().min(1),
   code: z.string().min(1),
   enabled: z.boolean().optional(),
-  primary_project_id: z.string().optional(),
   build_profile: BuildProfile,
   roots: z.array(ProductSolutionRootBody).min(1),
-})
-
-const ProductSolutionLibraryBody = ProductSolutionBody.extend({
-  product_id: z.string().min(1),
 })
 
 const ProductSolutionPatchBody = z.object({
   name: z.string().optional(),
   code: z.string().optional(),
   enabled: z.boolean().optional(),
-  primary_project_id: z.string().optional(),
   build_profile: BuildProfile.optional(),
   roots: z.array(ProductSolutionRootBody).optional(),
 })
@@ -1797,17 +1793,15 @@ export const AccountRoutes = lazy(() =>
     .post(
       "/admin/solutions",
       UserRbac.require("role:manage"),
-      validator("json", ProductSolutionLibraryBody),
+      validator("json", ProductSolutionBody),
       async (c) => {
         const actor_user_id = requireLogin(c)
         if (typeof actor_user_id !== "string") return actor_user_id
         const body = c.req.valid("json")
         const result = await ProductSolutionService.create({
-          product_id: body.product_id,
           name: body.name,
           code: body.code,
           enabled: body.enabled,
-          primary_project_id: body.primary_project_id,
           build_profile: body.build_profile,
           roots: body.roots,
         })
@@ -1819,7 +1813,6 @@ export const AccountRoutes = lazy(() =>
           target_id: result.item.id,
           result: "success",
           detail_json: {
-            product_id: body.product_id,
             solution_id: result.item.id,
             code: result.item.code,
             roots: result.item.roots.map((item) => item.directory),
@@ -1845,7 +1838,6 @@ export const AccountRoutes = lazy(() =>
           name: body.name,
           code: body.code,
           enabled: body.enabled,
-          primary_project_id: body.primary_project_id,
           build_profile: body.build_profile,
           roots: body.roots,
         })
@@ -1920,7 +1912,6 @@ export const AccountRoutes = lazy(() =>
           name: body.name,
           code: body.code,
           enabled: body.enabled,
-          primary_project_id: body.primary_project_id,
           build_profile: body.build_profile,
           roots: body.roots,
         })
@@ -1991,7 +1982,6 @@ export const AccountRoutes = lazy(() =>
           name: body.name,
           code: body.code,
           enabled: body.enabled,
-          primary_project_id: body.primary_project_id,
           build_profile: body.build_profile,
           roots: body.roots,
         })

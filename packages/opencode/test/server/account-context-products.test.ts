@@ -759,7 +759,7 @@ describe("account context products", () => {
       products: Array<{ id: string; project_id?: string; worktree?: string; related_project_ids?: string[]; paths?: string[] }>
     }
     const current = listedBody.products.find((item) => item.id === product.item.id)
-    expect(current?.worktree).toBe(backend)
+    expect(current?.id).toBe(product.item.id)
     expect(current?.project_id).toBeUndefined()
     expect(current?.related_project_ids).toEqual([derived.id])
     expect(current?.paths).toEqual([backend])
@@ -1215,5 +1215,92 @@ describe("account context products", () => {
       [frontend_solution.item.primary_project_id, backend_solution.item.primary_project_id].filter(Boolean),
     )
     expect(target?.paths).toEqual([frontend, backend])
+  }, 20_000)
+
+  test.skipIf(!on)("super admin can still see product-only entries even without derived project access", async () => {
+    await using tmp = await tmpdir()
+    const api = await createRepo(tmp.path, "cshis-api")
+    const client = await createRepo(tmp.path, "cshis-client")
+    const login = await req({
+      path: "/account/login",
+      method: "POST",
+      body: {
+        username: "admin",
+        password: process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026",
+      },
+    })
+    expect(login.status).toBe(200)
+    const session = (await login.json()) as {
+      access_token: string
+      refresh_token: string
+      user: { id: string }
+    }
+    user_ids.add(session.user.id)
+    token_hashes.push(
+      session.access_token ? (await import("../../src/user/service")).UserService.tokenHash(session.access_token) : "",
+      session.refresh_token ? (await import("../../src/user/service")).UserService.tokenHash(session.refresh_token) : "",
+    )
+
+    const product = await AccountProductService.create({
+      name: `CSHIS可见性_${Date.now()}`,
+      directory: "",
+    })
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+    product_ids.push(product.item.id)
+
+    const api_solution = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "API",
+      code: `api_${Date.now()}`,
+      build_profile: {
+        workdirs: ["api"],
+        compile_command: "echo build",
+        artifact_include: ["dist/**"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: api,
+          mount_name: "api",
+        },
+      ],
+    })
+    expect(api_solution.ok).toBe(true)
+    if (!api_solution.ok) return
+    solution_ids.push(api_solution.item.id)
+
+    const client_solution = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "客户端",
+      code: `client_${Date.now()}`,
+      build_profile: {
+        workdirs: ["client"],
+        compile_command: "echo build",
+        artifact_include: ["dist/**"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: client,
+          mount_name: "client",
+        },
+      ],
+    })
+    expect(client_solution.ok).toBe(true)
+    if (!client_solution.ok) return
+    solution_ids.push(client_solution.item.id)
+
+    const response = await req({
+      path: "/account/context/products",
+      token: session.access_token,
+    })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      products: Array<{ id: string; name: string; paths?: string[] }>
+    }
+    const target = body.products.find((item) => item.id === product.item.id)
+    expect(target?.name).toBe(product.item.name)
+    expect(target?.paths).toEqual([api, client])
   }, 20_000)
 })

@@ -29,10 +29,10 @@ import { SettingsProvider } from "@/context/settings"
 import { TerminalProvider } from "@/context/terminal"
 import DirectoryLayout from "@/pages/directory-layout"
 import Layout from "@/pages/layout"
+import Session from "@/pages/session"
 import { ErrorPage } from "./pages/error"
 
 const Home = lazy(() => import("@/pages/home"))
-const Session = lazy(() => import("@/pages/session"))
 const AccountProjectSelect = lazy(() => import("@/pages/account-project-select"))
 const AccountLogin = lazy(() => import("@/pages/account-login"))
 const AccountRegister = lazy(() => import("@/pages/account-register"))
@@ -55,11 +55,10 @@ const HomeRoute = () => (
   </Suspense>
 )
 
+/** 中文注释：会话页是产品主链入口，避免再被懒加载边界卡死，改为直接渲染。 */
 const SessionRoute = () => (
   <SessionProviders>
-    <Suspense fallback={<Loading />}>
-      <Session />
-    </Suspense>
+    <Session />
   </SessionProviders>
 )
 

@@ -3,7 +3,8 @@ import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
-import { latestRememberedProductSession, productProjectIDs } from "@/context/account-project"
+import { productProjectIDs } from "@/context/account-project"
+import { freshSessionHref } from "@/utils/session-route"
 
 type Row = {
   id: string
@@ -92,13 +93,7 @@ export default function AccountProjectSelect() {
       last_project_id,
       open_project_ids: ids,
     })
-    const last = latestRememberedProductSession({
-      product: target,
-      last_session_by_project: state?.last_session_by_project ?? {},
-    })
-    const href = last
-      ? `/${base64Encode(last.directory)}/session/${last.session_id}`
-      : `/${base64Encode(target.worktree)}/session`
+    const href = freshSessionHref(base64Encode(target.worktree), target.id)
     setPending(false)
     navigate(href, { replace: true })
   }

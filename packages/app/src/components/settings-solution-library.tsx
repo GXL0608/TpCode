@@ -36,11 +36,9 @@ type SolutionRootItem = {
 
 type SolutionItem = {
   id: string
-  product_id: string
   name: string
   code: string
   enabled: boolean
-  primary_project_id?: string
   build_profile: Record<string, unknown>
   roots: SolutionRootItem[]
   time_created: number
@@ -89,18 +87,15 @@ export const SettingsSolutionLibrary = () => {
     pending: false,
     error: "",
     message: "",
-    products: [] as ProductItem[],
     solutions: [] as SolutionItem[],
     solutionSearch: "",
     selectedSolutionID: "",
     formOpen: false,
     formEdit: false,
     formID: "",
-    formProductID: "",
     formName: "",
     formCode: "",
     formEnabled: true,
-    formProjectID: "",
     formBuildProfileText: pretty({
       workdirs: ["."],
       compile_command: "",
@@ -135,49 +130,35 @@ export const SettingsSolutionLibrary = () => {
     return "当前后端不可用，请检查服务器地址并确认服务已启动"
   }
 
-  /** 中文注释：同时加载产品列表和方案库，保证创建表单与列表详情始终基于最新数据。 */
+  /** 中文注释：统一加载全局方案库，解决方案与产品绑定已经解耦，这里不再依赖产品列表。 */
   const load = async () => {
     if (!canManage()) return
     setState("loading", true)
     setState("error", "")
-    const [productsResponse, solutionsResponse] = await Promise.all([
-      request({ path: "/account/admin/products" }).catch(() => undefined),
-      request({ path: "/account/admin/solutions" }).catch(() => undefined),
-    ])
+    const solutionsResponse = await request({ path: "/account/admin/solutions" }).catch(() => undefined)
     setState("loading", false)
-    if (!productsResponse?.ok) {
-      setState("error", await resolveError(productsResponse))
-      return
-    }
     if (!solutionsResponse?.ok) {
       setState("error", await resolveError(solutionsResponse))
       return
     }
-    const productsBody = await productsResponse.json().catch(() => undefined)
     const solutionsBody = await solutionsResponse.json().catch(() => undefined)
-    const products = list<ProductItem>(productsBody)
     const solutions = sortNamedSolutions(list<SolutionItem>(solutionsBody))
-    setState("products", products)
     setState("solutions", solutions)
     setState("selectedSolutionID", syncSolutionLibrarySelection(solutions, state.selectedSolutionID))
   }
 
-  /** 中文注释：打开新建方案表单，并为兼容字段预置一个内部归属产品。 */
+  /** 中文注释：打开新建方案表单，解决方案库新增时不再强制指定归属产品。 */
   const openCreate = () => {
-    if (state.products.length === 0) {
-      setState("error", "请先在产品管理中创建产品，再新增解决方案")
-      return
-    }
-    const product = state.products[0]!
-    const draft = createSolutionDraft(product)
+    const draft = createSolutionDraft({
+      id: "workspace",
+      name: "workspace",
+    })
     setState("formOpen", true)
     setState("formEdit", false)
     setState("formID", "")
-    setState("formProductID", draft.product_id)
     setState("formName", "")
     setState("formCode", "")
     setState("formEnabled", true)
-    setState("formProjectID", draft.project_id)
     setState("formBuildProfileText", draft.build_profile_text)
     setState("formRootsText", draft.roots_text)
   }
@@ -188,11 +169,9 @@ export const SettingsSolutionLibrary = () => {
     setState("formEdit", true)
     setState("formID", item.id)
     setState("selectedSolutionID", item.id)
-    setState("formProductID", item.product_id)
     setState("formName", item.name)
     setState("formCode", item.code)
     setState("formEnabled", item.enabled)
-    setState("formProjectID", item.primary_project_id || "")
     setState("formBuildProfileText", pretty(item.build_profile))
     setState(
       "formRootsText",
@@ -228,11 +207,9 @@ export const SettingsSolutionLibrary = () => {
       return {
         ok: true as const,
         body: {
-          product_id: state.formProductID.trim(),
           name: state.formName.trim(),
           code: state.formCode.trim(),
           enabled: state.formEnabled,
-          primary_project_id: state.formProjectID.trim() || undefined,
           build_profile,
           roots,
         },
@@ -253,7 +230,7 @@ export const SettingsSolutionLibrary = () => {
       setState("error", parsed.message)
       return
     }
-    if (!parsed.body.product_id || !parsed.body.name || !parsed.body.code) return
+    if (!parsed.body.name || !parsed.body.code) return
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -337,7 +314,7 @@ export const SettingsSolutionLibrary = () => {
               <Button type="button" variant="secondary" onClick={() => void load()} disabled={state.loading}>
                 刷新
               </Button>
-              <Button type="button" onClick={openCreate} disabled={state.pending || state.products.length === 0}>
+              <Button type="button" onClick={openCreate} disabled={state.pending}>
                 新增解决方案
               </Button>
             </div>
@@ -431,8 +408,8 @@ export const SettingsSolutionLibrary = () => {
                       when={currentSolution()}
                       fallback={<div class="rounded-xl border border-dashed border-border-weak-base px-4 py-10 text-center text-12-regular text-text-weak">请选择一个解决方案，或者先新增解决方案。</div>}
                     >
-                      <div class="flex flex-col gap-4">
-                        <div class="grid gap-3 md:grid-cols-2">
+                    <div class="flex flex-col gap-4">
+                      <div class="grid gap-3 md:grid-cols-2">
                           <div class="rounded-xl bg-surface-panel/45 p-3">
                             <div class="text-11-medium text-text-weak">解决方案名称</div>
                             <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.name}</div>
@@ -440,10 +417,6 @@ export const SettingsSolutionLibrary = () => {
                           <div class="rounded-xl bg-surface-panel/45 p-3">
                             <div class="text-11-medium text-text-weak">解决方案编码</div>
                             <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.code}</div>
-                          </div>
-                          <div class="rounded-xl bg-surface-panel/45 p-3">
-                            <div class="text-11-medium text-text-weak">默认项目 ID</div>
-                            <div class="mt-2 text-12-regular text-text-strong break-all">{currentSolution()?.primary_project_id || "-"}</div>
                           </div>
                           <div class="rounded-xl bg-surface-panel/45 p-3">
                             <div class="text-11-medium text-text-weak">状态</div>
@@ -479,12 +452,6 @@ export const SettingsSolutionLibrary = () => {
                         placeholder="解决方案编码"
                         value={state.formCode}
                         onInput={(event) => setState("formCode", event.currentTarget.value)}
-                      />
-                      <input
-                        class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                        placeholder="默认项目 ID（可选）"
-                        value={state.formProjectID}
-                        onInput={(event) => setState("formProjectID", event.currentTarget.value)}
                       />
                       <label class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular flex items-center gap-2 md:col-span-2">
                         <input type="checkbox" checked={state.formEnabled} onChange={(event) => setState("formEnabled", event.currentTarget.checked)} />

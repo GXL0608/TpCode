@@ -99,6 +99,7 @@ const SessionRow = (props: {
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   scheduleHoverPrefetch: () => void
   cancelHoverPrefetch: () => void
+  onActivate: () => void
 }): JSX.Element => (
   <A
     href={`/${props.slug}/session/${props.session.id}`}
@@ -109,6 +110,7 @@ const SessionRow = (props: {
     onMouseLeave={props.cancelHoverPrefetch}
     onFocus={() => props.prefetchSession(props.session, "high")}
     onClick={() => {
+      props.onActivate()
       props.setHoverSession(undefined)
       if (props.sidebarOpened()) return
       props.clearHoverProjectSoon()
@@ -277,6 +279,10 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
       prefetchSession={props.prefetchSession}
       scheduleHoverPrefetch={scheduleHoverPrefetch}
       cancelHoverPrefetch={cancelHoverPrefetch}
+      onActivate={() => {
+        globalSync.child(props.session.directory)
+        props.prefetchSession(props.session, "high")
+      }}
     />
   )
 

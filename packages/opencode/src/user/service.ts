@@ -20,6 +20,7 @@ import { AccountProductService } from "./product"
 import { AccountProjectStateService } from "./project-state"
 import { Project } from "@/project/project"
 import { ServerDegraded } from "@/server/degraded"
+import { Filesystem } from "@/util/filesystem"
 
 type UserRow = typeof TpUserTable.$inferSelect
 const log = Log.create({ service: "user" })
@@ -914,6 +915,20 @@ export namespace UserService {
       })
   }
 
+  /** 中文注释：旧数据里同一真实目录可能对应多个项目 ID，这里按真实目录归一化反推所属产品。 */
+  async function productByProjectDirectory(project_id: string) {
+    const project = await Project.get(project_id).catch(() => undefined)
+    if (!project?.worktree) return
+    const current = Filesystem.normalizePath(Filesystem.accessPath(project.worktree)).toLowerCase()
+    const products = await AccountProductService.list("light")
+    return products.find((item) =>
+      [item.worktree, ...item.paths]
+        .filter(Boolean)
+        .map((directory) => Filesystem.normalizePath(Filesystem.accessPath(directory)).toLowerCase())
+        .includes(current),
+    )
+  }
+
   /** 中文注释：登录时尽量恢复用户上次有效的产品/项目上下文，避免重新登录后回到空上下文再靠前端兜底恢复。 */
   async function restoreContext(user_id: string) {
     const product_id = await AccountContextService.lastProduct(user_id)
@@ -941,7 +956,11 @@ export namespace UserService {
       project_id,
     })
     if (!allowed) return {}
-    const product = (await AccountProductService.listByProjectIDs([project_id], "light")).find((item) => item.project_id === project_id)
+    const product =
+      (await AccountProductService.listByProjectIDs([project_id], "light")).find((item) =>
+        [item.project_id, ...(item.related_project_ids ?? [])].filter(Boolean).includes(project_id),
+      ) ??
+      (await productByProjectDirectory(project_id))
     return {
       context_project_id: project_id,
       context_product_id: product?.id,

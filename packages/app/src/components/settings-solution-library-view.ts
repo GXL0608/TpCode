@@ -40,8 +40,6 @@ export function createSolutionDraft(product: ProductLike) {
   const directory = product.worktree?.trim() || product.project_id?.trim() || product.id
   const mount_name = leaf(directory)
   return {
-    product_id: product.id,
-    project_id: product.project_id ?? "",
     build_profile_text: JSON.stringify(
       {
         workdirs: [mount_name],

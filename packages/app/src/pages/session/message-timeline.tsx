@@ -1,4 +1,4 @@
-import { For, createEffect, createMemo, on, onCleanup, Show, type JSX } from "solid-js"
+import { For, createEffect, createMemo, on, onCleanup, Show } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useNavigate, useParams } from "@solidjs/router"
 import { Button } from "@opencode-ai/ui/button"
@@ -86,8 +86,6 @@ const markBoundaryGesture = (input: {
 }
 
 export function MessageTimeline(props: {
-  mobileChanges: boolean
-  mobileFallback: JSX.Element
   scroll: { overflow: boolean; bottom: boolean }
   onResumeScroll: () => void
   setScrollRef: (el: HTMLDivElement | undefined) => void
@@ -365,10 +363,6 @@ export function MessageTimeline(props: {
   }
 
   return (
-    <Show
-      when={!props.mobileChanges}
-      fallback={<div class="relative h-full overflow-hidden">{props.mobileFallback}</div>}
-    >
       <div class="relative w-full h-full min-w-0">
       <div
         class="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] pointer-events-none transition-all duration-200 ease-out"
@@ -656,6 +650,5 @@ export function MessageTimeline(props: {
           </div>
         </ScrollView>
       </div>
-    </Show>
   )
 }

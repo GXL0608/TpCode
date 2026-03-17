@@ -984,6 +984,9 @@
                     "context_project_id": {
                       "type": "string"
                     },
+                    "context_product_id": {
+                      "type": "string"
+                    },
                     "roles": {
                       "type": "array",
                       "items": {
@@ -1258,11 +1261,12 @@
                   "project_id": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "product_id": {
+                    "type": "string",
+                    "minLength": 1
                   }
-                },
-                "required": [
-                  "project_id"
-                ]
+                }
               }
             }
           }
@@ -2238,8 +2242,7 @@
                   }
                 },
                 "required": [
-                  "name",
-                  "directory"
+                  "name"
                 ]
               }
             }
@@ -19334,6 +19337,9 @@
               "context_project_id": {
                 "type": "string"
               },
+              "context_product_id": {
+                "type": "string"
+              },
               "roles": {
                 "type": "array",
                 "items": {
@@ -20680,6 +20686,13 @@
                     "branch": {
                       "type": "string"
                     },
+                    "source_kind": {
+                      "type": "string",
+                      "enum": [
+                        "git",
+                        "copy"
+                      ]
+                    },
                     "base_ref": {
                       "type": "string"
                     },
@@ -20732,6 +20745,13 @@
                         },
                         "overlay_directory": {
                           "type": "string"
+                        },
+                        "source_kind": {
+                          "type": "string",
+                          "enum": [
+                            "git",
+                            "copy"
+                          ]
                         }
                       },
                       "required": [

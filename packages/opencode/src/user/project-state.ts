@@ -18,6 +18,7 @@ type Info = {
   last_project_id?: string
   open_project_ids: string[]
   last_session_by_project: Record<string, LastSession>
+  last_session_by_product: Record<string, LastSession>
   workspace_mode_by_project: Record<string, boolean>
   workspace_order_by_project: Record<string, string[]>
   workspace_expanded_by_directory: Record<string, boolean>
@@ -135,6 +136,7 @@ function empty(input?: { current_project_id?: string; last_project_id?: string }
     last_project_id: input?.last_project_id,
     open_project_ids: [],
     last_session_by_project: {},
+    last_session_by_product: {},
     workspace_mode_by_project: {},
     workspace_order_by_project: {},
     workspace_expanded_by_directory: {},
@@ -152,6 +154,7 @@ function rowState(
     last_project_id: row.last_project_id ?? undefined,
     open_project_ids: row.open_project_ids ?? [],
     last_session_by_project: row.last_session_by_project ?? {},
+    last_session_by_product: row.last_session_by_product ?? {},
     workspace_mode_by_project: row.workspace_mode_by_project ?? {},
     workspace_order_by_project: row.workspace_order_by_project ?? {},
     workspace_expanded_by_directory: row.workspace_expanded_by_directory ?? {},
@@ -166,6 +169,7 @@ function merge(base: Info, patch?: Patch): Info {
     last_project_id: patch.last_project_id === null ? undefined : (patch.last_project_id ?? base.last_project_id),
     open_project_ids: patch.open_project_ids ?? base.open_project_ids,
     last_session_by_project: patch.last_session_by_project ?? base.last_session_by_project,
+    last_session_by_product: patch.last_session_by_product ?? base.last_session_by_product,
     workspace_mode_by_project: patch.workspace_mode_by_project ?? base.workspace_mode_by_project,
     workspace_order_by_project: patch.workspace_order_by_project ?? base.workspace_order_by_project,
     workspace_expanded_by_directory: patch.workspace_expanded_by_directory ?? base.workspace_expanded_by_directory,
@@ -214,6 +218,7 @@ export namespace AccountProjectStateService {
           last_project_id: next.last_project_id,
           open_project_ids: next.open_project_ids,
           last_session_by_project: next.last_session_by_project,
+          last_session_by_product: next.last_session_by_product,
           workspace_mode_by_project: next.workspace_mode_by_project,
           workspace_order_by_project: next.workspace_order_by_project,
           workspace_expanded_by_directory: next.workspace_expanded_by_directory,
@@ -226,6 +231,7 @@ export namespace AccountProjectStateService {
             last_project_id: next.last_project_id,
             open_project_ids: next.open_project_ids,
             last_session_by_project: next.last_session_by_project,
+            last_session_by_product: next.last_session_by_product,
             workspace_mode_by_project: next.workspace_mode_by_project,
             workspace_order_by_project: next.workspace_order_by_project,
             workspace_expanded_by_directory: next.workspace_expanded_by_directory,
@@ -262,9 +268,12 @@ export namespace AccountProjectStateService {
       : undefined
 
     const last_session_ids = uniq(
-      Object.entries(input.state.last_session_by_project)
-        .filter(([project_id]) => projectByID.has(project_id))
-        .map(([, value]) => value?.session_id)
+      [
+        ...Object.entries(input.state.last_session_by_project)
+          .filter(([project_id]) => projectByID.has(project_id))
+          .map(([, value]) => value?.session_id),
+        ...Object.values(input.state.last_session_by_product).map((value) => value?.session_id),
+      ]
         .filter((session_id): session_id is string => !!session_id),
     )
     const sessions =
@@ -349,6 +358,24 @@ export namespace AccountProjectStateService {
       }),
     )
 
+    /** 中文注释：产品级最近会话只校验会话存在、属于当前用户且包含真实消息，避免共享项目下不同产品继续共用同一条历史。 */
+    const last_session_by_product = Object.fromEntries(
+      Object.entries(input.state.last_session_by_product).flatMap(([product_id, value]) => {
+        const session = value ? sessionByID.get(value.session_id) : undefined
+        if (!session || session.user_id !== input.user_id || !nonempty.has(session.id)) return []
+        return [
+          [
+            product_id,
+            {
+              session_id: session.id,
+              directory: session.directory,
+              time_updated: value?.time_updated || session.time_updated,
+            } satisfies LastSession,
+          ] as const,
+        ]
+      }),
+    )
+
     const workspace_mode_by_project = Object.fromEntries(
       Object.entries(input.state.workspace_mode_by_project).flatMap(([project_id, value]) =>
         projectByID.has(project_id) ? [[project_id, !!value] as const] : [],
@@ -395,6 +422,7 @@ export namespace AccountProjectStateService {
       last_project_id,
       open_project_ids,
       last_session_by_project,
+      last_session_by_product,
       workspace_mode_by_project,
       workspace_order_by_project,
       workspace_expanded_by_directory,
