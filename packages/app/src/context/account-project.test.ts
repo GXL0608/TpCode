@@ -3,6 +3,7 @@ import {
   collapseVisibleProjects,
   currentProjectID,
   latestRememberedProductSession,
+  nextProductNavigation,
   nextProductContextState,
   nextOpenProjectIDs,
   productEntryDirectory,
@@ -262,6 +263,62 @@ describe("account project list", () => {
         directory: "/backend/session",
         time_updated: 20,
       },
+    })
+  })
+
+  test("opening a product restores the remembered session route", () => {
+    expect(
+      nextProductNavigation({
+        product: {
+          id: "product_backend",
+          related_project_ids: ["frontend", "backend"],
+          worktree: "/backend",
+        },
+        projects: [
+          { id: "frontend", worktree: "/frontend" },
+          { id: "backend", worktree: "/backend" },
+        ],
+        state: {
+          last_project_id: "backend",
+          last_session_by_product: {},
+          last_session_by_project: {
+            backend: {
+              session_id: "ses_backend",
+              directory: "/backend/session",
+              time_updated: 20,
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      open_project_ids: ["frontend", "backend"],
+      last_project_id: "backend",
+      href: "/L2JhY2tlbmQvc2Vzc2lvbg/session/ses_backend",
+    })
+  })
+
+  test("opening a product without remembered session lands on the product session root", () => {
+    expect(
+      nextProductNavigation({
+        product: {
+          id: "product_backend",
+          related_project_ids: ["frontend", "backend"],
+          worktree: "/backend",
+        },
+        projects: [
+          { id: "frontend", worktree: "/frontend" },
+          { id: "backend", worktree: "/backend" },
+        ],
+        state: {
+          last_project_id: "backend",
+          last_session_by_product: {},
+          last_session_by_project: {},
+        },
+      }),
+    ).toEqual({
+      open_project_ids: ["frontend", "backend"],
+      last_project_id: "backend",
+      href: "/L2JhY2tlbmQ/session?product=product_backend",
     })
   })
 

@@ -1,10 +1,9 @@
 import { Button } from "@opencode-ai/ui/button"
-import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
-import { productProjectIDs } from "@/context/account-project"
-import { freshSessionHref } from "@/utils/session-route"
+import { nextProductNavigation, useAccountProject } from "@/context/account-project"
+import { useGlobalSync } from "@/context/global-sync"
 
 type Row = {
   id: string
@@ -18,6 +17,8 @@ type Row = {
 
 export default function AccountProjectSelect() {
   const auth = useAccountAuth()
+  const accountProject = useAccountProject()
+  const sync = useGlobalSync()
   const navigate = useNavigate()
   const [loading, setLoading] = createSignal(true)
   const [pending, setPending] = createSignal(false)
@@ -73,29 +74,38 @@ export default function AccountProjectSelect() {
     }
     setPending(true)
     setError("")
-    const result = await auth.selectProductContext(target.id)
+    const result = await accountProject.activateProduct(target.id)
     if (!result.ok) {
       setPending(false)
       setError("找不到文件夹，请联系管理员检查项目路径")
       return
     }
-    if (!target.worktree) {
+    const local = accountProject.ready() ? accountProject.data() : await accountProject.reload()
+    const next = nextProductNavigation({
+      product: target,
+      products: rows(),
+      projects: sync.data.project,
+      state: local,
+      current_project_id: auth.user()?.context_project_id,
+    })
+    if (!next.href) {
       setPending(false)
       setError("当前产品尚未配置可用解决方案，请先在管理端完成解决方案绑定")
       return
     }
-    const state = await auth.contextState()
-    const ids = productProjectIDs(target)
-    const last_project_id = ids.length === 0
-      ? null
-      : (ids.includes(state?.last_project_id ?? "") ? state?.last_project_id ?? ids[0] : ids[0])
-    await auth.updateContextState({
-      last_project_id,
-      open_project_ids: ids,
-    })
-    const href = freshSessionHref(base64Encode(target.worktree), target.id)
+    const current = accountProject.data()
+    const same =
+      next.open_project_ids.length === current.open_project_ids.length &&
+      next.open_project_ids.every((item, index) => item === current.open_project_ids[index]) &&
+      next.last_project_id === current.last_project_id
+    if (!same) {
+      await accountProject.patch({
+        last_project_id: next.last_project_id,
+        open_project_ids: next.open_project_ids,
+      })
+    }
     setPending(false)
-    navigate(href, { replace: true })
+    navigate(next.href, { replace: true })
   }
 
   return (

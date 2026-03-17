@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { freshSessionHref, isFreshSessionSearch } from "./session-route"
+import { freshSessionHref, isFreshSessionSearch, sessionHref } from "./session-route"
 
 describe("session-route", () => {
+  test("为产品入口生成可恢复最近会话的普通路由", () => {
+    expect(sessionHref("L2RlbW8")).toBe("/L2RlbW8/session")
+    expect(sessionHref("L2RlbW8", "prod_1")).toBe("/L2RlbW8/session?product=prod_1")
+  })
+
   test("为显式新会话生成带 fresh 标记的路由", () => {
     expect(freshSessionHref("L2RlbW8")).toBe("/L2RlbW8/session?fresh=1")
   })

@@ -28,6 +28,7 @@ import { BuildOverlay } from "./overlay"
 import { BuildCompileSandbox } from "./compile-sandbox"
 import { AccountCurrent } from "@/user/current"
 import { withTimeout } from "@/util/timeout"
+import { codingTimeout, timeoutText } from "./timeout"
 
 const stages = ["plan", "coding", "compile", "package"] as const
 type BuildStage = (typeof stages)[number]
@@ -208,19 +209,6 @@ function outputName(template: string, input: { solution: string; job: string }) 
   return template
     .replaceAll("{{solution}}", input.solution)
     .replaceAll("{{job}}", input.job)
-}
-
-/** 中文注释：把毫秒超时值格式化成对用户更友好的中文秒数描述，至少显示 1 秒。 */
-function timeoutText(ms: number) {
-  const seconds = Math.max(1, Math.ceil(ms / 1000))
-  return `${seconds} 秒`
-}
-
-/** 中文注释：读取构建改码阶段的超时时间，避免模型或工具异常时构建任务无限卡在 running。 */
-function codingTimeout() {
-  const value = Number(process.env.TPCODE_BUILD_CODING_TIMEOUT_MS ?? "180000")
-  if (!Number.isFinite(value) || value <= 0) return 180000
-  return value
 }
 
 /** 中文注释：读取编译沙盒准备阶段的超时时间，避免共享盘或 worktree 操作把任务长期卡死。 */

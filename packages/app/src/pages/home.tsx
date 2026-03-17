@@ -13,12 +13,8 @@ import { DialogSelectServer } from "@/components/dialog-select-server"
 import { useServer } from "@/context/server"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
-import {
-  productEntryDirectory,
-  productEntryProjectID,
-  productProjectIDs,
-} from "@/context/account-project"
-import { freshSessionHref } from "@/utils/session-route"
+import { nextProductNavigation } from "@/context/account-project"
+import { sessionHref } from "@/utils/session-route"
 
 export default function Home() {
   const auth = useAccountAuth()
@@ -51,7 +47,7 @@ export default function Home() {
     const activated = await accountProject.activate(project.id, true)
     if (!activated.ok) return
     const last = activated.state.last_session_by_project[project.id]
-    navigate(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : `/${base64Encode(project.worktree)}/session`)
+    navigate(last ? `/${base64Encode(last.directory)}/session/${last.session_id}` : sessionHref(base64Encode(project.worktree)))
   }
 
   async function chooseProject() {
@@ -66,27 +62,30 @@ export default function Home() {
     })
     if (!productID) return
     const target = projects.find((item) => item.id === productID)
-    const directory = productEntryDirectory({
-      product: target,
-      projects: sync.data.project,
-      current_project_id: auth.user()?.context_project_id,
-      last_project_id: accountProject.data().last_project_id,
-    })
-    if (!target || !directory) return
-    const selected = await auth.selectProductContext(target.id)
+    if (!target) return
+    const selected = await accountProject.activateProduct(target.id)
     if (!selected.ok) return
-    const state = await auth.contextState()
-    const ids = productProjectIDs(target)
-    const last_project_id = productEntryProjectID({
+    const local = accountProject.ready() ? accountProject.data() : await accountProject.reload()
+    const next = nextProductNavigation({
       product: target,
+      products: projects,
+      projects: sync.data.project,
+      state: local,
       current_project_id: auth.user()?.context_project_id,
-      last_project_id: state?.last_project_id,
-    }) ?? null
-    await auth.updateContextState({
-      last_project_id,
-      open_project_ids: ids,
     })
-    navigate(freshSessionHref(base64Encode(directory), target.id))
+    const current = accountProject.data()
+    const same =
+      next.open_project_ids.length === current.open_project_ids.length &&
+      next.open_project_ids.every((item, index) => item === current.open_project_ids[index]) &&
+      next.last_project_id === current.last_project_id
+    if (!same) {
+      await accountProject.patch({
+        last_project_id: next.last_project_id,
+        open_project_ids: next.open_project_ids,
+      })
+    }
+    if (!next.href) return
+    navigate(next.href)
   }
 
   /** 中文注释：登录或刷新首页后优先恢复上次进入的产品与会话，避免重新落回 Recent projects。 */
@@ -105,33 +104,30 @@ export default function Home() {
         setRestoring(false)
         return
       }
-      const state = await auth.contextState()
-      const ids = productProjectIDs(target)
-      const last_project_id = productEntryProjectID({
+      const local = accountProject.ready() ? accountProject.data() : await accountProject.reload()
+      const next = nextProductNavigation({
         product: target,
-        current_project_id: auth.user()?.context_project_id,
-        last_project_id: state?.last_project_id,
-      }) ?? null
-      if (
-        ids.join("\n") !== (state?.open_project_ids ?? []).join("\n") ||
-        last_project_id !== (state?.last_project_id ?? null)
-      ) {
-        await auth.updateContextState({
-          last_project_id,
-          open_project_ids: ids,
-        })
-      }
-      const directory = productEntryDirectory({
-        product: target,
+        products,
         projects: sync.data.project,
+        state: local,
         current_project_id: auth.user()?.context_project_id,
-        last_project_id: last_project_id ?? undefined,
       })
-      if (!directory) {
+      if (!next.href) {
         setRestoring(false)
         return
       }
-      navigate(freshSessionHref(base64Encode(directory), target.id), { replace: true })
+      const current = accountProject.data()
+      const same =
+        next.open_project_ids.length === current.open_project_ids.length &&
+        next.open_project_ids.every((item, index) => item === current.open_project_ids[index]) &&
+        next.last_project_id === current.last_project_id
+      if (!same) {
+        await accountProject.patch({
+          last_project_id: next.last_project_id,
+          open_project_ids: next.open_project_ids,
+        })
+      }
+      navigate(next.href, { replace: true })
     })()
   })
 

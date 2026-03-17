@@ -1,4 +1,5 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
+import { base64Encode } from "@opencode-ai/util/encode"
 import type { Project } from "@opencode-ai/sdk/v2/client"
 import { createEffect, createMemo, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
@@ -8,6 +9,7 @@ import {
   type AccountProjectStateLastSession,
   useAccountAuth,
 } from "./account-auth"
+import { sessionHref } from "@/utils/session-route"
 import { useGlobalSync } from "./global-sync"
 import { directoryKey, projectDirectories, resolveProjectByDirectory, sanitizeProjectWorkspaceOrder } from "./project-resolver"
 
@@ -190,6 +192,51 @@ export function nextProductContextState(input: {
       last_session_by_product: input.state.last_session_by_product,
       last_session_by_project: input.state.last_session_by_project,
     }),
+  }
+}
+
+/** 中文注释：统一推导“打开产品”后的目标路由，优先恢复最近会话，否则落到产品会话入口页。 */
+export function nextProductNavigation<T extends Pick<Project, "id" | "worktree">>(input: {
+  product?: {
+    id?: string
+    project_id?: string
+    related_project_ids?: string[]
+    worktree?: string
+  }
+  products?: readonly {
+    id: string
+    project_id?: string
+    related_project_ids?: string[]
+  }[]
+  projects: readonly T[]
+  state: Pick<AccountProjectState, "last_project_id" | "last_session_by_project" | "last_session_by_product">
+  current_project_id?: string
+}) {
+  const next = nextProductContextState(input)
+  if (next.remembered) {
+    return {
+      open_project_ids: next.open_project_ids,
+      last_project_id: next.last_project_id,
+      href: `/${base64Encode(next.remembered.directory)}/session/${next.remembered.session_id}`,
+    }
+  }
+  const directory = productEntryDirectory({
+    product: input.product,
+    projects: input.projects,
+    current_project_id: input.current_project_id,
+    last_project_id: next.last_project_id ?? undefined,
+  })
+  if (!directory) {
+    return {
+      open_project_ids: next.open_project_ids,
+      last_project_id: next.last_project_id,
+      href: undefined,
+    }
+  }
+  return {
+    open_project_ids: next.open_project_ids,
+    last_project_id: next.last_project_id,
+    href: sessionHref(base64Encode(directory), input.product?.id),
   }
 }
 
@@ -522,6 +569,17 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       }
     }
 
+    /** 中文注释：切换产品成功后记住后端返回的锚点项目，避免 account/context/state 被 effect 立刻重复拉取。 */
+    const activateProduct = async (product_id: string) => {
+      const result = await auth.selectProductContext(product_id)
+      if (!result.ok) return result
+      const project_id = auth.user()?.context_project_id
+      if (project_id) skipReloadForContext = project_id
+      return {
+        ok: true as const,
+      }
+    }
+
     createEffect(() => {
       if (!auth.ready()) return
       auth.enabled()
@@ -567,6 +625,7 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       close,
       move,
       activate,
+      activateProduct,
       rememberSession,
       setWorkspaceMode,
       setWorkspaceOrder,

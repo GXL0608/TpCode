@@ -65,6 +65,7 @@ import { useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
 import { useAccountAuth, type ContextProduct } from "@/context/account-auth"
 import {
+  nextProductNavigation,
   productEntryDirectory,
   productProjectIDs,
 } from "@/context/account-project"
@@ -1406,7 +1407,7 @@ export default function Layout(props: ParentProps) {
 
   /** 中文注释：用户侧所有产品切换统一走产品上下文，切换成功后直接恢复该产品最近会话或落到产品入口目录。 */
   async function switchProduct(target: Pick<ContextProduct, "id" | "name" | "project_id" | "related_project_ids" | "worktree">) {
-    const selected = await auth.selectProductContext(target.id)
+    const selected = await accountProject.activateProduct(target.id)
     if (!selected.ok) {
       showToast({
         title: "找不到文件夹",
@@ -1416,21 +1417,32 @@ export default function Layout(props: ParentProps) {
     }
     const payload = await auth.contextProducts()
     const current = payload?.products.find((item) => item.id === target.id) ?? target
-    const state = projectState()
-    const directory = productEntryDirectory({
+    const next = nextProductNavigation({
       product: current,
+      products: payload?.products,
       projects: globalSync.data.project,
+      state: projectState(),
       current_project_id: auth.user()?.context_project_id,
-      last_project_id: state.last_project_id,
     })
-    if (!directory) {
+    if (!next.href) {
       showToast({
         title: "找不到文件夹",
         description: "请联系管理员检查产品关联的解决方案路径",
       })
       return
     }
-    navigateWithSidebarReset(freshSessionHref(base64Encode(directory), current.id))
+    const currentState = projectState()
+    const same =
+      next.open_project_ids.length === currentState.open_project_ids.length &&
+      next.open_project_ids.every((item, index) => item === currentState.open_project_ids[index]) &&
+      next.last_project_id === currentState.last_project_id
+    if (!same) {
+      await accountProject.patch({
+        last_project_id: next.last_project_id,
+        open_project_ids: next.open_project_ids,
+      })
+    }
+    navigateWithSidebarReset(next.href)
   }
 
   async function chooseProject() {
