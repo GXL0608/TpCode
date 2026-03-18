@@ -1572,6 +1572,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const applyVhoFeedback = async (input: {
     prompt_text?: string
     feedback_des?: string
+    saved_plan_id: string
     plan_content: string
     project_id: string
     project_worktree: string
@@ -1624,6 +1625,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     const slug = base64Encode(target.worktree)
     layout.handoff.setPrompt(slug, next, next.length)
+    layout.handoff.setVhoPlan(slug, {
+      saved_plan_id: input.saved_plan_id,
+      plan_content: input.plan_content,
+      prompt: next,
+      feedback_des: input.feedback_des,
+    })
     navigate(freshSessionHref(slug, undefined, freshSessionKey()))
     return {
       ok: true,
@@ -2002,6 +2009,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                         applyVhoFeedback({
                           prompt_text: input.prompt_text,
                           feedback_des: input.feedback_des,
+                          saved_plan_id: input.saved_plan_id,
                           plan_content: input.plan_content,
                           project_id: input.project_id,
                           project_worktree: input.project_worktree,

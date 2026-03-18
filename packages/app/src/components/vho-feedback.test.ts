@@ -5,7 +5,9 @@ import {
   canOpenVhoFeedback,
   findAssignedVhoProject,
   mergeVhoFeedbackPrompt,
+  shouldShowVhoPlanPreview,
   shouldShowVhoFeedbackAction,
+  shouldUseVhoFeedbackSavedPlan,
   VHO_FEEDBACK_DIALOG_BODY_CLASS,
   VHO_FEEDBACK_FILTER_ACTIONS_CLASS,
   VHO_FEEDBACK_FOOTER_CLASS,
@@ -47,6 +49,76 @@ describe("buildVhoFeedbackPrompt", () => {
         plan_content: "先排查接口，再优化缓存。",
       }),
     ).toBe("反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。")
+  })
+})
+
+describe("shouldUseVhoFeedbackSavedPlan", () => {
+  test("reuses saved plan when current text still matches the feedback fillback", () => {
+    expect(
+      shouldUseVhoFeedbackSavedPlan({
+        current: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+        prompt: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+        has_saved_plan: true,
+        image_count: 0,
+        voice_count: 0,
+        comment_count: 0,
+      }),
+    ).toBe(true)
+  })
+
+  test("falls back once the user changes text or adds extra context", () => {
+    expect(
+      shouldUseVhoFeedbackSavedPlan({
+        current: "我又手动追加了一段说明",
+        prompt: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+        has_saved_plan: true,
+        image_count: 0,
+        voice_count: 0,
+        comment_count: 0,
+      }),
+    ).toBe(false)
+
+    expect(
+      shouldUseVhoFeedbackSavedPlan({
+        current: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+        prompt: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+        has_saved_plan: true,
+        image_count: 1,
+        voice_count: 0,
+        comment_count: 0,
+      }),
+    ).toBe(false)
+  })
+})
+
+describe("shouldShowVhoPlanPreview", () => {
+  test("shows plan preview only on fresh session routes within ttl", () => {
+    expect(
+      shouldShowVhoPlanPreview({
+        session_id: undefined,
+        plan_content: "## 计划\n- 先定位接口",
+        at: 1_000,
+        now: 30_000,
+      }),
+    ).toBe(true)
+
+    expect(
+      shouldShowVhoPlanPreview({
+        session_id: "session_1",
+        plan_content: "## 计划\n- 先定位接口",
+        at: 1_000,
+        now: 30_000,
+      }),
+    ).toBe(false)
+
+    expect(
+      shouldShowVhoPlanPreview({
+        session_id: undefined,
+        plan_content: "## 计划\n- 先定位接口",
+        at: 1_000,
+        now: 70_000,
+      }),
+    ).toBe(false)
   })
 })
 

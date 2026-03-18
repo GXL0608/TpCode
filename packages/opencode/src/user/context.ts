@@ -8,6 +8,7 @@ import { TpProjectUserAccessTable } from "./project-user-access.sql"
 import { TpUserProjectStateTable } from "./user-project-state.sql"
 import { TpUserTable } from "./user.sql"
 import { AccountProductService } from "./product"
+import { TpRoleProductAccessTable } from "./role-product-access.sql"
 
 /** 中文注释：产品一旦可见，就应该保留完整的解决方案项目集合，不能再把产品内部项目错误裁掉。 */
 function visibleProduct<T extends { project_id?: string; related_project_ids?: string[] }>(item: T, allowed: Set<string>) {
@@ -69,8 +70,11 @@ function activeRole() {
 }
 
 const CONTEXT_CACHE_TTL_MS = 300_000
+const PRODUCT_LIST_CACHE_TTL_MS = 5_000
 const projectCacheByUser = new Map<string, { expires_at: number; project_ids: string[] }>()
 const accessCache = new Map<string, { expires_at: number; allowed: boolean }>()
+const productListCache = new Map<string, { expires_at: number; value: Awaited<ReturnType<typeof AccountContextService.listProducts>> }>()
+const productListPending = new Map<string, Promise<Awaited<ReturnType<typeof AccountContextService.listProducts>>>>()
 
 function accessKey(user_id: string, project_id: string) {
   return `${user_id}:${project_id}`
@@ -118,6 +122,15 @@ function invalidateUser(user_id: string) {
     if (!key.startsWith(prefix)) continue
     accessCache.delete(key)
   }
+  const productPrefix = `${user_id}\0`
+  for (const key of productListCache.keys()) {
+    if (!key.startsWith(productPrefix)) continue
+    productListCache.delete(key)
+  }
+  for (const key of productListPending.keys()) {
+    if (!key.startsWith(productPrefix)) continue
+    productListPending.delete(key)
+  }
 }
 
 function invalidateProject(project_id: string) {
@@ -125,6 +138,13 @@ function invalidateProject(project_id: string) {
     if (!key.endsWith(`:${project_id}`)) continue
     accessCache.delete(key)
   }
+  productListCache.clear()
+  productListPending.clear()
+}
+
+/** 中文注释：按账号和当前上下文生成产品列表缓存键，避免登录后多个组件并发重复组装同一份产品集。 */
+function productListKey(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
+  return `${input.user_id}\0${input.context_project_id ?? ""}\0${input.context_product_id ?? ""}`
 }
 
 async function userRoles(user_id: string) {
@@ -248,51 +268,89 @@ export namespace AccountContextService {
   }
 
   export async function listProducts(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
-    const roles = await userRoles(input.user_id)
-    const project_ids = await projectIDs(input.user_id)
-    const allowed = new Set(project_ids)
-    const state = await Database.use((db) =>
-      db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
-    )
-    /** 中文注释：用户侧产品列表应优先按“产品可见性”返回；超级管理员直接看全部产品，其它角色取“项目推导 + 显式产品授权”的并集。 */
-    const source = roles.codes.includes("super_admin")
-      ? await AccountProductService.list("light")
-      : [
-          ...(await AccountProductService.listByProjectIDs(project_ids, "light")),
-          ...(await AccountProductService.listByRoleIDs(roles.ids, "light")),
-        ]
-    const rows = [...new Map(source.map((item) => [item.id, item])).values()]
-      .map((item) => visibleProduct(item, allowed))
-    const recent_product_ids = visibleRecentProducts({
-      recent_product_ids: state?.recent_product_ids ?? (state?.last_product_id ? [state.last_product_id] : []),
-      products: rows,
+    const key = productListKey(input)
+    const cached = productListCache.get(key)
+    if (cached && cached.expires_at > Date.now()) return cached.value
+    const pending = productListPending.get(key)
+    if (pending) return pending
+    const task = (async () => {
+      const roles = await userRoles(input.user_id)
+      const project_ids = await projectIDs(input.user_id)
+      const allowed = new Set(project_ids)
+      const state = await Database.use((db) =>
+        db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
+      )
+      /** 中文注释：用户侧产品列表应优先按“产品可见性”返回；超级管理员直接看全部产品，其它角色取“项目推导 + 显式产品授权”的并集。 */
+      const source = roles.codes.includes("super_admin")
+        ? await AccountProductService.list("light")
+        : [
+            ...(await AccountProductService.listByProjectIDs(project_ids, "light")),
+            ...(await AccountProductService.listByRoleIDs(roles.ids, "light")),
+          ]
+      const rows = [...new Map(source.map((item) => [item.id, item])).values()]
+        .map((item) => visibleProduct(item, allowed))
+      const recent_product_ids = visibleRecentProducts({
+        recent_product_ids: state?.recent_product_ids ?? (state?.last_product_id ? [state.last_product_id] : []),
+        products: rows,
+      })
+      const value = {
+        current_product_id: input.context_product_id,
+        current_project_id: input.context_project_id,
+        last_product_id: state?.last_product_id ?? undefined,
+        last_project_id: state?.last_project_id ?? undefined,
+        recent_product_ids,
+        /** 中文注释：产品选择页只展示真实产品，避免把前端/后端等锚点项目误渲染成可选产品。 */
+        products: rows
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((item) => ({
+            id: item.id,
+            name: item.name,
+            project_id: item.project_id,
+            worktree: item.worktree,
+            vcs: item.vcs,
+            related_project_ids: item.related_project_ids,
+            paths: item.paths,
+            solutions: item.solutions,
+            selected: input.context_product_id
+              ? item.id === input.context_product_id
+              : matchesProductProject({ item, project_id: input.context_project_id }),
+            last_selected: state?.last_product_id
+              ? item.id === state.last_product_id
+              : matchesProductProject({ item, project_id: state?.last_project_id }),
+          })),
+      }
+      productListCache.set(key, {
+        expires_at: Date.now() + PRODUCT_LIST_CACHE_TTL_MS,
+        value,
+      })
+      return value
+    })().finally(() => {
+      productListPending.delete(key)
     })
-    return {
-      current_product_id: input.context_product_id,
-      current_project_id: input.context_project_id,
-      last_product_id: state?.last_product_id ?? undefined,
-      last_project_id: state?.last_project_id ?? undefined,
-      recent_product_ids,
-      /** 中文注释：产品选择页只展示真实产品，避免把前端/后端等锚点项目误渲染成可选产品。 */
-      products: rows
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((item) => ({
-          id: item.id,
-          name: item.name,
-          project_id: item.project_id,
-          worktree: item.worktree,
-          vcs: item.vcs,
-          related_project_ids: item.related_project_ids,
-          paths: item.paths,
-          solutions: item.solutions,
-          selected: input.context_product_id
-            ? item.id === input.context_product_id
-            : matchesProductProject({ item, project_id: input.context_project_id }),
-          last_selected: state?.last_product_id
-            ? item.id === state.last_product_id
-            : matchesProductProject({ item, project_id: state?.last_project_id }),
-        })),
-    }
+    productListPending.set(key, task)
+    return task
+  }
+
+  /** 中文注释：按单个产品做可见性判断，避免切换产品时为了校验权限再次全量组装整份产品列表。 */
+  export async function getVisibleProduct(input: { user_id: string; product_id: string }) {
+    const roles = await userRoles(input.user_id)
+    const product = await AccountProductService.get(input.product_id, "light")
+    if (!product) return
+    const allowed = new Set(await projectIDs(input.user_id))
+    if (roles.codes.includes("super_admin")) return visibleProduct(product, allowed)
+    const role_link =
+      roles.ids.length === 0
+        ? undefined
+        : await Database.use((db) =>
+            db
+              .select({ product_id: TpRoleProductAccessTable.product_id })
+              .from(TpRoleProductAccessTable)
+              .where(and(inArray(TpRoleProductAccessTable.role_id, roles.ids), eq(TpRoleProductAccessTable.product_id, input.product_id)))
+              .get(),
+          )
+    const product_project_ids = [product.project_id, ...(product.related_project_ids ?? [])].filter(Boolean)
+    if (!role_link && !product_project_ids.some((project_id) => allowed.has(project_id))) return
+    return visibleProduct(product, allowed)
   }
 
   /** 中文注释：同时记住当前用户最近一次选择的产品与项目，兼容新旧上下文切换链路。 */
@@ -324,6 +382,7 @@ export namespace AccountContextService {
         })
         .run()
     })
+    invalidateUser(input.user_id)
   }
 
   /** 中文注释：读取用户最近一次选择的产品，供登录恢复与产品选择页默认值使用。 */

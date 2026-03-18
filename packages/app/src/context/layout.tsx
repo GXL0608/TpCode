@@ -63,8 +63,18 @@ type PromptHandoff = {
   at: number
 }
 
+type VhoPlanHandoff = {
+  directory: string
+  saved_plan_id: string
+  plan_content: string
+  prompt: string
+  feedback_des?: string
+  at: number
+}
+
 type SavedPlanHandoff = {
   id: string
+  prompt?: string
   at: number
 }
 
@@ -244,6 +254,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           tabs: undefined as TabHandoff | undefined,
           workspaces: {} as Record<string, WorkspaceHandoff | undefined>,
           prompts: {} as Record<string, PromptHandoff | undefined>,
+          vho_plans: {} as Record<string, VhoPlanHandoff | undefined>,
           saved_plans: {} as Record<string, SavedPlanHandoff | undefined>,
           build_jobs: {} as Record<string, BuildJobHandoff | undefined>,
         },
@@ -473,6 +484,40 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           setStore(
             "handoff",
             "prompts",
+            produce((draft) => {
+              delete draft[directory]
+            }),
+          )
+        },
+        /** 中文注释：读取反馈回填到新会话页的一次性计划信息，供 Markdown 预览与首次 build 复用 saved_plan。 */
+        vhoPlan(directory: string) {
+          return store.handoff?.vho_plans?.[directory]
+        },
+        /** 中文注释：在“选择并回填”后写入反馈关联的 saved_plan 与计划内容，保证新会话页可直接展示和复用。 */
+        setVhoPlan(
+          directory: string,
+          input: {
+            saved_plan_id: string
+            plan_content: string
+            prompt: string
+            feedback_des?: string
+          },
+        ) {
+          setStore("handoff", "vho_plans", directory, {
+            directory,
+            saved_plan_id: input.saved_plan_id,
+            plan_content: input.plan_content,
+            prompt: input.prompt,
+            feedback_des: input.feedback_des,
+            at: Date.now(),
+          })
+        },
+        /** 中文注释：当反馈回填已被消费或显式放弃时，清理目录级计划交接，避免旧计划污染后续新会话。 */
+        clearVhoPlan(directory: string) {
+          if (!store.handoff?.vho_plans?.[directory]) return
+          setStore(
+            "handoff",
+            "vho_plans",
             produce((draft) => {
               delete draft[directory]
             }),

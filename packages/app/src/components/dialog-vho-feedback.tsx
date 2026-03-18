@@ -25,6 +25,7 @@ type Props = {
   onSelect: (input: {
     prompt_text: string
     feedback_des: string
+    saved_plan_id: string
     plan_content: string
     project_id: string
     project_worktree: string

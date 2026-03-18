@@ -5,6 +5,7 @@ import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { Icon } from "@opencode-ai/ui/icon"
+import { Markdown } from "@opencode-ai/ui/markdown"
 
 const ROOT_CLASS =
   "size-full flex flex-col justify-end items-start gap-4 flex-[1_0_0] self-stretch max-w-200 mx-auto 2xl:max-w-[1000px] px-6 pb-16"
@@ -12,9 +13,10 @@ const ROOT_CLASS =
 interface NewSessionViewProps {
   worktree: string
   onWorktreeChange: (value: string) => void
+  planPreview?: string
 }
 
-export function NewSessionView(_props: NewSessionViewProps) {
+export function NewSessionView(props: NewSessionViewProps) {
   const sync = useSync()
   const globalSync = useGlobalSync()
   const language = useLanguage()
@@ -34,6 +36,16 @@ export function NewSessionView(_props: NewSessionViewProps) {
                   .setLocale(language.locale())
                   .toRelative()}
               </span>
+            </div>
+          </div>
+        )}
+      </Show>
+      <Show when={props.planPreview?.trim()}>
+        {(text) => (
+          <div class="w-full rounded-2xl border border-border-weak-base bg-surface-panel px-4 py-4">
+            <div class="text-12-medium text-text-weak">已回填计划</div>
+            <div class="mt-3 text-13-regular text-text-strong">
+              <Markdown text={text()} />
             </div>
           </div>
         )}

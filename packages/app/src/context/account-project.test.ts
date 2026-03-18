@@ -11,6 +11,7 @@ import {
   productProjectIDs,
   productSessionDirectoryMatches,
   repairProjectID,
+  rememberedSessionChanged,
   shouldSkipAccountProjectReload,
   visibleProjectIDs,
 } from "./account-project"
@@ -426,6 +427,21 @@ describe("account project list", () => {
     ).toBeUndefined()
   })
 
+  test("does not repair open projects in product mode because product context owns the open project set", () => {
+    expect(
+      repairProjectID({
+        ready: true,
+        hydrated: true,
+        authenticated: true,
+        pending: false,
+        projects,
+        open_project_ids: [],
+        current_project_id: "b",
+        context_product_id: "product_b",
+      }),
+    ).toBeUndefined()
+  })
+
   test("repairs the current project only after hydration when it is missing from the open list", () => {
     expect(
       repairProjectID({
@@ -475,6 +491,29 @@ describe("account project list", () => {
       shouldSkipAccountProjectReload({
         skip_for_product: "product_b",
         context_product_id: "product_c",
+      }),
+    ).toBe(false)
+  })
+
+  test("skips remembering a session when the same session and directory are already stored", () => {
+    expect(
+      rememberedSessionChanged({
+        project_id: "backend",
+        product_id: "product_backend",
+        current_project: {
+          session_id: "ses_backend",
+          directory: "/backend/session",
+          time_updated: 10,
+        },
+        current_product: {
+          session_id: "ses_backend",
+          directory: "/backend/session",
+          time_updated: 10,
+        },
+        next: {
+          id: "ses_backend",
+          directory: "/backend/session",
+        },
       }),
     ).toBe(false)
   })

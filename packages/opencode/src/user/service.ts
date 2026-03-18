@@ -920,14 +920,10 @@ export namespace UserService {
   }) {
     if (!input.product) return
     const open_project_ids = [...new Set([...(input.product.related_project_ids ?? []), input.product.project_id ?? ""].filter(Boolean))]
-    await AccountProjectStateService.update({
+    await AccountProjectStateService.syncProductContext({
       user_id: input.user_id,
-      current_project_id: input.context_project_id,
-      current_product_id: input.product.id,
-      patch: {
-        open_project_ids,
-        last_project_id: input.context_project_id ?? open_project_ids[0] ?? null,
-      },
+      open_project_ids,
+      last_project_id: input.context_project_id ?? open_project_ids[0] ?? null,
     })
   }
 
@@ -1573,8 +1569,10 @@ export namespace UserService {
   export async function selectProductContext(input: { user_id: string; product_id: string; ip?: string; user_agent?: string }) {
     const user = await userByID(input.user_id)
     if (!user || user.status !== "active") return { ok: false as const, code: "user_invalid" }
-    const products = await AccountContextService.listProducts({ user_id: input.user_id })
-    const product = products.products.find((item) => item.id === input.product_id)
+    const product = await AccountContextService.getVisibleProduct({
+      user_id: input.user_id,
+      product_id: input.product_id,
+    })
     if (!product) return { ok: false as const, code: "product_forbidden" as const }
     const context_project_id = await productContextProjectID({
       user_id: input.user_id,

@@ -67,6 +67,12 @@ function itemPaths(input: { solutions: ProductSolutionItem[]; fallback?: string 
   return [Filesystem.stablePath(input.fallback)]
 }
 
+/** 中文注释：产品配置变更后需要同步清空账号产品上下文缓存，避免用户侧短时间读到旧产品列表。 */
+async function invalidateAccountContextCache() {
+  const { AccountContextService } = await import("./context")
+  AccountContextService.invalidateProjectAccess()
+}
+
 /** 中文注释：前端产品上下文只需要真实解决方案 roots 对应的项目集合，不能再把兼容主项目锚点混进来。 */
 async function relatedProjectIDs(solutions: ProductSolutionItem[]) {
   const rows = await Promise.all(
@@ -322,6 +328,7 @@ export namespace AccountProductService {
     const item = (await productsByRows(rows))[0]
     if (!item) return { ok: false as const, code: "product_missing" as const }
     invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const, item }
   }
 
@@ -382,6 +389,7 @@ export namespace AccountProductService {
     const item = (await productsByRows(rows))[0]
     if (!item) return { ok: false as const, code: "product_missing" as const }
     invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const, item }
   }
 
@@ -415,6 +423,7 @@ export namespace AccountProductService {
       await syncRoleProjects(link.role_id, links.map((item) => item.product_id))
     }
     invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const }
   }
 

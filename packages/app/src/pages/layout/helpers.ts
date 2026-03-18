@@ -67,6 +67,39 @@ export function productContextStateSynced(input: {
   return (input.last_project_id ?? null) === (input.state_last_project_id ?? null)
 }
 
+/** 中文注释：把产品上下文目标状态规整成稳定键，供前端避免并发发送完全相同的 PATCH 请求。 */
+export function productContextStateKey(input: {
+  open_project_ids: string[]
+  last_project_id: string | null | undefined
+}) {
+  return JSON.stringify({
+    open_project_ids: input.open_project_ids,
+    last_project_id: input.last_project_id ?? null,
+  })
+}
+
+/** 中文注释：只有目标状态尚未同步且当前没有相同 PATCH 在途时，才继续发起产品上下文同步。 */
+export function productContextStateShouldSync(input: {
+  open_project_ids: string[]
+  last_project_id: string | null | undefined
+  state_open_project_ids: string[]
+  state_last_project_id: string | null | undefined
+  pending_key?: string
+}) {
+  if (
+    productContextStateSynced({
+      open_project_ids: input.open_project_ids,
+      last_project_id: input.last_project_id,
+      state_open_project_ids: input.state_open_project_ids,
+      state_last_project_id: input.state_last_project_id,
+    })
+  ) return false
+  return productContextStateKey({
+    open_project_ids: input.open_project_ids,
+    last_project_id: input.last_project_id,
+  }) !== input.pending_key
+}
+
 export const isRootVisibleSession = (session: Session, directory: string) =>
   workspaceKey(session.directory) === workspaceKey(directory) && !session.parentID && !session.time?.archived
 

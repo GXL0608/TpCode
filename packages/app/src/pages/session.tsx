@@ -36,6 +36,7 @@ import { SessionComposerRegion, createSessionComposerState } from "@/pages/sessi
 import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
 import { shouldConsumePromptHandoff } from "@/context/layout"
+import { shouldConsumeVhoPlanHandoff } from "@/components/vho-feedback"
 import { freshSessionContextHref, freshSessionKey, isFreshSessionSearch } from "@/utils/session-route"
 
 export default function Page() {
@@ -257,6 +258,24 @@ export default function Page() {
   const hasReview = createMemo(() => reviewCount() > 0)
   const revertMessageID = createMemo(() => info()?.revert?.messageID)
   const messages = createMemo(() => (params.id ? (sync.data.message[params.id] ?? []) : []))
+  const vhoPlanPreview = createMemo(() => {
+    const directory = params.dir
+    if (!directory) return
+    const handoff = layout.handoff.vhoPlan(directory)
+    if (
+      !shouldConsumeVhoPlanHandoff({
+        handoff,
+        session_id: params.id,
+        now: Date.now(),
+      })
+    ) {
+      if (handoff && Date.now() - handoff.at > 60_000) {
+        layout.handoff.clearVhoPlan(directory)
+      }
+      return
+    }
+    return handoff
+  })
   const messagesReady = createMemo(() => {
     const id = params.id
     if (!id) return true
@@ -1189,6 +1208,7 @@ export default function Page() {
               <Match when={true}>
                 <NewSessionView
                   worktree={newSessionWorktree()}
+                  planPreview={vhoPlanPreview()?.plan_content}
                   onWorktreeChange={(value) => {
                     if (value === "create") {
                       setStore("newSessionWorktree", value)

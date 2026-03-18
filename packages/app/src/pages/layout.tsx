@@ -81,6 +81,8 @@ import {
   getDraggableId,
   hiddenWorkspaceDirectory,
   latestRootSession,
+  productContextStateKey,
+  productContextStateShouldSync,
   productContextStateSynced,
   projectWorkspaceDirectories,
   projectSupportsWorkspace,
@@ -108,6 +110,7 @@ import {
   SidebarProductPanel,
 } from "./layout/sidebar-product-view"
 import {
+  nextRecentProductIDs,
   productSidebarName,
   productSidebarOverflowProducts,
   productSidebarProducts,
@@ -175,6 +178,7 @@ export default function Layout(props: ParentProps) {
   const [contextProducts, setContextProducts] = createSignal<ContextProduct[]>([])
   const [recentProductIDs, setRecentProductIDs] = createSignal<string[]>([])
   const [productSessionsReady, setProductSessionsReady] = createSignal(false)
+  const [pendingProductContextStateKey, setPendingProductContextStateKey] = createSignal<string>()
   /** 中文注释：用户存在产品上下文时，左侧导航必须切成产品视图，避免把内部解决方案项目暴露出来。 */
   const productSidebarEnabled = createMemo(() => useProductSidebar(auth.user()?.context_product_id))
 
@@ -182,16 +186,17 @@ export default function Layout(props: ParentProps) {
   createEffect(() => {
     const ready = auth.ready()
     const authenticated = auth.authenticated()
-    const product_id = auth.user()?.context_product_id ?? ""
+    const user_id = auth.user()?.id ?? ""
     if (!ready || !authenticated) {
       setContextProducts([])
       setRecentProductIDs([])
       return
     }
+    if (!user_id) return
     let cancelled = false
     void auth.contextProducts().then((payload) => {
       if (cancelled) return
-      if (product_id !== (auth.user()?.context_product_id ?? "")) return
+      if (user_id !== (auth.user()?.id ?? "")) return
       if (!payload?.products) return
       setContextProducts(payload.products)
       setRecentProductIDs(payload.recent_product_ids ?? [])
@@ -216,12 +221,18 @@ export default function Layout(props: ParentProps) {
       recent_product_ids: recentProductIDs(),
     }),
   )
-  const currentContextProduct = createMemo(() => sidebarProducts().find((item) => item.id === auth.user()?.context_product_id))
+  /** 中文注释：产品上下文同步必须等真实产品详情返回后再执行，不能使用侧栏占位产品，否则会先算出错误的单项目状态。 */
+  const resolvedContextProduct = createMemo(() =>
+    contextProducts().find((item) => item.id === auth.user()?.context_product_id),
+  )
+  const currentContextProduct = createMemo(
+    () => resolvedContextProduct() ?? sidebarProducts().find((item) => item.id === auth.user()?.context_product_id),
+  )
   /** 中文注释：默认登录恢复产品时，产品详情列表可能稍后才返回，会话列表过滤必须直接以当前产品上下文为准，避免首屏短暂空白。 */
   const currentContextProductID = createMemo(() => auth.user()?.context_product_id ?? currentContextProduct()?.id)
   const currentContextProjectIDs = createMemo(() =>
     productContextProjectIDs({
-      product: currentContextProduct(),
+      product: resolvedContextProduct(),
       projects: globalSync.data.project,
       current_project_id: auth.user()?.context_project_id,
     }),
@@ -325,23 +336,30 @@ export default function Layout(props: ParentProps) {
 
   createEffect(() => {
     if (!auth.ready() || !auth.authenticated()) return
-    if (!currentContextProduct()) return
+    if (!resolvedContextProduct()) return
     const ids = currentContextProjectIDs()
     const open = ids
     const last_project_id = ids.length === 0
       ? null
       : (ids.includes(projectState().last_project_id ?? "") ? projectState().last_project_id ?? ids[0] : ids[0])
-    if (
-      productContextStateSynced({
-        open_project_ids: open,
-        last_project_id,
-        state_open_project_ids: projectState().open_project_ids,
-        state_last_project_id: projectState().last_project_id,
-      })
-    ) return
+    if (!productContextStateShouldSync({
+      open_project_ids: open,
+      last_project_id,
+      state_open_project_ids: projectState().open_project_ids,
+      state_last_project_id: projectState().last_project_id,
+      pending_key: pendingProductContextStateKey(),
+    })) return
+    const key = productContextStateKey({
+      open_project_ids: open,
+      last_project_id,
+    })
+    setPendingProductContextStateKey(key)
     void accountProject.patch({
       last_project_id,
       open_project_ids: open,
+    }).finally(() => {
+      if (pendingProductContextStateKey() !== key) return
+      setPendingProductContextStateKey(undefined)
     })
   })
 
@@ -1484,8 +1502,18 @@ export default function Layout(props: ParentProps) {
       })
       return
     }
+    setRecentProductIDs((current) => nextRecentProductIDs(current, target.id))
     const products = sidebarProducts()
     const current = products.find((item) => item.id === target.id) ?? target
+    const syncProjectIDs = productContextProjectIDs({
+      product: current,
+      projects: globalSync.data.project,
+      current_project_id: auth.user()?.context_project_id,
+    })
+    const syncLastProjectID =
+      syncProjectIDs.length === 0
+        ? null
+        : (syncProjectIDs.includes(projectState().last_project_id ?? "") ? projectState().last_project_id ?? syncProjectIDs[0] : syncProjectIDs[0])
     const next = nextProductNavigation({
       product: current,
       products,
@@ -1500,6 +1528,10 @@ export default function Layout(props: ParentProps) {
       })
       return
     }
+    accountProject.syncProductState({
+      open_project_ids: syncProjectIDs,
+      last_project_id: syncLastProjectID,
+    })
     navigateWithSidebarReset(next.href)
   }
 

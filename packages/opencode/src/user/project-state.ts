@@ -29,6 +29,10 @@ type Patch = Partial<Omit<Info, "current_project_id" | "last_project_id">> & {
   last_project_id?: string | null
 }
 
+const STATE_CACHE_TTL_MS = 2_000
+const stateCache = new Map<string, { expires_at: number; value: Info }>()
+const statePending = new Map<string, Promise<Info>>()
+
 function uniq(input: string[]) {
   return [...new Set(input)]
 }
@@ -181,20 +185,67 @@ function merge(base: Info, patch?: Patch): Info {
   }
 }
 
+/** 中文注释：按用户与当前产品/项目上下文生成状态缓存键，避免会话页短时间重复读取数据库态。 */
+function stateKey(input: {
+  user_id: string
+  current_project_id?: string
+  current_product_id?: string
+}) {
+  return `${input.user_id}\0${input.current_project_id ?? ""}\0${input.current_product_id ?? ""}`
+}
+
+/** 中文注释：读取状态缓存时统一处理过期项，避免产品页切换期间重复命中重查询。 */
+function cachedState(key: string) {
+  const item = stateCache.get(key)
+  if (!item) return
+  if (item.expires_at > Date.now()) return item.value
+  stateCache.delete(key)
+  return
+}
+
+/** 中文注释：用户状态写入后需要清空该用户所有上下文缓存，保证后续读取到最新项目展开与会话记忆。 */
+function invalidateStateCache(user_id: string) {
+  const prefix = `${user_id}\0`
+  for (const key of stateCache.keys()) {
+    if (!key.startsWith(prefix)) continue
+    stateCache.delete(key)
+  }
+  for (const key of statePending.keys()) {
+    if (!key.startsWith(prefix)) continue
+    statePending.delete(key)
+  }
+}
+
 export namespace AccountProjectStateService {
   export type State = Info
   export type StatePatch = Patch
 
   export async function get(input: { user_id: string; current_project_id?: string; current_product_id?: string }) {
-    const row = await Database.use((db) =>
-      db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
-    )
-    return sanitize({
-      user_id: input.user_id,
-      current_project_id: input.current_project_id,
-      current_product_id: input.current_product_id,
-      state: rowState(row, input),
+    const key = stateKey(input)
+    const cached = cachedState(key)
+    if (cached) return cached
+    const pending = statePending.get(key)
+    if (pending) return pending
+    const task = (async () => {
+      const row = await Database.use((db) =>
+        db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
+      )
+      const value = await sanitize({
+        user_id: input.user_id,
+        current_project_id: input.current_project_id,
+        current_product_id: input.current_product_id,
+        state: rowState(row, input),
+      })
+      stateCache.set(key, {
+        expires_at: Date.now() + STATE_CACHE_TTL_MS,
+        value,
+      })
+      return value
+    })().finally(() => {
+      statePending.delete(key)
     })
+    statePending.set(key, task)
+    return task
   }
 
   export async function update(input: {
@@ -203,6 +254,7 @@ export namespace AccountProjectStateService {
     current_product_id?: string
     patch: Patch
   }) {
+    invalidateStateCache(input.user_id)
     const current = await get({
       user_id: input.user_id,
       current_project_id: input.current_project_id,
@@ -244,7 +296,37 @@ export namespace AccountProjectStateService {
         })
         .run(),
     )
+    invalidateStateCache(input.user_id)
     return next
+  }
+
+  /** 中文注释：产品切换只需要同步最近项目与打开项目列表时，走轻量 upsert，避免每次都触发完整状态清洗。 */
+  export async function syncProductContext(input: {
+    user_id: string
+    last_project_id?: string | null
+    open_project_ids: string[]
+  }) {
+    invalidateStateCache(input.user_id)
+    await Database.use((db) =>
+      db
+        .insert(TpUserProjectStateTable)
+        .values({
+          user_id: input.user_id,
+          last_project_id: input.last_project_id ?? null,
+          open_project_ids: uniq(input.open_project_ids.filter(Boolean)),
+          time_updated: Date.now(),
+        })
+        .onConflictDoUpdate({
+          target: TpUserProjectStateTable.user_id,
+          set: {
+            last_project_id: input.last_project_id ?? null,
+            open_project_ids: uniq(input.open_project_ids.filter(Boolean)),
+            time_updated: Date.now(),
+          },
+        })
+        .run(),
+    )
+    invalidateStateCache(input.user_id)
   }
 
   export async function sanitize(input: {

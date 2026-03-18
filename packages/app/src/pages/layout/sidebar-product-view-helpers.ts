@@ -139,6 +139,11 @@ function orderedProducts(input: {
   return [...recent, ...products.filter((item) => !visible.has(item.id))]
 }
 
+/** 中文注释：切换产品后在本地把目标产品提到最近列表最前面，避免等待后端重新拉取产品列表才刷新侧栏顺序。 */
+export function nextRecentProductIDs(recent_product_ids: readonly string[], product_id: string) {
+  return [product_id, ...recent_product_ids.filter((item) => item !== product_id)]
+}
+
 /** 中文注释：产品侧栏默认只展示最近使用的产品，并确保当前产品即使不在最近列表里也始终可见。 */
 export function productSidebarProducts(input: {
   products: readonly ProductLike[]

@@ -9,6 +9,8 @@ import {
   hasProjectPermissions,
   hiddenWorkspaceDirectory,
   latestRootSession,
+  productContextStateKey,
+  productContextStateShouldSync,
   productContextStateSynced,
   projectSupportsWorkspace,
   projectWorkspaceDirectories,
@@ -167,6 +169,38 @@ describe("layout workspace helpers", () => {
         last_project_id: null,
         state_open_project_ids: [],
         state_last_project_id: undefined,
+      }),
+    ).toBe(true)
+  })
+
+  test("does not re-sync the same product context state while an identical patch is in flight", () => {
+    const pending_key = productContextStateKey({
+      open_project_ids: ["folder_a"],
+      last_project_id: "folder_a",
+    })
+    expect(
+      productContextStateShouldSync({
+        open_project_ids: ["folder_a"],
+        last_project_id: "folder_a",
+        state_open_project_ids: [],
+        state_last_project_id: undefined,
+        pending_key,
+      }),
+    ).toBe(false)
+  })
+
+  test("still syncs product context state when the pending patch differs", () => {
+    const pending_key = productContextStateKey({
+      open_project_ids: ["folder_a"],
+      last_project_id: "folder_a",
+    })
+    expect(
+      productContextStateShouldSync({
+        open_project_ids: ["folder_b"],
+        last_project_id: "folder_b",
+        state_open_project_ids: [],
+        state_last_project_id: undefined,
+        pending_key,
       }),
     ).toBe(true)
   })

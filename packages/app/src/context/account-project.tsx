@@ -262,6 +262,7 @@ export function nextProductNavigation<T extends Pick<Project, "id" | "worktree">
   }
 }
 
+/** 中文注释：产品上下文自己维护打开项目集合，不能再由项目修复逻辑补开项目，否则会和产品同步互相打架。 */
 export function repairProjectID(input: {
   ready: boolean
   hydrated: boolean
@@ -270,8 +271,10 @@ export function repairProjectID(input: {
   projects: readonly Pick<Project, "id">[]
   open_project_ids: string[]
   current_project_id?: string
+  context_product_id?: string
 }) {
   if (!input.ready || !input.hydrated || !input.authenticated || input.pending) return
+  if (input.context_product_id) return
   if (!input.current_project_id) return
   if (!input.projects.some((project) => project.id === input.current_project_id)) return
   if (input.open_project_ids.includes(input.current_project_id)) return
@@ -298,6 +301,24 @@ export function currentProjectID(input: {
 }) {
   if (input.context_product_id && !input.context_project_id) return
   return input.context_project_id ?? input.state_current_project_id
+}
+
+/** 中文注释：同一会话和目录已经写入最近记录时，跳过重复 patch，避免流式消息期间反复刷新账号状态。 */
+export function rememberedSessionChanged(input: {
+  project_id: string
+  product_id?: string
+  current_project?: AccountProjectStateLastSession
+  current_product?: AccountProjectStateLastSession
+  next: {
+    id: string
+    directory: string
+  }
+}) {
+  const projectChanged =
+    input.current_project?.session_id !== input.next.id || input.current_project?.directory !== input.next.directory
+  if (projectChanged) return true
+  if (!input.product_id) return false
+  return input.current_product?.session_id !== input.next.id || input.current_product?.directory !== input.next.directory
 }
 
 function empty(current_project_id?: string): AccountProjectState {
@@ -536,8 +557,20 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       })
     }
 
+    /** 中文注释：只在最近会话真的变化时写回账号状态，避免同一会话被重复记忆造成高频 state patch。 */
     const rememberSession = async (project_id: string, session: { id: string; directory: string; at?: number }) => {
       const product_id = auth.user()?.context_product_id
+      if (
+        !rememberedSessionChanged({
+          project_id,
+          product_id,
+          current_project: store.data.last_session_by_project[project_id],
+          current_product: product_id ? store.data.last_session_by_product[product_id] : undefined,
+          next: session,
+        })
+      ) {
+        return store.data
+      }
       return patch({
         last_project_id: project_id,
         last_session_by_project: {
@@ -559,6 +592,20 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
             }
           : store.data.last_session_by_product,
       })
+    }
+
+    /** 中文注释：切换产品后先把本地账号项目状态对齐到目标产品态，避免 layout effect 再补发一轮相同的 state patch。 */
+    const syncProductState = (input: {
+      open_project_ids: string[]
+      last_project_id?: string | null
+    }) => {
+      const next = {
+        ...store.data,
+        last_project_id: input.last_project_id ?? undefined,
+        open_project_ids: input.open_project_ids,
+      }
+      apply(next)
+      return next
     }
 
     const activate = async (project_id: string, ensure_open = true) => {
@@ -639,6 +686,7 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
         projects: projects(),
         open_project_ids: store.data.open_project_ids,
         current_project_id: currentID(),
+        context_product_id: auth.user()?.context_product_id,
       })
       if (!project_id) return
       void open(project_id)
@@ -659,6 +707,7 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       activate,
       activateProduct,
       rememberSession,
+      syncProductState,
       setWorkspaceMode,
       setWorkspaceOrder,
       setWorkspaceExpanded,

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  nextRecentProductIDs,
   productSidebarAvatar,
   productSidebarCurrentDirectory,
   productSidebarDirectories,
@@ -228,6 +229,11 @@ describe("sidebar-product-view", () => {
         recent_product_ids: ["p5", "p4", "p3", "p2", "p1"],
       }).map((item) => item.id),
     ).toEqual(["p6"])
+  })
+
+  test("切换产品后会把目标产品提到最近列表最前面", () => {
+    expect(nextRecentProductIDs(["p5", "p4", "p3"], "p2")).toEqual(["p2", "p5", "p4", "p3"])
+    expect(nextRecentProductIDs(["p5", "p4", "p3"], "p4")).toEqual(["p4", "p5", "p3"])
   })
 
   test("产品导航项对选中产品返回高亮样式", () => {

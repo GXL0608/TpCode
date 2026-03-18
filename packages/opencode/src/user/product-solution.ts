@@ -159,6 +159,12 @@ function solutionItem(
   }
 }
 
+/** 中文注释：产品方案绑定或根目录配置变更后，需要清空账号产品上下文缓存，避免用户侧继续看到旧路径摘要。 */
+async function invalidateAccountContextCache() {
+  const { AccountContextService } = await import("./context")
+  AccountContextService.invalidateProjectAccess()
+}
+
 /** 中文注释：按解决方案主表批量回填根目录，避免接口层出现 N+1 查询。 */
 async function hydrate(rows: (typeof TpProductSolutionTable.$inferSelect)[]) {
   const ids = rows.map((item) => item.id)
@@ -369,6 +375,7 @@ export namespace ProductSolutionService {
     const item = await get(id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
     invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const, item }
   }
 
@@ -475,6 +482,7 @@ export namespace ProductSolutionService {
     const item = await get(input.solution_id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
     invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const, item }
   }
 
@@ -530,6 +538,7 @@ export namespace ProductSolutionService {
     const item = await get(input.solution_id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
     invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return {
       ok: true as const,
       item: {
@@ -561,6 +570,7 @@ export namespace ProductSolutionService {
         .run(),
     )
     invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const }
   }
 
@@ -584,6 +594,7 @@ export namespace ProductSolutionService {
         .run(),
     )
     invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const }
   }
 

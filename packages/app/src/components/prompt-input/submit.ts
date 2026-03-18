@@ -22,6 +22,7 @@ import { Worktree as WorktreeState } from "@/utils/worktree"
 import { buildToastDescription } from "@/components/build-job-summary"
 import { buildRequestParts } from "./build-request-parts"
 import { setCursorPosition } from "./editor-dom"
+import { shouldConsumeVhoPlanHandoff, shouldUseVhoFeedbackSavedPlan } from "../vho-feedback"
 
 type PendingPrompt = {
   abort: AbortController
@@ -427,18 +428,44 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const selectedAgent = local.agent.selected?.()
     /** 中文注释：未显式选择模式时回到 plan，只有手动切到 build 才触发构建闭环。 */
     const agent = currentAgent?.name ?? "plan"
+    const pendingVhoPlan = (() => {
+      const directory = params.dir
+      if (!directory) return
+      const handoff = layout.handoff.vhoPlan(directory)
+      if (
+        !shouldConsumeVhoPlanHandoff({
+          handoff,
+          session_id: params.id,
+          now: Date.now(),
+        })
+      ) {
+        if (handoff && Date.now() - handoff.at > 60_000) {
+          layout.handoff.clearVhoPlan(directory)
+        }
+        return
+      }
+      return handoff
+    })()
     const rememberedPlan = (() => {
       const knownSessionID = params.id ?? input.info()?.id
-      if (!knownSessionID) return
-      return layout.handoff.savedPlan(knownSessionID)
+      if (knownSessionID) return layout.handoff.savedPlan(knownSessionID)
+      if (!pendingVhoPlan) return
+      return {
+        id: pendingVhoPlan.saved_plan_id,
+        at: pendingVhoPlan.at,
+        prompt: pendingVhoPlan.prompt,
+      }
     })()
     const useSavedPlanBuild =
       selectedAgent?.name === "build" &&
-      text.trim().length === 0 &&
-      images.length === 0 &&
-      voices.length === 0 &&
-      input.commentCount() === 0 &&
-      !!rememberedPlan?.id
+      shouldUseVhoFeedbackSavedPlan({
+        current: text,
+        prompt: rememberedPlan?.prompt,
+        has_saved_plan: !!rememberedPlan?.id,
+        image_count: images.length,
+        voice_count: voices.length,
+        comment_count: input.commentCount(),
+      })
 
     if (text.trim().length === 0 && images.length === 0 && voices.length === 0 && input.commentCount() === 0 && !useSavedPlanBuild) {
       if (input.working()) abort()
@@ -609,6 +636,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         upsertSession(nextDirectory, created)
         if (createdWorkspace || ownedWorkspace) layout.handoff.clearWorkspace(sessionDirectory)
         sessionID = created.id
+        if (pendingVhoPlan?.saved_plan_id) {
+          layout.handoff.setSavedPlan(created.id, pendingVhoPlan.saved_plan_id)
+          if (params.dir) layout.handoff.clearVhoPlan(params.dir)
+        }
         if (nextDirectory !== sessionDirectory) {
           /** 中文注释：新会话创建后优先切到服务端返回的真实目录，避免产品 overlay 会话继续停留在旧根目录路由。 */
           await switchDirectory(nextDirectory, created.id)

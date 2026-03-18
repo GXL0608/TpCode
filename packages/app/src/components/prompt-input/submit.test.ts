@@ -39,7 +39,7 @@ let buildJobStatus: "pending" | "running" | "completed" | "failed" = "completed"
 let buildJobError = "build failed"
 
 let selected = "/repo/worktree-a"
-let route: { id?: string } = {}
+let route: { id?: string; dir?: string } = {}
 let promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
 let commands: { name: string }[] = []
 let promptAsyncError: unknown
@@ -56,6 +56,15 @@ let currentAgentName: string | undefined = "agent"
 let projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] as string[] }]
 let handoffWorkspaces: Record<string, { directory: string; branch?: string }> = {}
 let handoffSavedPlans: Record<string, { id: string }> = {}
+let handoffVhoPlans: Record<
+  string,
+  {
+    saved_plan_id: string
+    plan_content: string
+    prompt: string
+    at: number
+  }
+> = {}
 let handoffBuildJobs: Record<
   string,
   {
@@ -205,6 +214,20 @@ beforeAll(async () => {
         clearWorkspace: (directory: string) => {
           clearedWorkspaceHandoffs.push(directory)
           delete handoffWorkspaces[directory]
+        },
+        vhoPlan: (directory: string) => handoffVhoPlans[directory],
+        setVhoPlan: (
+          directory: string,
+          input: {
+            saved_plan_id: string
+            plan_content: string
+            prompt: string
+          },
+        ) => {
+          handoffVhoPlans[directory] = { ...input, at: Date.now() }
+        },
+        clearVhoPlan: (directory: string) => {
+          delete handoffVhoPlans[directory]
         },
         savedPlan: (sessionID: string) => handoffSavedPlans[sessionID],
         setSavedPlan: (sessionID: string, id: string) => {
@@ -422,6 +445,7 @@ beforeEach(() => {
   projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] }]
   handoffWorkspaces = {}
   handoffSavedPlans = {}
+  handoffVhoPlans = {}
   handoffBuildJobs = {}
   authUser = {
     permissions: ["agent:use_build"],
@@ -983,6 +1007,38 @@ describe("prompt submit session resolution", () => {
       saved_plan_id: "plan_saved_1",
       run_mode: "async",
     })
+  })
+
+  test("submits saved_plan build for a fresh session when the text still matches feedback fillback", async () => {
+    route = { dir: "/repo/main" }
+    currentAgentName = "build"
+    promptValue = [
+      {
+        type: "text",
+        content: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+        start: 0,
+        end: 31,
+      },
+    ]
+    handoffVhoPlans["/repo/main"] = {
+      saved_plan_id: "plan_saved_vho_1",
+      plan_content: "## 计划\n- 先排查接口\n- 再优化缓存",
+      prompt: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+      at: Date.now(),
+    }
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual(["/repo/main"])
+    expect(JSON.parse(String(fetchCalls[0]?.init?.body ?? "{}"))).toMatchObject({
+      session_id: "session-1",
+      source_type: "saved_plan",
+      saved_plan_id: "plan_saved_vho_1",
+      run_mode: "async",
+    })
+    expect(handoffSavedPlans["session-1"]).toEqual({ id: "plan_saved_vho_1" })
   })
 
   test("shows failed build job detail when async build job finishes with failure", async () => {
