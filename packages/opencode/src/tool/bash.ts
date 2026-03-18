@@ -132,7 +132,7 @@ async function readonlySandbox(input: { sessionID: string; cwd: string; command:
   if (!overlay || !Filesystem.contains(overlay.root, input.cwd)) return
   if ((await BuildOverlay.listChanges(overlay)).length > 0) return
   const directory = await fs.mkdtemp(path.join(Global.Path.runtime, "bash-readonly-"))
-  await Promise.all(
+  const linked = await Promise.allSettled(
     overlay.mounts.map((item) =>
       fs.symlink(
         item.source_directory,
@@ -141,6 +141,11 @@ async function readonlySandbox(input: { sessionID: string; cwd: string; command:
       ),
     ),
   )
+  /** 中文注释：Windows/共享盘环境里只读 junction 偶发会被 EPERM 拦截，此时直接降级到 merged sandbox，不能让 build 改码链路被只读探测打断。 */
+  if (linked.some((item) => item.status === "rejected")) {
+    await fs.rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    return
+  }
   return {
     mode: "readonly" as const,
     overlay,

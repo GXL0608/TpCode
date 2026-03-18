@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { buildPlanSaveFeedbackQuery, resolvePlanSaveFeedbackNo } from "./plan-save-dialog"
+import {
+  buildPlanSaveFeedbackQuery,
+  PLAN_SAVE_DIALOG_BODY_CLASS,
+  PLAN_SAVE_DIALOG_FOOTER_CLASS,
+  PLAN_SAVE_DIALOG_LIST_CLASS,
+  resolvePlanSaveFeedbackNo,
+} from "./plan-save-dialog"
 
 describe("plan-save-dialog helpers", () => {
   test("用手机号生成保存计划弹窗的默认反馈查询条件", () => {
@@ -15,5 +21,15 @@ describe("plan-save-dialog helpers", () => {
     expect(resolvePlanSaveFeedbackNo({ manual: "  VHO-123  ", selected: "VHO-456" })).toBe("VHO-123")
     expect(resolvePlanSaveFeedbackNo({ manual: "   ", selected: "VHO-456" })).toBe("VHO-456")
     expect(resolvePlanSaveFeedbackNo({ manual: "", selected: "" })).toBeUndefined()
+  })
+
+  test("弹窗内容区和底部按钮区保持固定布局，长列表时仍可操作保存按钮", () => {
+    expect(PLAN_SAVE_DIALOG_BODY_CLASS).toContain("max-h-[min(70vh,640px)]")
+    expect(PLAN_SAVE_DIALOG_BODY_CLASS).toContain("min-h-0")
+    expect(PLAN_SAVE_DIALOG_LIST_CLASS).toContain("flex-1")
+    expect(PLAN_SAVE_DIALOG_LIST_CLASS).toContain("overflow-y-auto")
+    expect(PLAN_SAVE_DIALOG_FOOTER_CLASS).toContain("sticky")
+    expect(PLAN_SAVE_DIALOG_FOOTER_CLASS).toContain("shrink-0")
+    expect(PLAN_SAVE_DIALOG_FOOTER_CLASS).toContain("safe-area-inset-bottom")
   })
 })

@@ -1594,6 +1594,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     const target = findAssignedVhoProject({
       project_id: input.project_id,
       project_worktree: input.project_worktree,
+      current_product_id: auth.user()?.context_product_id,
       products: payload.products.flatMap((item) => {
         if (!item.project_id || !item.worktree) return []
         return [
@@ -1601,6 +1602,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             id: item.id,
             project_id: item.project_id,
             worktree: item.worktree,
+            selected: item.selected,
+            last_selected: item.last_selected,
           },
         ]
       }),
@@ -1616,7 +1619,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       })
     }
 
-    const activated = await accountProject.activate(target.project_id, true)
+    const activated = await accountProject.activateProduct(target.id)
     if (!activated.ok) {
       return vhoFeedbackApplyFailure({
         reason: "project_activate_failed",
@@ -1631,7 +1634,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       prompt: next,
       feedback_des: input.feedback_des,
     })
-    navigate(freshSessionHref(slug, undefined, freshSessionKey()))
+    navigate(freshSessionHref(slug, target.id, freshSessionKey()))
     return {
       ok: true,
     } as const

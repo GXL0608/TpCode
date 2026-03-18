@@ -37,6 +37,7 @@ import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
 import { shouldConsumePromptHandoff } from "@/context/layout"
 import { shouldConsumeVhoPlanHandoff } from "@/components/vho-feedback"
+import { shouldResetAgentForFreshSession } from "@/pages/session/agent-reset"
 import { freshSessionContextHref, freshSessionKey, isFreshSessionSearch } from "@/utils/session-route"
 
 export default function Page() {
@@ -117,15 +118,26 @@ export default function Page() {
         if (value.id || !value.dir) return
         if (!isFreshSessionSearch(value.search)) return
         const handoff = layout.handoff.prompt(value.dir)
-        if (handoff && Date.now() - handoff.at <= 60_000) return
+        const vhoPlan = layout.handoff.vhoPlan(value.dir)
+        const has_prompt_handoff = !!(handoff && Date.now() - handoff.at <= 60_000)
+        const has_vho_plan_handoff = !!(vhoPlan && Date.now() - vhoPlan.at <= 60_000)
+        if (has_prompt_handoff) return
         prompt.reset()
         prompt.context.clear()
         comments.clear()
         setStore("messageId", undefined)
         setStore("newSessionWorktree", "main")
         setStore("turnStart", 0)
-        // 中文注释：显式再次新建会话时同步重置当前智能体，避免继续沿用上一个新会话页的 build/planner 状态。
-        local.agent.set(undefined)
+        // 中文注释：只有普通新会话才重置智能体；反馈回填等带 handoff 的入口要保留 build 模式。
+        if (
+          shouldResetAgentForFreshSession({
+            session_id: value.id,
+            has_prompt_handoff,
+            has_vho_plan_handoff,
+          })
+        ) {
+          local.agent.set(undefined)
+        }
       },
       { defer: true },
     ),
@@ -136,7 +148,19 @@ export default function Page() {
       () => `${params.dir ?? ""}/${params.id ?? ""}`,
       () => {
         if (params.id) return
-        // 中文注释：进入新的产品会话入口时重置智能体，避免沿用上一次 build 模式导致首条消息误走构建闭环。
+        const directory = params.dir
+        const handoff = directory ? layout.handoff.prompt(directory) : undefined
+        const vhoPlan = directory ? layout.handoff.vhoPlan(directory) : undefined
+        if (
+          !shouldResetAgentForFreshSession({
+            session_id: params.id,
+            has_prompt_handoff: !!(handoff && Date.now() - handoff.at <= 60_000),
+            has_vho_plan_handoff: !!(vhoPlan && Date.now() - vhoPlan.at <= 60_000),
+          })
+        ) {
+          return
+        }
+        // 中文注释：进入普通产品新会话入口时重置智能体，避免首条消息误沿用上一次 build 模式。
         local.agent.set(undefined)
       },
       { defer: true },
