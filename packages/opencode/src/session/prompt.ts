@@ -53,6 +53,7 @@ import { SessionMirror } from "./mirror"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { NotFoundError } from "@/storage/db"
 import { assertBuildCommandAllowed } from "./build-protection"
+import { AccountCurrent } from "@/user/current"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1432,9 +1433,20 @@ export namespace SessionPrompt {
           part.type === "text" && part.text.trim().length > 0,
       )
       ?.text.trim()
+    const account = AccountCurrent.optional()
+    const safe = (value: string | undefined, fallback: string) => {
+      const next = value?.trim().replace(/[^a-zA-Z0-9_-]/g, "_")
+      return next || fallback
+    }
     const audioFilename = (mime: string, now = Date.now()) => {
-      const subtype = mime.split("/")[1]?.split(";")[0]
-      return `voice-${now}.${subtype || "webm"}`
+      const subtype = safe(mime.split("/")[1]?.split(";")[0], "webm")
+      return `${safe(input.sessionID, "session")}_${safe(account?.user_id, "anonymous")}_${now}.${subtype}`
+    }
+    const stamp = (value: number) => {
+      const sec = Math.max(0, Math.round(value))
+      const mm = String(Math.floor(sec / 60)).padStart(2, "0")
+      const ss = String(sec % 60).padStart(2, "0")
+      return `${mm}:${ss}`
     }
 
     await Session.updateMessage(info)
@@ -1514,7 +1526,28 @@ export namespace SessionPrompt {
             case "data:":
               if (part.mime.startsWith("audio/") && part.forModel === false) {
                 const id = part.id ?? Identifier.ascending("part")
-                const filename = part.filename ?? audioFilename(part.mime)
+                const filename = audioFilename(part.mime)
+                const segments = (part.transcript_segments ?? [])
+                  .map((item, index) => {
+                    const text = item.text.trim()
+                    if (!text) return
+                    const start = Number(item.start)
+                    const end = Number(item.end)
+                    if (!Number.isFinite(start) || !Number.isFinite(end)) return
+                    const from = Math.max(0, start)
+                    const to = end < from ? from : end
+                    return {
+                      id: `seg_${id}_${index + 1}`,
+                      start: from,
+                      end: to,
+                      text,
+                    }
+                  })
+                  .filter((item): item is { id: string; start: number; end: number; text: string } => !!item)
+                const rawText = (firstText || segments.map((item) => item.text).join(" ").trim() || "").trim()
+                const stamped = segments
+                  .map((item) => `[${stamp(item.start)}-${stamp(item.end)}] ${item.text}`)
+                  .join("\n")
                 const saved = await SessionVoice.saveDataFile({
                   session_id: input.sessionID,
                   message_id: info.id,
@@ -1522,8 +1555,10 @@ export namespace SessionPrompt {
                   mime: part.mime,
                   filename,
                   duration_ms: part.duration_ms,
-                  stt_text: firstText,
+                  stt_text: rawText,
                   stt_engine: "browser_speech_recognition",
+                  raw_transcript: stamped || rawText,
+                  transcript_segments: segments.length ? segments : undefined,
                   data_url: part.url,
                 }).catch((error) => {
                   log.error("failed to store voice attachment", {

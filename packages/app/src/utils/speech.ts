@@ -4,12 +4,14 @@ import { getSpeechRecognitionCtor } from "@/utils/runtime-adapters"
 
 // Minimal types to avoid relying on non-standard DOM typings
 type RecognitionResult = {
-  0: { transcript: string }
+  length?: number
+  0?: { transcript: string }
+  item?: (index: number) => { transcript: string } | undefined
   isFinal: boolean
 }
 
 type RecognitionEvent = {
-  results: RecognitionResult[]
+  results: ArrayLike<RecognitionResult>
   resultIndex: number
 }
 
@@ -17,8 +19,10 @@ interface Recognition {
   continuous: boolean
   interimResults: boolean
   lang: string
+  processLocally?: boolean
   start: () => void
   stop: () => void
+  abort?: () => void
   onresult: ((e: RecognitionEvent) => void) | null
   onerror: ((e: { error: string }) => void) | null
   onend: (() => void) | null
@@ -26,6 +30,9 @@ interface Recognition {
 }
 
 const COMMIT_DELAY = 250
+const START_RETRY_DELAY = 150
+const START_RETRY_LIMIT = 80
+const STOP_SETTLE_DELAY = 1200
 const SPACE = /\s+/g
 const NO_SPACE_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}]/u
 const LEADING_PUNCTUATION = /^[,.;!?，。！？、；：)\]}'"”’]/u
@@ -82,11 +89,26 @@ export const extractRecognitionSuffix = (committed: string, hypothesis: string) 
   return next
 }
 
-const transcriptFromResults = (results: RecognitionResult[], finalOnly: boolean) => {
+const resultAt = (results: ArrayLike<RecognitionResult>, index: number) => {
+  const direct = results[index]
+  if (direct) return direct
+  const withItem = results as ArrayLike<RecognitionResult> & { item?: (index: number) => RecognitionResult | undefined }
+  return withItem.item?.(index)
+}
+
+const alternativeAt = (result: RecognitionResult, index: number) => {
+  const direct = result[index as 0]
+  if (direct) return direct
+  return result.item?.(index)
+}
+
+const transcriptFromResults = (results: ArrayLike<RecognitionResult>, finalOnly: boolean, from = 0) => {
   let text = ""
-  for (const result of results) {
+  for (let index = Math.max(0, from); index < results.length; index += 1) {
+    const result = resultAt(results, index)
+    if (!result) continue
     if (finalOnly && !result.isFinal) continue
-    const transcript = normalizeRecognitionText(result[0]?.transcript || "")
+    const transcript = normalizeRecognitionText(alternativeAt(result, 0)?.transcript || "")
     if (!transcript) continue
     text = appendRecognitionText(text, transcript)
   }
@@ -95,6 +117,7 @@ const transcriptFromResults = (results: RecognitionResult[], finalOnly: boolean)
 
 export function createSpeechRecognition(opts?: {
   lang?: string
+  localFirst?: boolean
   onFinal?: (text: string) => void
   onInterim?: (text: string) => void
   onError?: (error: string) => void
@@ -121,8 +144,19 @@ export function createSpeechRecognition(opts?: {
   let shrinkCandidate: string | undefined
   let commitTimer: number | undefined
   let restartTimer: number | undefined
+  let stopTimer: number | undefined
+  let startRetries = 0
+  let starting = false
   let stopping = false
   let settleWaiters: Array<() => void> = []
+  let starts = 0
+  let results = 0
+  let errors = 0
+  let ends = 0
+  let lastError = ""
+  const localPreferred = Boolean(opts?.localFirst)
+  let localSupported = false
+  let localActive = false
 
   const cancelPendingCommit = () => {
     if (commitTimer === undefined) return
@@ -136,6 +170,59 @@ export function createSpeechRecognition(opts?: {
     restartTimer = undefined
   }
 
+  const clearStopTimer = () => {
+    if (stopTimer === undefined) return
+    window.clearTimeout(stopTimer)
+    stopTimer = undefined
+  }
+
+  const shouldRetryStart = (error: unknown) => {
+    if (error instanceof DOMException) {
+      if (error.name === "InvalidStateError") return true
+      if (error.name === "AbortError") return true
+      if (error.name === "NotAllowedError") return true
+      if (error.name === "SecurityError") return true
+    }
+    if (!(error instanceof Error)) return false
+    const message = error.message.toLowerCase()
+    if (message.includes("already started")) return true
+    if (message.includes("invalid state")) return true
+    if (message.includes("not-allowed")) return true
+    if (message.includes("permission")) return true
+    return false
+  }
+
+  const failStart = () => {
+    shouldContinue = false
+    starting = false
+    setStore("isRecording", false)
+    settleDone()
+    if (opts?.onError) opts.onError("start-failed")
+  }
+
+  const startRecognition = () => {
+    if (!recognition) return
+    if (store.isRecording || starting) return
+    starting = true
+    try {
+      recognition.start()
+      startRetries = 0
+    } catch (error) {
+      starting = false
+      if (!shouldContinue) return
+      if (!shouldRetryStart(error)) {
+        failStart()
+        return
+      }
+      if (startRetries >= START_RETRY_LIMIT) {
+        failStart()
+        return
+      }
+      startRetries += 1
+      scheduleRestart()
+    }
+  }
+
   const scheduleRestart = () => {
     clearRestart()
     if (!shouldContinue) return
@@ -144,13 +231,12 @@ export function createSpeechRecognition(opts?: {
       restartTimer = undefined
       if (!shouldContinue) return
       if (!recognition) return
-      try {
-        recognition.start()
-      } catch {}
-    }, 150)
+      startRecognition()
+    }, START_RETRY_DELAY)
   }
 
   const settleDone = () => {
+    clearStopTimer()
     stopping = false
     const waiters = settleWaiters
     settleWaiters = []
@@ -161,12 +247,15 @@ export function createSpeechRecognition(opts?: {
     shouldContinue = false
     stopping = false
     clearRestart()
+    clearStopTimer()
     cancelPendingCommit()
     sessionCommitted = ""
     pendingHypothesis = ""
     lastInterimSuffix = ""
     shrinkCandidate = undefined
     committedText = ""
+    startRetries = 0
+    starting = false
     settleDone()
     setStore("isRecording", false)
     setStore("committed", "")
@@ -228,12 +317,22 @@ export function createSpeechRecognition(opts?: {
     recognition.continuous = true
     recognition.interimResults = true
     recognition.lang = opts?.lang || (typeof navigator !== "undefined" ? navigator.language : "en-US")
+    if (localPreferred && "processLocally" in recognition) {
+      localSupported = true
+      try {
+        recognition.processLocally = true
+        localActive = true
+      } catch {}
+    }
 
     recognition.onresult = (event: RecognitionEvent) => {
+      results += 1
       if (!event.results.length) return
 
-      const aggregatedFinal = transcriptFromResults(event.results, true)
-      const snapshot = transcriptFromResults(event.results, false)
+      const start = event.resultIndex ?? 0
+      const from = start >= event.results.length ? 0 : Math.max(0, start)
+      const aggregatedFinal = transcriptFromResults(event.results, true, from)
+      const snapshot = transcriptFromResults(event.results, false, from)
 
       if (aggregatedFinal) {
         cancelPendingCommit()
@@ -284,24 +383,41 @@ export function createSpeechRecognition(opts?: {
     }
 
     recognition.onerror = (e: { error: string }) => {
-      if (opts?.onError) opts.onError(e.error)
+      errors += 1
+      lastError = e.error
       clearRestart()
+      clearStopTimer()
       cancelPendingCommit()
+      starting = false
       lastInterimSuffix = ""
       shrinkCandidate = undefined
-      if (e.error === "no-speech" && shouldContinue) {
+      if ((e.error === "no-speech" || e.error === "aborted") && shouldContinue) {
+        setStore("isRecording", false)
         setStore("interim", "")
         if (opts?.onInterim) opts.onInterim("")
         scheduleRestart()
         return
       }
+      if (e.error !== "aborted" && opts?.onError) opts.onError(e.error)
       shouldContinue = false
       setStore("isRecording", false)
       settleDone()
     }
 
     recognition.onstart = () => {
+      starts += 1
       clearRestart()
+      clearStopTimer()
+      startRetries = 0
+      starting = false
+      if (!shouldContinue) {
+        setStore("isRecording", false)
+        settleDone()
+        try {
+          recognition?.stop()
+        } catch {}
+        return
+      }
       sessionCommitted = ""
       pendingHypothesis = ""
       cancelPendingCommit()
@@ -313,8 +429,11 @@ export function createSpeechRecognition(opts?: {
     }
 
     recognition.onend = () => {
+      ends += 1
       clearRestart()
+      clearStopTimer()
       cancelPendingCommit()
+      starting = false
       lastInterimSuffix = ""
       shrinkCandidate = undefined
       setStore("isRecording", false)
@@ -328,33 +447,44 @@ export function createSpeechRecognition(opts?: {
 
   const start = () => {
     if (!recognition) return
+    if (store.isRecording && !stopping) return
+    if (starting) return
     stopping = false
     clearRestart()
     shouldContinue = true
+    startRetries = 0
     sessionCommitted = ""
     pendingHypothesis = ""
     cancelPendingCommit()
     lastInterimSuffix = ""
     shrinkCandidate = undefined
     setStore("interim", "")
-    try {
-      recognition.start()
-    } catch {
-      if (opts?.onError) opts.onError("start-failed")
-    }
+    startRecognition()
   }
 
   const stop = () => {
     if (!recognition) return
     shouldContinue = false
+    starting = false
     stopping = true
+    startRetries = 0
     clearRestart()
+    clearStopTimer()
     promotePending()
     cancelPendingCommit()
     lastInterimSuffix = ""
     shrinkCandidate = undefined
+    setStore("isRecording", false)
     setStore("interim", "")
     if (opts?.onInterim) opts.onInterim("")
+    stopTimer = window.setTimeout(() => {
+      if (!stopping) return
+      try {
+        recognition.abort?.()
+      } catch {}
+      setStore("isRecording", false)
+      settleDone()
+    }, STOP_SETTLE_DELAY)
     try {
       recognition.stop()
     } catch {}
@@ -375,15 +505,43 @@ export function createSpeechRecognition(opts?: {
     })
   }
 
+  const waitUntilRecording = (timeout = 2200) => {
+    if (!recognition) return Promise.resolve(false)
+    if (store.isRecording) return Promise.resolve(true)
+    const deadline = Date.now() + Math.max(0, timeout)
+    return new Promise<boolean>((resolve) => {
+      const tick = () => {
+        if (store.isRecording) {
+          resolve(true)
+          return
+        }
+        if (Date.now() >= deadline) {
+          resolve(store.isRecording)
+          return
+        }
+        window.setTimeout(tick, 50)
+      }
+      tick()
+    })
+  }
+
   const setLang = (next: string) => {
     if (!recognition) return
     recognition.lang = next
+    if (!localPreferred || !localSupported) return
+    try {
+      recognition.processLocally = true
+      localActive = true
+    } catch {}
   }
 
   onCleanup(() => {
     shouldContinue = false
+    starting = false
     stopping = false
+    startRetries = 0
     clearRestart()
+    clearStopTimer()
     promotePending()
     cancelPendingCommit()
     lastInterimSuffix = ""
@@ -403,7 +561,24 @@ export function createSpeechRecognition(opts?: {
     interim,
     reset,
     settle,
+    waitUntilRecording,
     setLang,
+    debug: () => ({
+      starts,
+      results,
+      errors,
+      ends,
+      should_continue: shouldContinue,
+      starting,
+      stopping,
+      is_recording: store.isRecording,
+      committed: store.committed.length,
+      interim: store.interim.length,
+      last_error: lastError,
+      local_preferred: localPreferred,
+      local_supported: localSupported,
+      local_active: localActive,
+    }),
     start,
     stop,
   }

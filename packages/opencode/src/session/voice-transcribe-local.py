@@ -40,8 +40,25 @@ def main():
   WhisperModel = load_whisper()
   model = WhisperModel(model_id, device="cpu", compute_type="int8")
   segments, _ = model.transcribe(audio, language=lang, vad_filter=True)
-  text = "".join((item.text or "") for item in segments).strip()
-  print(json.dumps({"text": text, "engine": f"local_whisper:{model_id}"}, ensure_ascii=False))
+  parsed = []
+  full = []
+  for item in segments:
+    raw = item.text or ""
+    if not raw.strip():
+      continue
+    start = float(item.start or 0.0)
+    end = float(item.end or start)
+    if end < start:
+      end = start
+    parsed.append({
+      "start": start,
+      "end": end,
+      "text": raw.strip(),
+    })
+    full.append(raw)
+
+  text = "".join(full).strip()
+  print(json.dumps({"text": text, "engine": f"local_whisper:{model_id}", "segments": parsed}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

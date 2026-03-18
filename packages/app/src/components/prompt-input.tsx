@@ -1,5 +1,17 @@
 import { useFilteredList } from "@opencode-ai/ui/hooks"
-import { createEffect, on, Component, Show, onCleanup, Switch, Match, createMemo, createSignal, createResource } from "solid-js"
+import {
+  createEffect,
+  on,
+  Component,
+  Show,
+  onCleanup,
+  Switch,
+  Match,
+  createMemo,
+  createSignal,
+  createResource,
+  For,
+} from "solid-js"
 import { createStore } from "solid-js/store"
 import { createFocusSignal } from "@solid-primitives/active-element"
 import { useLocal } from "@/context/local"
@@ -26,6 +38,7 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Select } from "@opencode-ai/ui/select"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { showToast } from "@opencode-ai/ui/toast"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useCommand } from "@/context/command"
@@ -153,25 +166,42 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const accountID = auth.user()?.id ?? "anonymous"
   let editorRef!: HTMLDivElement
   let fileInputRef: HTMLInputElement | undefined
+  let cameraInputRef: HTMLInputElement | undefined
   let scrollRef!: HTMLDivElement
   let slashPopoverRef!: HTMLDivElement
   let recorder: MediaRecorder | undefined
   let stream: MediaStream | undefined
   let chunks: Blob[] = []
   let timer: number | undefined
-  let startedAt = 0
+  let elapsedMs = 0
+  let activeAt = 0
   let finalizing = false
   let voiceRun = 0
   let activeVoiceRun = 0
   let activeVoiceMime = ""
   let recordedVoiceMime = ""
+  let voiceAudioContext: AudioContext | undefined
+  let voiceAnalyser: AnalyserNode | undefined
+  let voiceSource: MediaStreamAudioSourceNode | undefined
+  let voiceFrame: number | undefined
+  let voiceHintTimer: number | undefined
+  let voiceHintAt = 0
+  let speechSnapshot = ""
+  let speechKick: number | undefined
+  let speechKickDone = false
 
   const mirror = { input: false }
   const inset = 44
   const [speechFailure, setSpeechFailure] = createSignal("")
   const [transcribeFailure, setTranscribeFailure] = createSignal("")
   const speech = createSpeechRecognition({
+    localFirst: true,
     onError: (error) => setSpeechFailure(error),
+    onInterim: (text) => {
+      const next = text.trim()
+      if (!next) return
+      speechSnapshot = next
+    },
   })
 
   const scrollCursorIntoView = () => {
@@ -347,10 +377,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const voiceAttachments = createMemo(() =>
     prompt.current().filter((part): part is VoiceAttachmentPart => part.type === "voice"),
   )
-  const [voicePhase, setVoicePhase] = createSignal<"idle" | "requesting" | "recording" | "transcribing" | "failed">(
+  const [voicePhase, setVoicePhase] = createSignal<
+    "idle" | "requesting" | "recording" | "paused" | "transcribing" | "failed"
+  >(
     "idle",
   )
   const [voiceError, setVoiceError] = createSignal("")
+  const [voiceWave, setVoiceWave] = createSignal(Array.from({ length: 16 }, () => 0.08))
+  const [voiceHint, setVoiceHint] = createSignal("")
   const supportsVoiceCapture = () =>
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices &&
@@ -369,23 +403,187 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return language.t("prompt.toast.voiceUnsupported.description")
   }
   const supportsSpeech = () => speech.isSupported()
-  const isMobileBrowser = () => {
-    if (typeof navigator === "undefined") return false
-    const nav = navigator as Navigator & { userAgentData?: { mobile?: boolean } }
-    if (nav.userAgentData?.mobile) return true
-    return /android|iphone|ipad|ipod|mobile/i.test(nav.userAgent)
-  }
-  const shouldUseServerFallback = () => isMobileBrowser()
+  const shouldUseServerFallback = () => true
   const voiceNoSpeechDescription = () => {
     const base = language.t("prompt.toast.voiceNoSpeech.description")
     const error = speechFailure().trim()
-    if (!error) return base
-    return `${base}（浏览器语音识别错误：${error}）`
+    const detail = error ? `${base}（浏览器语音识别错误：${error}）` : base
+    if (!import.meta.env.DEV) return detail
+    const trace = speech.debug()
+    return `${detail}（dev: supported=${supportsSpeech() ? "1" : "0"}, recording=${speech.isRecording() ? "1" : "0"}, committed=${speech.committed().length}, interim=${speech.interim().length}, snapshot=${speechSnapshot.length}, starts=${trace.starts}, results=${trace.results}, errors=${trace.errors}, ends=${trace.ends}, stopping=${trace.stopping ? "1" : "0"}, local_preferred=${trace.local_preferred ? "1" : "0"}, local_supported=${trace.local_supported ? "1" : "0"}, local_active=${trace.local_active ? "1" : "0"}, last_error=${trace.last_error || "none"}）`
+  }
+  const clearSpeechKick = () => {
+    if (speechKick === undefined) return
+    clearTimeout(speechKick)
+    speechKick = undefined
+  }
+  const scheduleSpeechKick = () => {
+    clearSpeechKick()
+    if (!supportsSpeech()) return
+    speechKick = window.setTimeout(() => {
+      speechKick = undefined
+      if (speechKickDone) return
+      if (voicePhase() !== "recording") return
+      if (readSpeechTranscript()) return
+      speechKickDone = true
+      speech.stop()
+      window.setTimeout(() => {
+        if (voicePhase() !== "recording") return
+        setSpeechFailure("")
+        ensureSpeechRecognition()
+      }, 180)
+    }, 1800)
   }
   const clearVoiceTimer = () => {
     if (timer === undefined) return
     clearTimeout(timer)
     timer = undefined
+  }
+  const clearVoiceHintTimer = () => {
+    if (voiceHintTimer === undefined) return
+    clearTimeout(voiceHintTimer)
+    voiceHintTimer = undefined
+  }
+  const clearVoiceHint = () => {
+    clearVoiceHintTimer()
+    setVoiceHint("")
+    voiceHintAt = 0
+  }
+  const pushVoiceHint = (text: string) => {
+    const now = Date.now()
+    if (now - voiceHintAt < 12_000) return
+    voiceHintAt = now
+    setVoiceHint(text)
+    clearVoiceHintTimer()
+    voiceHintTimer = window.setTimeout(() => {
+      setVoiceHint("")
+      voiceHintTimer = undefined
+    }, 4_000)
+    showToast({
+      title: language.locale().startsWith("zh") ? "录音提醒" : "Recording hint",
+      description: text,
+    })
+  }
+  const clearVoiceMeter = () => {
+    if (voiceFrame !== undefined) {
+      cancelAnimationFrame(voiceFrame)
+      voiceFrame = undefined
+    }
+    voiceSource?.disconnect()
+    voiceAnalyser?.disconnect()
+    voiceSource = undefined
+    voiceAnalyser = undefined
+    const current = voiceAudioContext
+    voiceAudioContext = undefined
+    if (current && current.state !== "closed") {
+      void current.close().catch(() => undefined)
+    }
+    setVoiceWave(Array.from({ length: 16 }, () => 0.08))
+    clearVoiceHint()
+  }
+  const startVoiceMeter = () => {
+    if (!stream || typeof window === "undefined") return
+    const x = window as Window & { webkitAudioContext?: typeof AudioContext }
+    const Ctor = typeof AudioContext !== "undefined" ? AudioContext : x.webkitAudioContext
+    if (!Ctor) return
+
+    clearVoiceMeter()
+    const ctx = new Ctor()
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 256
+    analyser.smoothingTimeConstant = 0.85
+    const source = ctx.createMediaStreamSource(stream)
+    source.connect(analyser)
+    voiceAudioContext = ctx
+    voiceAnalyser = analyser
+    voiceSource = source
+
+    const t = new Uint8Array(analyser.fftSize)
+    const f = new Uint8Array(analyser.frequencyBinCount)
+    let lowFrames = 0
+    let noiseFrames = 0
+    const lowHint = language.locale().startsWith("zh")
+      ? "当前音量过轻，可能影响转写效果"
+      : "Current volume is low and may affect transcription quality"
+    const noiseHint = language.locale().startsWith("zh")
+      ? "当前录音环境噪音较大，可能影响转写效果"
+      : "Background noise is high and may affect transcription quality"
+
+    const tick = () => {
+      if (!voiceAnalyser) return
+      if (voicePhase() !== "recording") {
+        voiceFrame = requestAnimationFrame(tick)
+        return
+      }
+
+      voiceAnalyser.getByteTimeDomainData(t)
+      voiceAnalyser.getByteFrequencyData(f)
+
+      let sum = 0
+      let zero = 0
+      let prev = (t[0] - 128) / 128
+      for (let i = 0; i < t.length; i++) {
+        const v = (t[i] - 128) / 128
+        sum += v * v
+        if ((v >= 0 && prev < 0) || (v < 0 && prev >= 0)) zero += 1
+        prev = v
+      }
+      const rms = Math.sqrt(sum / t.length)
+      const zcr = zero / t.length
+
+      const split = Math.floor(f.length * 0.55)
+      let low = 0
+      let high = 0
+      for (let i = 0; i < f.length; i++) {
+        if (i < split) low += f[i]
+        else high += f[i]
+      }
+      const highRatio = high / Math.max(1, low + high)
+
+      const size = 16
+      const block = Math.max(1, Math.floor(f.length / size))
+      setVoiceWave(
+        Array.from({ length: size }, (_, i) => {
+          const start = i * block
+          const end = i === size - 1 ? f.length : start + block
+          let total = 0
+          for (let n = start; n < end; n++) total += f[n]
+          const avg = total / Math.max(1, end - start) / 255
+          return Math.max(0.08, Math.min(1, avg))
+        }),
+      )
+
+      lowFrames = rms < 0.018 ? lowFrames + 1 : Math.max(0, lowFrames - 2)
+      noiseFrames =
+        rms > 0.05 && zcr > 0.18 && highRatio > 0.58 ? noiseFrames + 1 : Math.max(0, noiseFrames - 2)
+      if (lowFrames === 100) {
+        pushVoiceHint(lowHint)
+      }
+      if (noiseFrames === 100) {
+        pushVoiceHint(noiseHint)
+      }
+
+      voiceFrame = requestAnimationFrame(tick)
+    }
+
+    voiceFrame = requestAnimationFrame(tick)
+  }
+  const voiceDuration = () => {
+    if (!activeAt) return elapsedMs
+    return elapsedMs + Math.max(0, Date.now() - activeAt)
+  }
+  const beginVoiceClock = () => {
+    if (activeAt) return
+    activeAt = Date.now()
+  }
+  const pauseVoiceClock = () => {
+    if (!activeAt) return
+    elapsedMs = voiceDuration()
+    activeAt = 0
+  }
+  const resetVoiceClock = () => {
+    elapsedMs = 0
+    activeAt = 0
   }
   const clearVoiceDraft = () => {
     voiceRun += 1
@@ -401,8 +599,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     chunks = []
     activeVoiceMime = ""
     recordedVoiceMime = ""
-    startedAt = 0
+    clearVoiceHint()
+    resetVoiceClock()
     finalizing = false
+    speechSnapshot = ""
+    clearSpeechKick()
+    speechKickDone = false
     speech.stop()
     speech.reset()
     clearVoiceStream()
@@ -412,6 +614,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     setVoicePhase("idle")
   }
   const clearVoiceStream = () => {
+    clearVoiceMeter()
     if (!stream) return
     for (const track of stream.getTracks()) {
       track.stop()
@@ -450,7 +653,16 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return { providerID, modelID }
   }
 
-  const transcribeVoice = async (input: { mime: string; dataUrl: string }) => {
+  type VoiceTranscript = {
+    text: string
+    segments?: Array<{
+      start: number
+      end: number
+      text: string
+    }>
+  }
+
+  const transcribeVoice = async (input: { mime: string; dataUrl: string }): Promise<VoiceTranscript> => {
     setTranscribeFailure("")
     const selected = runtimeValue() !== "__auto__" ? parseRuntimeValue(runtimeValue()) : undefined
     const model = selected ?? info()?.runtime_model
@@ -465,17 +677,50 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         setTranscribeFailure(errorMessage(error, language.t("prompt.toast.voiceTranscribeFailed.description")))
         return
       })
-    if (!result) return ""
+    if (!result) return { text: "" }
     if (result.error) {
       setTranscribeFailure(errorMessage(result.error, language.t("prompt.toast.voiceTranscribeFailed.description")))
-      return ""
+      return { text: "" }
     }
-    const text = result.data?.text?.trim() ?? ""
-    if (text) return text
-    if (result.data?.engine === "none") {
+    const payload = result.data as
+      | {
+          text?: string
+          engine?: string
+          segments?: Array<{ start?: number; end?: number; text?: string }>
+        }
+      | undefined
+    const segments = Array.isArray(payload?.segments)
+      ? payload.segments
+          .map((item) => {
+            const text = String(item.text ?? "").trim()
+            const start = Number(item.start)
+            const end = Number(item.end)
+            if (!text) return
+            if (!Number.isFinite(start) || !Number.isFinite(end)) return
+            const from = Math.max(0, start)
+            const to = end < from ? from : end
+            return {
+              start: from,
+              end: to,
+              text,
+            }
+          })
+          .filter((item): item is { start: number; end: number; text: string } => !!item)
+      : undefined
+    const text = payload?.text?.trim() ?? ""
+    if (text) {
+      return {
+        text,
+        segments: segments?.length ? segments : undefined,
+      }
+    }
+    if (payload?.engine === "none") {
       setTranscribeFailure(language.t("prompt.toast.voiceTranscribeFailed.description"))
     }
-    return ""
+    return {
+      text: "",
+      segments: segments?.length ? segments : undefined,
+    }
   }
 
   /** 中文注释：把当前选择同步到 session 手动模型接口。 */
@@ -525,17 +770,58 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       })
   })
   const voiceFilename = (mime: string, now = Date.now()) => {
-    const subtype = mime.split("/")[1]?.split(";")[0] || "webm"
-    return `voice-${now}.${subtype}`
+    const clean = (value: string | undefined, fallback: string) =>
+      value?.trim().replace(/[^a-zA-Z0-9_-]/g, "_") || fallback
+    const subtype = clean(mime.split("/")[1]?.split(";")[0], "webm")
+    return `${clean(params.id, "session")}_${clean(accountID, "anonymous")}_${now}.${subtype}`
   }
   const voiceStatus = createMemo(() => {
     if (voicePhase() === "requesting") return language.t("prompt.voice.status.requesting")
     if (voicePhase() === "recording") return language.t("prompt.voice.status.recording")
+    if (voicePhase() === "paused") return language.locale().startsWith("zh") ? "录音已暂停" : "Recording paused"
     if (voicePhase() === "transcribing") return language.t("prompt.voice.status.transcribing")
     if (voicePhase() === "failed") return voiceError() || language.t("prompt.voice.status.failed")
     return ""
   })
   const speechLocale = () => SPEECH_LOCALE[language.locale()] ?? (typeof navigator !== "undefined" ? navigator.language : "en-US")
+  const readSpeechTranscript = () => {
+    return (speech.committed().trim() || speech.interim().trim()).trim()
+  }
+  const startSpeechRecognition = () => {
+    if (!supportsSpeech()) return
+    speech.setLang(speechLocale())
+    speech.start()
+  }
+  const ensureSpeechRecognition = () => {
+    startSpeechRecognition()
+    window.setTimeout(() => {
+      const phase = voicePhase()
+      if (phase !== "requesting" && phase !== "recording") return
+      if (speech.isRecording()) return
+      startSpeechRecognition()
+    }, 320)
+  }
+  const waitForSpeechReady = async (timeout = 2200) => {
+    if (!supportsSpeech()) return true
+    if (speech.isRecording()) return true
+    const ready = await speech.waitUntilRecording(timeout)
+    if (ready) return true
+    ensureSpeechRecognition()
+    return speech.waitUntilRecording(1200)
+  }
+  const waitForSpeechTranscript = async (timeout = 4200) => {
+    if (!supportsSpeech()) return ""
+    const deadline = Date.now() + Math.max(0, timeout)
+    while (Date.now() < deadline) {
+      const text = readSpeechTranscript()
+      if (text) return text
+      await speech.settle(450)
+      const settled = readSpeechTranscript()
+      if (settled) return settled
+      await new Promise((resolve) => window.setTimeout(resolve, 150))
+    }
+    return readSpeechTranscript()
+  }
 
   const [store, setStore] = createStore<{
     popover: "at" | "slash" | null
@@ -692,7 +978,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const isFocused = createFocusSignal(() => editorRef)
   const escBlur = () => platform.platform === "desktop" && platform.os === "macos"
 
-  const pick = () => fileInputRef?.click()
+  const pickAlbum = () => fileInputRef?.click()
+  const pickCamera = () => cameraInputRef?.click()
+  const pick = () => pickAlbum()
 
   command.register("prompt-input", () => [
     {
@@ -701,7 +989,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       category: language.t("command.category.file"),
       keybind: "mod+u",
       disabled: store.mode !== "normal",
-      onSelect: pick,
+      onSelect: pickAlbum,
     },
   ])
 
@@ -1243,6 +1531,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     },
     addPart,
     readClipboardImage: platform.readClipboardImage,
+    retakeImage: pickCamera,
   })
 
   const removeVoiceAttachment = (id: string) => {
@@ -1274,8 +1563,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     clearVoiceTimer()
     clearVoiceStream()
 
-    const elapsed = Math.max(0, Date.now() - startedAt)
-    const duration = Math.min(elapsed, MAX_VOICE_DURATION_MS)
+    pauseVoiceClock()
+    const duration = Math.min(Math.max(0, voiceDuration()), MAX_VOICE_DURATION_MS)
+    resetVoiceClock()
     const mime = recordedVoiceMime || active?.mimeType || activeVoiceMime || pickVoiceMime() || VOICE_MIME_FALLBACK
     const blob = new Blob(chunks, { type: mime })
     chunks = []
@@ -1283,12 +1573,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     recordedVoiceMime = ""
 
     if (blob.size <= 0) {
+      speechSnapshot = ""
       finalizing = false
       failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
       return
     }
 
     if (blob.size > MAX_VOICE_BYTES) {
+      speechSnapshot = ""
       finalizing = false
       failVoice(language.t("prompt.toast.voiceTooLarge.title"), language.t("prompt.toast.voiceTooLarge.description"))
       return
@@ -1296,10 +1588,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     const dataUrl = await voiceDataUrl(blob).catch(() => "")
     if (run !== voiceRun) {
+      speechSnapshot = ""
       finalizing = false
       return
     }
     if (!dataUrl) {
+      speechSnapshot = ""
       finalizing = false
       failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
       return
@@ -1313,8 +1607,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       dataUrl,
       duration_ms: duration,
     }
-    await speech.settle()
+    await speech.settle(1800)
     if (run !== voiceRun) {
+      speechSnapshot = ""
       finalizing = false
       return
     }
@@ -1322,9 +1617,16 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     prompt.set([...prompt.current(), attachment], cursorPosition)
 
     setTranscribeFailure("")
-    const browserTranscript = (speech.committed().trim() || speech.interim().trim()).trim()
-    const transcript = browserTranscript || (shouldUseServerFallback() ? await transcribeVoice({ mime, dataUrl }) : "")
-    const transcribeError = transcribeFailure().trim()
+    let browserTranscript = (readSpeechTranscript() || speechSnapshot).trim()
+    if (!browserTranscript) {
+      await new Promise((resolve) => window.setTimeout(resolve, 320))
+      await speech.settle(600)
+      browserTranscript = (readSpeechTranscript() || speechSnapshot).trim()
+    }
+    if (!browserTranscript) {
+      browserTranscript = await waitForSpeechTranscript(4200)
+    }
+    let transcript = browserTranscript
     if (transcript) {
       editorRef.focus()
       addPart({
@@ -1333,7 +1635,58 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         start: 0,
         end: 0,
       })
-    } else {
+    }
+    let fallbackUsed = false
+    let fallback: VoiceTranscript = { text: "" }
+    if (!transcript && shouldUseServerFallback()) {
+      fallbackUsed = true
+      fallback = await transcribeVoice({ mime, dataUrl })
+    }
+    if (fallback.segments?.length) {
+      prompt.set(
+        prompt.current().map((part) => {
+          if (part.type !== "voice" || part.id !== attachment.id) return part
+          return {
+            ...part,
+            transcript_segments: fallback.segments,
+          }
+        }),
+      )
+    }
+    if (!transcript && fallback.text) {
+      transcript = fallback.text
+      editorRef.focus()
+      addPart({
+        type: "text",
+        content: transcript,
+        start: 0,
+        end: 0,
+      })
+    }
+    const transcribeError = transcribeFailure().trim()
+    if (!transcript) {
+      if (import.meta.env.DEV) {
+        const trace = speech.debug()
+        console.warn("[voice] browser transcript missing", {
+          supported: supportsSpeech(),
+          is_recording: speech.isRecording(),
+          speech_error: speechFailure(),
+          committed: speech.committed(),
+          interim: speech.interim(),
+          snapshot: speechSnapshot,
+          starts: trace.starts,
+          results: trace.results,
+          errors: trace.errors,
+          ends: trace.ends,
+          stopping: trace.stopping,
+          should_continue: trace.should_continue,
+          trace_error: trace.last_error,
+          transcribe_error: transcribeFailure(),
+          fallback_used: fallbackUsed,
+          fallback_text: fallback.text,
+          fallback_segments: fallback.segments?.length ?? 0,
+        })
+      }
       if (transcribeError) {
         showToast({
           title: language.t("prompt.toast.voiceTranscribeFailed.title"),
@@ -1349,13 +1702,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     setVoiceError("")
     setVoicePhase("idle")
+    speechSnapshot = ""
+    clearSpeechKick()
+    speechKickDone = false
     finalizing = false
   }
 
   const stopVoiceInput = () => {
-    if (voicePhase() !== "recording") return
+    const phase = voicePhase()
+    if (phase !== "recording" && phase !== "paused") return
+    if (phase === "recording") {
+      pauseVoiceClock()
+    }
     setVoicePhase("transcribing")
     clearVoiceTimer()
+    clearSpeechKick()
+    const live = readSpeechTranscript()
+    if (live) speechSnapshot = live
     speech.stop()
 
     if (!recorder || recorder.state === "inactive") {
@@ -1364,15 +1727,68 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
     recorder.stop()
   }
+  const scheduleVoiceTimer = () => {
+    clearVoiceTimer()
+    const left = MAX_VOICE_DURATION_MS - voiceDuration()
+    if (left <= 0) {
+      showToast({
+        title: language.t("prompt.toast.voiceTooLong.title"),
+        description: language.t("prompt.toast.voiceTooLong.description"),
+      })
+      stopVoiceInput()
+      return
+    }
+    timer = window.setTimeout(() => {
+      showToast({
+        title: language.t("prompt.toast.voiceTooLong.title"),
+        description: language.t("prompt.toast.voiceTooLong.description"),
+      })
+      stopVoiceInput()
+    }, left)
+  }
+
+  const pauseVoiceInput = () => {
+    if (voicePhase() !== "recording") return
+    if (!recorder || recorder.state !== "recording") return
+    pauseVoiceClock()
+    clearVoiceTimer()
+    clearSpeechKick()
+    speech.stop()
+    recorder.pause()
+    setVoicePhase("paused")
+  }
+
+  const resumeVoiceInput = async () => {
+    if (voicePhase() !== "paused") return
+    if (!recorder || recorder.state !== "paused") return
+    setSpeechFailure("")
+    ensureSpeechRecognition()
+    await waitForSpeechReady(1600)
+    beginVoiceClock()
+    scheduleVoiceTimer()
+    scheduleSpeechKick()
+    recorder.resume()
+    setVoicePhase("recording")
+  }
 
   const startVoiceInput = async () => {
     if (!supportsVoiceCapture()) {
       failVoice(language.t("prompt.toast.voiceUnsupported.title"), voiceUnsupportedDescription())
       return
     }
-    if (voicePhase() === "requesting" || voicePhase() === "recording" || voicePhase() === "transcribing") return
+    if (
+      voicePhase() === "requesting" ||
+      voicePhase() === "recording" ||
+      voicePhase() === "paused" ||
+      voicePhase() === "transcribing"
+    ) return
     setVoiceError("")
     setVoicePhase("requesting")
+    speechSnapshot = ""
+    clearSpeechKick()
+    speechKickDone = false
+    speech.reset()
+    setSpeechFailure("")
 
     let mediaTimeout: number | undefined
     const media = await Promise.race([
@@ -1383,6 +1799,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     ])
     if (mediaTimeout !== undefined) window.clearTimeout(mediaTimeout)
     if (media === "voice_permission_timeout") {
+      speech.stop()
       failVoice(
         language.t("prompt.toast.voicePermissionTimeout.title"),
         language.t("prompt.toast.voicePermissionTimeout.description"),
@@ -1392,22 +1809,27 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (!(typeof MediaStream !== "undefined" && media instanceof MediaStream)) {
       const blocked = media instanceof DOMException && (media.name === "NotAllowedError" || media.name === "SecurityError")
       if (blocked) {
+        speech.stop()
         failVoice(
           language.t("prompt.toast.voicePermissionDenied.title"),
           language.t("prompt.toast.voicePermissionDenied.description"),
         )
         return
       }
+      speech.stop()
       failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
       return
     }
 
     stream = media
+    ensureSpeechRecognition()
+    await waitForSpeechReady()
+    startVoiceMeter()
     chunks = []
     activeVoiceMime = ""
     recordedVoiceMime = ""
     finalizing = false
-    startedAt = Date.now()
+    resetVoiceClock()
     activeVoiceRun = ++voiceRun
 
     const mime = pickVoiceMime()
@@ -1431,23 +1853,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       chunks = []
       activeVoiceMime = ""
       recordedVoiceMime = ""
+      resetVoiceClock()
       failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
     }
     next.onstop = () => {
       void completeVoice(activeVoiceRun)
     }
 
-    speech.reset()
-    setSpeechFailure("")
-    speech.setLang(speechLocale())
     setVoiceError("")
     setVoicePhase("recording")
-    if (supportsSpeech()) {
-      speech.start()
-    }
     const started = (() => {
       try {
         next.start(200)
+        beginVoiceClock()
         return true
       } catch {
         return false
@@ -1458,20 +1876,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       clearVoiceStream()
       recorder = undefined
       chunks = []
+      resetVoiceClock()
       failVoice(language.t("prompt.toast.voiceRecordFailed.title"), language.t("prompt.toast.voiceRecordFailed.description"))
       return
     }
-    timer = window.setTimeout(() => {
-      showToast({
-        title: language.t("prompt.toast.voiceTooLong.title"),
-        description: language.t("prompt.toast.voiceTooLong.description"),
-      })
-      stopVoiceInput()
-    }, MAX_VOICE_DURATION_MS)
+    scheduleSpeechKick()
+    if (!speech.isRecording()) ensureSpeechRecognition()
+    scheduleVoiceTimer()
   }
 
   onCleanup(() => {
     clearVoiceTimer()
+    resetVoiceClock()
+    clearSpeechKick()
     speech.stop()
     if (recorder && recorder.state !== "inactive") {
       recorder.onstop = null
@@ -1512,7 +1929,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   })
 
   const submitPrompt = (event: Event) => {
-    if (voicePhase() === "recording") {
+    if (voicePhase() === "recording" || voicePhase() === "paused") {
       event.preventDefault()
       stopVoiceInput()
       return
@@ -1562,7 +1979,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         return
       }
 
-      if (voicePhase() === "recording") {
+      if (voicePhase() === "recording" || voicePhase() === "paused") {
         stopVoiceInput()
         event.preventDefault()
         event.stopPropagation()
@@ -1876,7 +2293,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               class="hidden"
               onChange={(e) => {
                 const file = e.currentTarget.files?.[0]
-                if (file) addImageAttachment(file)
+                if (file) void addImageAttachment(file, "album")
+                e.currentTarget.value = ""
+              }}
+            />
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept={ACCEPTED_FILE_TYPES.join(",")}
+              capture="environment"
+              class="hidden"
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0]
+                if (file) void addImageAttachment(file, "camera")
                 e.currentTarget.value = ""
               }}
             />
@@ -1889,11 +2318,24 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 "opacity-0 translate-y-2 scale-95 pointer-events-none": store.mode !== "normal",
               }}
             >
+              <Show when={voicePhase() === "recording" || voicePhase() === "paused"}>
+                <div class="mr-1 flex h-4 w-16 items-end gap-[2px] rounded px-1 bg-surface-base">
+                  <For each={voiceWave()}>
+                    {(item) => (
+                      <span
+                        class="w-[3px] rounded-sm bg-icon-info-active/80 transition-[height] duration-75"
+                        style={{ height: `${Math.max(12, Math.round(item * 100))}%` }}
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
+
               <Show when={voiceStatus()}>
                 <span
                   class="mr-1 px-1.5 py-0.5 rounded bg-surface-base text-10-regular text-text-weak max-w-36 truncate"
                   classList={{
-                    "text-icon-info-active": voicePhase() === "recording",
+                    "text-icon-info-active": voicePhase() === "recording" || voicePhase() === "paused",
                     "text-icon-warning-base": voicePhase() === "failed",
                   }}
                   title={voiceStatus()}
@@ -1902,11 +2344,26 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 </span>
               </Show>
 
+              <Show when={voiceHint()}>
+                <span
+                  class="mr-1 px-1.5 py-0.5 rounded bg-surface-base text-10-regular text-icon-warning-base max-w-52 truncate"
+                  title={voiceHint()}
+                >
+                  {voiceHint()}
+                </span>
+              </Show>
+
               <Tooltip
                 placement="top"
                 value={
                   voicePhase() === "recording"
-                    ? language.t("prompt.action.voiceStop")
+                    ? language.locale().startsWith("zh")
+                      ? "暂停录音"
+                      : "Pause recording"
+                    : voicePhase() === "paused"
+                      ? language.locale().startsWith("zh")
+                        ? "继续录音"
+                        : "Resume recording"
                     : language.t("prompt.action.voiceInput")
                 }
               >
@@ -1916,12 +2373,16 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                   variant="ghost"
                   class="size-8 p-0"
                   classList={{
-                    "text-icon-info-active": voicePhase() === "recording",
+                    "text-icon-info-active": voicePhase() === "recording" || voicePhase() === "paused",
                     "animate-pulse": voicePhase() === "recording",
                   }}
                   onClick={() => {
                     if (voicePhase() === "recording") {
-                      stopVoiceInput()
+                      pauseVoiceInput()
+                      return
+                    }
+                    if (voicePhase() === "paused") {
+                      void resumeVoiceInput()
                       return
                     }
                     if (voicePhase() === "requesting") return
@@ -1936,32 +2397,71 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                   tabIndex={store.mode === "normal" ? undefined : -1}
                   aria-label={
                     voicePhase() === "recording"
-                      ? language.t("prompt.action.voiceStop")
+                      ? language.locale().startsWith("zh")
+                        ? "暂停录音"
+                        : "Pause recording"
+                      : voicePhase() === "paused"
+                        ? language.locale().startsWith("zh")
+                          ? "继续录音"
+                          : "Resume recording"
                       : language.t("prompt.action.voiceInput")
                   }
                 >
-                  <Icon name={voicePhase() === "recording" ? "stop" : "microphone"} class="size-4.5" />
+                  <Icon name={voicePhase() === "recording" ? "dash" : "microphone"} class="size-4.5" />
                 </Button>
               </Tooltip>
 
-              <TooltipKeybind
-                placement="top"
-                title={language.t("prompt.action.attachFile")}
-                keybind={command.keybind("file.attach")}
-              >
-                <Button
-                  data-action="prompt-attach"
-                  type="button"
-                  variant="ghost"
-                  class="size-8 p-0"
-                  onClick={pick}
-                  disabled={store.mode !== "normal"}
-                  tabIndex={store.mode === "normal" ? undefined : -1}
-                  aria-label={language.t("prompt.action.attachFile")}
+              <Show when={voicePhase() === "recording" || voicePhase() === "paused"}>
+                <Tooltip placement="top" value={language.t("prompt.action.stop")}>
+                  <Button
+                    data-action="prompt-voice-stop"
+                    type="button"
+                    variant="ghost"
+                    class="size-8 p-0 text-icon-info-active"
+                    onClick={stopVoiceInput}
+                    disabled={store.mode !== "normal"}
+                    tabIndex={store.mode === "normal" ? undefined : -1}
+                    aria-label={language.t("prompt.action.stop")}
+                  >
+                    <Icon name="stop" class="size-4.5" />
+                  </Button>
+                </Tooltip>
+              </Show>
+
+              <DropdownMenu>
+                <TooltipKeybind
+                  placement="top"
+                  title={language.t("prompt.action.attachFile")}
+                  keybind={command.keybind("file.attach")}
                 >
-                  <Icon name="plus" class="size-4.5" />
-                </Button>
-              </TooltipKeybind>
+                  <DropdownMenu.Trigger
+                    as={Button}
+                    data-action="prompt-attach"
+                    type="button"
+                    variant="ghost"
+                    class="size-8 p-0"
+                    disabled={store.mode !== "normal"}
+                    tabIndex={store.mode === "normal" ? undefined : -1}
+                    aria-label={language.t("prompt.action.attachFile")}
+                  >
+                    <Icon name="plus" class="size-4.5" />
+                  </DropdownMenu.Trigger>
+                </TooltipKeybind>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content>
+                    <DropdownMenu.Item disabled={store.mode !== "normal"} onSelect={pickCamera}>
+                      <DropdownMenu.ItemLabel>
+                        {language.locale().startsWith("zh") ? "拍摄现场照片" : "Take photo"}
+                      </DropdownMenu.ItemLabel>
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item disabled={store.mode !== "normal"} onSelect={pickAlbum}>
+                      <DropdownMenu.ItemLabel>
+                        {language.locale().startsWith("zh") ? "从相册选择" : "Choose from album"}
+                      </DropdownMenu.ItemLabel>
+                    </DropdownMenu.Item>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu>
 
               <Tooltip
                 placement="top"

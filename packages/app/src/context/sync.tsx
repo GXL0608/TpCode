@@ -479,6 +479,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
       track(input.directory, input.sessionID)
       const start = version.get(key) ?? 0
+      const scoped = globalSync.child(input.directory, { bootstrap: false })[0]
       setMeta("loading", key, true)
       await fetchMessages(input)
         .then((next) => {
@@ -490,7 +491,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             (version.get(key) ?? 0) !== start ||
             isFetchedSnapshotStale({
               sessionID: input.sessionID,
-              current: current()[0],
+              current: scoped,
               next,
               removed,
             })
@@ -566,6 +567,47 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
       return runInflight(inflight, key, () => Promise.all([sessionReq, messagesReq]).then(() => {}))
     }
+
+    const split = (key: string) => {
+      const index = key.indexOf("\n")
+      if (index <= 0 || index >= key.length - 1) return
+      return {
+        directory: key.slice(0, index),
+        sessionID: key.slice(index + 1),
+      }
+    }
+
+    const syncTracked = async () => {
+      if (typeof navigator !== "undefined" && "onLine" in navigator && !navigator.onLine) return
+      const jobs = [...tracked]
+        .map((key) => {
+          const target = split(key)
+          if (!target) return
+          const [store, setStore] = globalSync.child(target.directory, { bootstrap: false })
+          const client =
+            target.directory === sdk.directory
+              ? sdk.client
+              : sdk.createClient({ directory: target.directory, throwOnError: true })
+          const limit = meta.limit[key] ?? limitFor(store.message[target.sessionID]?.length ?? 0)
+          return loadMessages({
+            directory: target.directory,
+            client,
+            setStore,
+            sessionID: target.sessionID,
+            limit,
+          }).catch(() => undefined)
+        })
+        .filter((item): item is Promise<void> => !!item)
+      if (jobs.length === 0) return
+      await Promise.all(jobs)
+    }
+
+    const watch = setInterval(() => {
+      void syncTracked()
+    }, 10_000)
+    onCleanup(() => {
+      clearInterval(watch)
+    })
 
     return {
       get data() {

@@ -1618,6 +1618,10 @@ describe("session.prompt voice", () => {
               filename: "voice.webm",
               url: `data:audio/webm;base64,${payload}`,
               duration_ms: 4200,
+              transcript_segments: [
+                { start: 0, end: 1.2, text: "voice" },
+                { start: 3.1, end: 4.2, text: "text" },
+              ],
               forModel: false,
             },
           ],
@@ -1639,11 +1643,22 @@ describe("session.prompt voice", () => {
 
         expect(row.session_id).toBe(session.id)
         expect(row.message_id).toBe(message.info.id)
+        expect(row.user_id ?? null).toBe(null)
+        expect(row.product_id).toBe(session.projectID)
+        expect(row.role).toBe("一线人员")
         expect(row.mime).toBe("audio/webm")
-        expect(row.filename).toBe("voice.webm")
+        expect(row.filename.startsWith(`${session.id}_anonymous_`)).toBe(true)
+        expect(row.filename.endsWith(".webm")).toBe(true)
         expect(row.duration_ms).toBe(4200)
         expect(row.stt_text).toBe("voice text")
+        expect(row.raw_transcript).toBe("[00:00-00:01] voice\n[00:03-00:04] text")
         expect(row.stt_engine).toBe("browser_speech_recognition")
+        expect(row.problem_type).toBe("其他")
+        expect(row.data_status).toBe("待标注")
+        expect(row.transcript_segments).toEqual([
+          { id: `seg_${audio.id}_1`, start: 0, end: 1.2, text: "voice" },
+          { id: `seg_${audio.id}_2`, start: 3.1, end: 4.2, text: "text" },
+        ])
         expect(row.size_bytes).toBe(Buffer.from("voice-data", "utf-8").length)
         expect(Buffer.from(row.audio_bytes).toString("utf-8")).toBe("voice-data")
 
@@ -1709,10 +1724,19 @@ describe("session.prompt picture", () => {
 
         expect(row.session_id).toBe(session.id)
         expect(row.message_id).toBe(message.info.id)
+        expect(row.user_id ?? null).toBe(null)
+        expect(row.product_id).toBe(session.projectID)
+        expect(row.role).toBe("一线人员")
         expect(row.mime).toBe("image/png")
         expect(row.filename).toBe("picture.png")
         expect(row.ocr_text).toBe("detected text")
         expect(row.ocr_engine).toBe("browser_ocr")
+        expect(row.device_code).toBe("未识别")
+        expect(row.error_code).toBe("未识别")
+        expect(row.system_name).toBe("未识别")
+        expect(row.problem_desc).toBe("未识别")
+        expect(row.problem_type).toBe("其他")
+        expect(row.data_status).toBe("待标注")
         expect(row.size_bytes).toBe(Buffer.from("picture-data", "utf-8").length)
         expect(Buffer.from(row.image_bytes).toString("utf-8")).toBe("picture-data")
 

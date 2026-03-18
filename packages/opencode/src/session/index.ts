@@ -20,7 +20,9 @@ import { Storage } from "@/storage/storage"
 import { Log } from "../util/log"
 import { MessageV2 } from "./message-v2"
 import { Instance } from "../project/instance"
+import { SessionPicture } from "./picture"
 import { SessionPrompt } from "./prompt"
+import { SessionVoice } from "./voice"
 import { fn } from "@/util/fn"
 import { Command } from "../command"
 import { Snapshot } from "@/snapshot"
@@ -1504,6 +1506,18 @@ export namespace Session {
           }),
         )
       })
+      await Promise.all([
+        SessionVoice.removeByPart({
+          session_id: input.sessionID,
+          message_id: input.messageID,
+          part_id: input.partID,
+        }),
+        SessionPicture.removeByPart({
+          session_id: input.sessionID,
+          message_id: input.messageID,
+          part_id: input.partID,
+        }),
+      ])
       return input.partID
     },
   )

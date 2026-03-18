@@ -42,6 +42,11 @@ export interface VoiceAttachmentPart {
   mime: string
   dataUrl: string
   duration_ms: number
+  transcript_segments?: Array<{
+    start: number
+    end: number
+    text: string
+  }>
 }
 
 export type ContentPart = TextPart | FileAttachmentPart | AgentPart | ImageAttachmentPart | VoiceAttachmentPart

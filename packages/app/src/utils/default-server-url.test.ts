@@ -53,6 +53,18 @@ describe("default server url", () => {
     ).toBe("http://127.0.0.1:4098")
   })
 
+  test("uses page host when dev host is loopback", () => {
+    expect(
+      resolveDefaultServerUrl({
+        hostname: "192.168.1.102",
+        origin: "http://192.168.1.102:3002",
+        dev: true,
+        devHost: "127.0.0.1",
+        devPort: "4096",
+      }),
+    ).toBe("http://192.168.1.102:4096")
+  })
+
   test("falls back to origin in production", () => {
     expect(
       resolveDefaultServerUrl({

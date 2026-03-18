@@ -6,7 +6,15 @@ import type { AgentPart, FileAttachmentPart, ImageAttachmentPart, Prompt, VoiceA
 import { Identifier } from "@/utils/id"
 import { createCommentMetadata, formatCommentNote } from "@/utils/comment-note"
 
-type PromptRequestPart = (TextPartInput | FilePartInput | AgentPartInput) & { id: string }
+type TranscriptSegment = {
+  start: number
+  end: number
+  text: string
+}
+
+type PromptRequestPart = (TextPartInput | (FilePartInput & { transcript_segments?: TranscriptSegment[] }) | AgentPartInput) & {
+  id: string
+}
 
 type ContextFile = {
   key: string
@@ -176,6 +184,7 @@ export function buildRequestParts(input: BuildRequestPartsInput) {
       url: attachment.dataUrl,
       filename: attachment.filename,
       duration_ms: attachment.duration_ms,
+      transcript_segments: attachment.transcript_segments,
       forModel: false,
     } satisfies PromptRequestPart
   })

@@ -258,6 +258,15 @@ export const SessionRoutes = lazy(() =>
                   z.object({
                     text: z.string(),
                     engine: z.string(),
+                    segments: z
+                      .array(
+                        z.object({
+                          start: z.number(),
+                          end: z.number(),
+                          text: z.string(),
+                        }),
+                      )
+                      .optional(),
                   }),
                 ),
               },
@@ -1170,6 +1179,48 @@ export const SessionRoutes = lazy(() =>
           )
         }
         const part = await Session.updatePart(body)
+        if (body.type === "text") {
+          const voice = await SessionVoice.latestByMessage({
+            session_id: params.sessionID,
+            message_id: params.messageID,
+          })
+          if (voice) {
+            const before = voice.corrected_transcript?.trim() || voice.raw_transcript?.trim() || ""
+            const after = body.text.trim()
+            if (after && after !== before) {
+              await SessionVoice.setCorrectedTranscript({
+                session_id: params.sessionID,
+                message_id: params.messageID,
+                part_id: voice.part_id,
+                corrected_transcript: after,
+              })
+              const actor_user_id = c.get("account_user_id" as never) as string | undefined
+              if (actor_user_id) {
+                UserService.auditLater({
+                  actor_user_id,
+                  action: "transcript.edit",
+                  target_type: "session",
+                  target_id: params.sessionID,
+                  result: "success",
+                  detail_json: {
+                    session_id: params.sessionID,
+                    message_id: params.messageID,
+                    voice_part_id: voice.part_id,
+                    edited_part_id: body.id,
+                    before,
+                    after,
+                    edit_time: Date.now(),
+                    terminal_type: /android|iphone|ipad|mobile/i.test(c.req.header("user-agent") ?? "")
+                      ? "移动端"
+                      : "PC",
+                  },
+                  ip: c.req.header("x-forwarded-for"),
+                  user_agent: c.req.header("user-agent"),
+                })
+              }
+            }
+          }
+        }
         return c.json(part)
       },
     )

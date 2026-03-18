@@ -173,6 +173,15 @@ export namespace MessageV2 {
     filename: z.string().optional(),
     url: z.string(),
     duration_ms: z.number().int().nonnegative().optional(),
+    transcript_segments: z
+      .array(
+        z.object({
+          start: z.number(),
+          end: z.number(),
+          text: z.string(),
+        }),
+      )
+      .optional(),
     ocr_text: z.string().optional(),
     ocr_engine: z.string().optional(),
     forModel: z.boolean().optional(),

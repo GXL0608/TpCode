@@ -2,7 +2,7 @@ import type { Message, Session } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate, useParams } from "@solidjs/router"
-import type { Accessor } from "solid-js"
+import { onCleanup, type Accessor } from "solid-js"
 import { produce, reconcile } from "solid-js/store"
 import type { FileSelection } from "@/context/file"
 import { useGlobalSync } from "@/context/global-sync"
@@ -29,6 +29,7 @@ type PendingPrompt = {
 }
 
 const pending = new Map<string, PendingPrompt>()
+const OFFLINE_QUEUE_KEY = "prompt.offline.queue.v1"
 
 const forbidden = [
   { term: "rm -rf", pattern: /(?:^|\s)rm\s+-rf(?:\s|$)/i },
@@ -217,6 +218,154 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     window.setTimeout(() => {
       void run()
     }, 1200)
+  }
+
+  type QueuedPrompt = {
+    directory: string
+    input: Parameters<typeof sdk.client.session.promptAsync>[0]
+    attempts: number
+    next_retry_at: number
+    created_at: number
+  }
+
+  let flushingQueue = false
+
+  const isOffline = () => typeof navigator !== "undefined" && navigator.onLine === false
+
+  const isNetworkError = (error: unknown) => {
+    if (isOffline()) return true
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+    if (!message) return false
+    return [
+      "network",
+      "offline",
+      "failed to fetch",
+      "fetch failed",
+      "timed out",
+      "timeout",
+      "socket",
+      "econn",
+      "enotfound",
+      "connection reset",
+    ].some((item) => message.includes(item))
+  }
+
+  const readQueue = () => {
+    if (typeof localStorage === "undefined") return [] as QueuedPrompt[]
+    const raw = localStorage.getItem(OFFLINE_QUEUE_KEY)
+    if (!raw) return []
+    const parsed = (() => {
+      try {
+        return JSON.parse(raw) as unknown
+      } catch {
+        return []
+      }
+    })()
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is QueuedPrompt => {
+      if (!item || typeof item !== "object") return false
+      const row = item as Record<string, unknown>
+      if (typeof row.directory !== "string" || !row.directory) return false
+      if (!row.input || typeof row.input !== "object") return false
+      const input = row.input as Record<string, unknown>
+      if (typeof input.sessionID !== "string" || typeof input.messageID !== "string") return false
+      return true
+    })
+  }
+
+  const writeQueue = (list: QueuedPrompt[]) => {
+    if (typeof localStorage === "undefined") return
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(list))
+  }
+
+  const queueNotice = () => {
+    const zh = language.locale().startsWith("zh")
+    showToast({
+      title: zh ? "网络恢复后将自动重试，请勿删除APP" : "Will auto-retry after network recovers. Please keep the app.",
+      description: zh ? "当前内容已暂存到本地缓存队列" : "Current content has been cached locally.",
+    })
+  }
+
+  const enqueuePrompt = (item: QueuedPrompt) => {
+    const list = readQueue()
+    const hit = list.some(
+      (row) => row.directory === item.directory && row.input.messageID === item.input.messageID,
+    )
+    if (hit) return
+    writeQueue([...list, item])
+  }
+
+  const flushQueuedPrompts = async () => {
+    if (flushingQueue) return
+    if (isOffline()) return
+    const list = readQueue()
+    if (list.length === 0) return
+
+    flushingQueue = true
+    try {
+      let next = list
+      for (const item of list) {
+        if (item.next_retry_at > Date.now()) continue
+
+        const client =
+          item.directory === sdk.directory
+            ? sdk.client
+            : sdk.createClient({
+                directory: item.directory,
+                throwOnError: true,
+              })
+
+        const sent = await client.session.promptAsync(item.input).then(() => true).catch((error) => error)
+
+        if (sent === true) {
+          next = next.filter(
+            (row) => !(row.directory === item.directory && row.input.messageID === item.input.messageID),
+          )
+          writeQueue(next)
+          refreshSessionMessages(item.directory, item.input.sessionID)
+          continue
+        }
+
+        const error = sent
+        if (!isNetworkError(error)) {
+          next = next.filter(
+            (row) => !(row.directory === item.directory && row.input.messageID === item.input.messageID),
+          )
+          writeQueue(next)
+          continue
+        }
+
+        const delay = Math.min(120_000, 2_000 * 2 ** Math.min(item.attempts, 5))
+        next = next.map((row) =>
+          row.directory === item.directory && row.input.messageID === item.input.messageID
+            ? {
+                ...row,
+                attempts: row.attempts + 1,
+                next_retry_at: Date.now() + delay,
+              }
+            : row,
+        )
+        writeQueue(next)
+        break
+      }
+    } finally {
+      flushingQueue = false
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    const onOnline = () => {
+      void flushQueuedPrompts()
+    }
+    window.addEventListener("online", onOnline)
+    const timer = window.setInterval(() => {
+      void flushQueuedPrompts()
+    }, 10_000)
+    onCleanup(() => {
+      window.removeEventListener("online", onOnline)
+      window.clearInterval(timer)
+    })
+    void flushQueuedPrompts()
   }
 
   const abort = async () => {
@@ -699,14 +848,41 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       if (!ok) return
       /** 中文注释：对可选模型用户，在真正发消息前强制把当前选择同步到 session，避免模型切换与发送请求竞争。 */
       await input.syncRuntimeModel?.(sessionID)
-      await client.session.promptAsync({
+      const payload = {
         sessionID,
         agent,
         messageID,
         model,
         variant,
         parts: requestParts,
-      })
+      } satisfies Parameters<typeof sdk.client.session.promptAsync>[0]
+
+      if (isOffline()) {
+        enqueuePrompt({
+          directory: sessionDirectory,
+          input: payload,
+          attempts: 0,
+          next_retry_at: Date.now(),
+          created_at: Date.now(),
+        })
+        queueNotice()
+        return
+      }
+
+      const sent = await client.session.promptAsync(payload).then(() => true).catch((error) => error)
+      if (sent !== true) {
+        if (!isNetworkError(sent)) throw sent
+        enqueuePrompt({
+          directory: sessionDirectory,
+          input: payload,
+          attempts: 0,
+          next_retry_at: Date.now(),
+          created_at: Date.now(),
+        })
+        queueNotice()
+        return
+      }
+
       refreshSessionMessages(sessionDirectory, sessionID)
       if (sessionDirectory !== projectDirectory) return
       sync.set("session_status", sessionID, { type: "busy" })
@@ -912,14 +1088,41 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     const send = async () => {
       await input.syncRuntimeModel?.(sessionID)
-      await client.session.promptAsync({
+      const payload = {
         sessionID,
         agent,
         messageID,
         model,
         variant,
         parts: requestParts,
-      })
+      } satisfies Parameters<typeof sdk.client.session.promptAsync>[0]
+
+      if (isOffline()) {
+        enqueuePrompt({
+          directory: sessionDirectory,
+          input: payload,
+          attempts: 0,
+          next_retry_at: Date.now(),
+          created_at: Date.now(),
+        })
+        queueNotice()
+        return
+      }
+
+      const sent = await client.session.promptAsync(payload).then(() => true).catch((error) => error)
+      if (sent !== true) {
+        if (!isNetworkError(sent)) throw sent
+        enqueuePrompt({
+          directory: sessionDirectory,
+          input: payload,
+          attempts: 0,
+          next_retry_at: Date.now(),
+          created_at: Date.now(),
+        })
+        queueNotice()
+        return
+      }
+
       refreshSessionMessages(sessionDirectory, sessionID)
       if (sessionDirectory !== projectDirectory) return
       sync.set("session_status", sessionID, { type: "busy" })

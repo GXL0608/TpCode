@@ -8,6 +8,10 @@ type Input = {
   devPort?: string
 }
 
+function loop(input: string) {
+  return input === "localhost" || input === "127.0.0.1" || input === "::1" || input === "[::1]"
+}
+
 export function normalizeServerUrl(input?: string | null) {
   if (!input) return
   const value = input.trim()
@@ -23,7 +27,11 @@ export function resolveDefaultServerUrl(input: Input) {
   if (stored) return stored
   if (input.hostname.includes("opencode.ai")) return "http://localhost:4096"
   if (input.dev) {
-    return `http://${input.devHost ?? "localhost"}:${input.devPort ?? "4096"}`
+    const host = input.devHost ?? "localhost"
+    const local = loop(host)
+    const page = input.hostname
+    const target = local && !loop(page) ? page : host
+    return `http://${target}:${input.devPort ?? "4096"}`
   }
   return input.origin
 }

@@ -50,6 +50,7 @@ import { MDNS } from "./mdns"
 import { AccountRoutes } from "./routes/account"
 import { UserService } from "@/user/service"
 import { AccountCurrent } from "@/user/current"
+import { RequestCurrent } from "./request-current"
 import { ServerDegraded, ServerDegradedEvent } from "./degraded"
 import { GatewayState } from "./gateway-state"
 import {
@@ -533,6 +534,17 @@ export namespace Server {
               })
             }
           }
+        })
+        .use((c, next) => {
+          const user_agent = c.req.header("user-agent")
+          return RequestCurrent.provide(
+            {
+              ip: c.req.header("x-forwarded-for"),
+              user_agent,
+              terminal_type: /android|iphone|ipad|mobile/i.test(user_agent ?? "") ? "移动端" : "PC",
+            },
+            () => next(),
+          )
         })
         .use(async (c, next) => {
           if (!writeRequest(c.req.method)) return next()

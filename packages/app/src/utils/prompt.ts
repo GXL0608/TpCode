@@ -104,6 +104,9 @@ export function extractPromptFromParts(parts: Part[], opts?: { directory?: strin
 
       if (filePart.url.startsWith("data:")) {
         if (filePart.mime.startsWith("audio/")) {
+          const segments = (filePart as FilePart & {
+            transcript_segments?: Array<{ start?: number; end?: number; text?: string }>
+          }).transcript_segments
           voices.push({
             type: "voice",
             id: filePart.id,
@@ -111,6 +114,24 @@ export function extractPromptFromParts(parts: Part[], opts?: { directory?: strin
             mime: filePart.mime,
             dataUrl: filePart.url,
             duration_ms: 0,
+            transcript_segments: Array.isArray(segments)
+              ? segments
+                  .map((item) => {
+                    const text = String(item.text ?? "").trim()
+                    const start = Number(item.start)
+                    const end = Number(item.end)
+                    if (!text) return
+                    if (!Number.isFinite(start) || !Number.isFinite(end)) return
+                    const from = Math.max(0, start)
+                    const to = end < from ? from : end
+                    return {
+                      start: from,
+                      end: to,
+                      text,
+                    }
+                  })
+                  .filter((item): item is { start: number; end: number; text: string } => !!item)
+              : undefined,
           })
           continue
         }
