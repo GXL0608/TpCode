@@ -3,13 +3,19 @@ import { describeRoute, resolver, validator } from "hono-openapi"
 import z from "zod"
 import { lazy } from "@/util/lazy"
 import { Flag } from "@/flag/flag"
-import { Database, eq } from "@/storage/db"
+import { Database, and, eq, isNull } from "@/storage/db"
 import { TpProductTable } from "@/user/product.sql"
 import { ProductSolutionService } from "@/user/product-solution"
 
 /** 中文注释：校验当前请求是否可以访问指定产品；管理权限放行，其余账号仅允许访问当前上下文产品。 */
 async function requireProductAccess(c: Context, product_id: string) {
-  const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, product_id)).get())
+  const product = await Database.use((db) =>
+    db
+      .select()
+      .from(TpProductTable)
+      .where(and(eq(TpProductTable.id, product_id), isNull(TpProductTable.time_deleted)))
+      .get(),
+  )
   if (!product) {
     return {
       ok: false as const,

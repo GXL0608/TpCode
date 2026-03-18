@@ -3,9 +3,12 @@ import { afterEach, beforeAll, describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { ProjectTable } from "../../src/project/project.sql"
+import { SessionTable } from "../../src/session/session.sql"
 import { Database, eq, inArray } from "../../src/storage/db"
 import { Flag } from "../../src/flag/flag"
 import { Log } from "../../src/util/log"
+import { TpRoleProductAccessTable } from "../../src/user/role-product-access.sql"
+import { TpRoleTable } from "../../src/user/role.sql"
 import { TpProjectUserAccessTable } from "../../src/user/project-user-access.sql"
 import { TpProductSolutionBindingTable } from "../../src/user/product-solution-binding.sql"
 import { TpProductSolutionRootTable } from "../../src/user/product-solution-root.sql"
@@ -14,6 +17,7 @@ import { TpProductTable } from "../../src/user/product.sql"
 import { AccountContextService } from "../../src/user/context"
 import { TpSessionTokenTable } from "../../src/user/token.sql"
 import { TpUserProjectStateTable } from "../../src/user/user-project-state.sql"
+import { TpUserTable } from "../../src/user/user.sql"
 import { AccountProductService } from "../../src/user/product"
 import { ProductSolutionService } from "../../src/user/product-solution"
 import { ensureProjectByDirectory } from "../../src/user/product-anchor"
@@ -76,13 +80,27 @@ describe("account context products", () => {
   const product_ids: string[] = []
   const solution_ids: string[] = []
   const project_ids: string[] = []
+  const session_ids: string[] = []
+  const created_user_ids: string[] = []
   const token_hashes: string[] = []
   const user_ids = new Set<string>()
 
   afterEach(async () => {
     await Database.use(async (db) => {
+      if (session_ids.length > 0) {
+        await db.delete(SessionTable).where(inArray(SessionTable.id, [...session_ids])).run()
+      }
       if (token_hashes.length > 0) {
         await db.delete(TpSessionTokenTable).where(inArray(TpSessionTokenTable.token_hash, [...token_hashes])).run()
+      }
+      if (created_user_ids.length > 0) {
+        await db
+          .update(TpUserTable)
+          .set({
+            time_deleted: Date.now(),
+          })
+          .where(inArray(TpUserTable.id, [...created_user_ids]))
+          .run()
       }
       if (user_ids.size > 0) {
         await db.delete(TpUserProjectStateTable).where(inArray(TpUserProjectStateTable.user_id, [...user_ids])).run()
@@ -107,6 +125,8 @@ describe("account context products", () => {
     product_ids.length = 0
     solution_ids.length = 0
     project_ids.length = 0
+    session_ids.length = 0
+    created_user_ids.length = 0
     token_hashes.length = 0
     user_ids.clear()
   })
@@ -1302,5 +1322,115 @@ describe("account context products", () => {
     const target = body.products.find((item) => item.id === product.item.id)
     expect(target?.name).toBe(product.item.name)
     expect(target?.paths).toEqual([api, client])
+  }, 20_000)
+
+  test.skipIf(!on)("allows config bootstrap and session creation in product-only context", async () => {
+    const { UserService } = await import("../../src/user/service")
+    const username = `product_only_${Date.now()}`
+    const password = "TpCode@123A"
+    const createdUser = await UserService.createUser({
+      username,
+      password,
+      display_name: "Product Only Context User",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(createdUser.ok).toBe(true)
+    if (!("id" in createdUser) || !createdUser.id) return
+    created_user_ids.push(createdUser.id)
+    user_ids.add(createdUser.id)
+
+    const product = await AccountProductService.create({
+      name: `产品空上下文回归_${Date.now()}`,
+      directory: "",
+    })
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+    product_ids.push(product.item.id)
+
+    const developer = await Database.use((db) =>
+      db.select().from(TpRoleTable).where(eq(TpRoleTable.code, "developer")).get(),
+    )
+    expect(developer?.id).toBeTruthy()
+    if (!developer?.id) return
+    await Database.use((db) =>
+      db.insert(TpRoleProductAccessTable)
+        .values({
+          product_id: product.item.id,
+          role_id: developer.id,
+        })
+        .onConflictDoNothing()
+        .run(),
+    )
+
+    const login = await req({
+      path: "/account/login",
+      method: "POST",
+      body: {
+        username,
+        password,
+      },
+    })
+    expect(login.status).toBe(200)
+    const session = (await login.json()) as {
+      access_token: string
+      refresh_token: string
+      user: { id: string }
+    }
+    token_hashes.push(
+      session.access_token ? UserService.tokenHash(session.access_token) : "",
+      session.refresh_token ? UserService.tokenHash(session.refresh_token) : "",
+    )
+
+    const selected = await req({
+      path: "/account/context/select",
+      method: "POST",
+      token: session.access_token,
+      body: {
+        product_id: product.item.id,
+      },
+    })
+    expect(selected.status).toBe(200)
+    const selectedBody = (await selected.json()) as {
+      access_token?: string
+      refresh_token?: string
+      user?: {
+        context_product_id?: string
+        context_project_id?: string
+      }
+    }
+    token_hashes.push(
+      selectedBody.access_token ? UserService.tokenHash(selectedBody.access_token) : "",
+      selectedBody.refresh_token ? UserService.tokenHash(selectedBody.refresh_token) : "",
+    )
+    expect(selectedBody.user?.context_product_id).toBe(product.item.id)
+    expect(selectedBody.user?.context_project_id).toBeUndefined()
+
+    const config = await req({
+      path: "/config",
+      token: selectedBody.access_token,
+    })
+    expect(config.status).toBe(200)
+
+    const listed = await req({
+      path: "/experimental/session?limit=10",
+      token: selectedBody.access_token,
+    })
+    expect(listed.status).toBe(200)
+
+    const created = await req({
+      path: "/session",
+      method: "POST",
+      token: selectedBody.access_token,
+      body: {
+        title: "product_only_context_session",
+      },
+    })
+    expect(created.status).toBe(200)
+    const createdBody = (await created.json()) as { id?: string; title?: string }
+    expect(createdBody.title).toBe("product_only_context_session")
+    if (createdBody.id) session_ids.push(createdBody.id)
   }, 20_000)
 })

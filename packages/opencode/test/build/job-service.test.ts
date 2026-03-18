@@ -325,6 +325,285 @@ describe("build job service", () => {
     expect(prompt).toHaveBeenCalledTimes(1)
   })
 
+  test("reuses the bound build session instead of creating a new session", async () => {
+    await using tmp = await tmpdir()
+    const repo = await createRepo(tmp.path, "frontend")
+
+    const product = await AccountProductService.create({
+      name: "复用会话产品",
+      directory: repo,
+    })
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+
+    const solution = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "复用会话方案",
+      code: "reuse-session",
+      build_profile: {
+        workdirs: ["frontend"],
+        compile_command: "mkdir -p dist && cp source.txt dist/app.txt",
+        artifact_include: ["dist/**"],
+        output_name_template: "{{solution}}.zip",
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: repo,
+          display_name: "复用会话方案",
+          mount_name: "frontend",
+          sort_order: 1,
+        },
+      ],
+    })
+    expect(solution.ok).toBe(true)
+    if (!solution.ok) return
+
+    const project = await Project.get(product.item.project_id!)
+    expect(project).toBeTruthy()
+    if (!project) return
+
+    const workspace = await Instance.provide({
+      directory: project.worktree,
+      fn: () =>
+        Workspace.createOverlay({
+          projectID: project.id,
+          sourceRoots: [repo],
+          members: [
+            {
+              directory: repo,
+              name: "frontend",
+              relative_path: "frontend",
+              solution_id: solution.item.id,
+              solution_code: solution.item.code,
+            },
+          ],
+          name: "reuse-session",
+        }),
+    })
+    const session = await Instance.provide({
+      directory: project.worktree,
+      fn: () =>
+        Session.createNext({
+          directory: workspace.directory,
+          title: "Build Session",
+          workspaceID: workspace.id,
+          workspaceDirectory: workspace.directory,
+          workspaceKind: workspace.kind,
+          workspaceStatus: "ready",
+          workspaceCleanupStatus: "none",
+        }),
+    })
+
+    const createNext = spyOn(Session, "createNext")
+    const prompt = spyOn(
+      SessionPrompt as {
+        prompt: (...args: never[]) => Promise<Awaited<ReturnType<typeof SessionPrompt.prompt>>>
+      },
+      "prompt",
+    ).mockImplementation(async (...args: unknown[]) => {
+      const input = args[0] as Parameters<typeof SessionPrompt.prompt>[0]
+      expect(input.sessionID).toBe(session.id)
+      await touchWorkspace(input.sessionID, ["frontend/source.txt"])
+      return {
+        info: {
+          id: "message_build_reuse_session",
+          sessionID: session.id,
+          parentID: "message_user_reuse_session",
+          role: "assistant",
+          time: { created: Date.now(), completed: Date.now() },
+          providerID: "openai",
+          modelID: "gpt-5.2",
+          mode: "build",
+          path: {
+            cwd: workspace.directory,
+            root: workspace.directory,
+          },
+          agent: "build",
+          cost: 0,
+          tokens: {
+            total: 0,
+            input: 0,
+            output: 0,
+            reasoning: 0,
+            cache: {
+              read: 0,
+              write: 0,
+            },
+          },
+        },
+        parts: [
+          {
+            id: "part_build_reuse_session",
+            sessionID: session.id,
+            messageID: "message_build_reuse_session",
+            type: "text",
+            text: "已完成当前会话代码修改",
+          },
+        ],
+      } as unknown as Awaited<ReturnType<typeof SessionPrompt.prompt>>
+    })
+
+    const job = await BuildJobService.create({
+      source_type: "prompt",
+      prompt_text: "请在当前 build 会话里修改并打包。",
+      product_id: product.item.id,
+      solution_id: solution.item.id,
+      session_id: session.id,
+    })
+    expect(job.ok).toBe(true)
+    if (!job.ok) return
+
+    const executed = await BuildJobService.run(job.job.id)
+    expect(executed.ok).toBe(true)
+    expect(createNext).not.toHaveBeenCalled()
+    expect(prompt).toHaveBeenCalled()
+
+    const stored = await Database.use((db) =>
+      db.select().from(TpBuildJobTable).where(eq(TpBuildJobTable.id, job.job.id)).get(),
+    )
+    expect(stored?.session_id).toBe(session.id)
+    expect(stored?.workspace_id).toBe(workspace.id)
+  })
+
+  test("reuses the same overlay workspace across consecutive build runs in one session", { timeout: 20_000 }, async () => {
+    await using tmp = await tmpdir()
+    const repo = await createRepo(tmp.path, "frontend")
+
+    const product = await AccountProductService.create({
+      name: "连续构建产品",
+      directory: repo,
+    })
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+
+    const solution = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "连续构建方案",
+      code: "reuse-overlay",
+      build_profile: {
+        workdirs: ["frontend"],
+        compile_command: "mkdir -p dist && cp source.txt dist/app.txt",
+        artifact_include: ["dist/**"],
+        output_name_template: "{{solution}}.zip",
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: repo,
+          display_name: "连续构建方案",
+          mount_name: "frontend",
+          sort_order: 1,
+        },
+      ],
+    })
+    expect(solution.ok).toBe(true)
+    if (!solution.ok) return
+
+    const project = await Project.get(product.item.project_id!)
+    expect(project).toBeTruthy()
+    if (!project) return
+
+    const session = await Instance.provide({
+      directory: project.worktree,
+      fn: () =>
+        Session.createNext({
+          directory: repo,
+          title: "Build Session",
+        }),
+    })
+    const createOverlay = spyOn(Workspace, "createOverlay")
+    const prompt = spyOn(
+      SessionPrompt as {
+        prompt: (...args: never[]) => Promise<Awaited<ReturnType<typeof SessionPrompt.prompt>>>
+      },
+      "prompt",
+    ).mockImplementation(async (...args: unknown[]) => {
+      const input = args[0] as Parameters<typeof SessionPrompt.prompt>[0]
+      await touchWorkspace(input.sessionID, ["frontend/source.txt"])
+      const current = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, input.sessionID)).get())
+      return {
+        info: {
+          id: `message_${input.sessionID}`,
+          sessionID: input.sessionID,
+          parentID: `user_${input.sessionID}`,
+          role: "assistant",
+          time: { created: Date.now(), completed: Date.now() },
+          providerID: "openai",
+          modelID: "gpt-5.2",
+          mode: "build",
+          path: {
+            cwd: current?.directory ?? repo,
+            root: current?.directory ?? repo,
+          },
+          agent: "build",
+          cost: 0,
+          tokens: {
+            total: 0,
+            input: 0,
+            output: 0,
+            reasoning: 0,
+            cache: {
+              read: 0,
+              write: 0,
+            },
+          },
+        },
+        parts: [
+          {
+            id: `part_${input.sessionID}`,
+            sessionID: input.sessionID,
+            messageID: `message_${input.sessionID}`,
+            type: "text",
+            text: "已在当前会话继续完成本轮构建修改",
+          },
+        ],
+      } as unknown as Awaited<ReturnType<typeof SessionPrompt.prompt>>
+    })
+
+    const first = await BuildJobService.create({
+      source_type: "prompt",
+      prompt_text: "第一轮构建",
+      product_id: product.item.id,
+      solution_id: solution.item.id,
+      session_id: session.id,
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    const firstRun = await BuildJobService.run(first.job.id)
+    expect(firstRun.ok).toBe(true)
+    if (!firstRun.ok) return
+
+    const second = await BuildJobService.create({
+      source_type: "prompt",
+      prompt_text: "第二轮构建",
+      product_id: product.item.id,
+      solution_id: solution.item.id,
+      session_id: session.id,
+    })
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
+    const secondRun = await BuildJobService.run(second.job.id)
+    expect(secondRun.ok).toBe(true)
+    if (!secondRun.ok) return
+
+    const firstStored = await Database.use((db) =>
+      db.select().from(TpBuildJobTable).where(eq(TpBuildJobTable.id, first.job.id)).get(),
+    )
+    const secondStored = await Database.use((db) =>
+      db.select().from(TpBuildJobTable).where(eq(TpBuildJobTable.id, second.job.id)).get(),
+    )
+    const sessionRow = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, session.id)).get())
+
+    expect(prompt).toHaveBeenCalledTimes(2)
+    expect(createOverlay).toHaveBeenCalledTimes(1)
+    expect(firstStored?.workspace_id).toBeTruthy()
+    expect(secondStored?.workspace_id).toBe(firstStored?.workspace_id)
+    expect(sessionRow?.workspace_id).toBe(firstStored?.workspace_id)
+    expect(sessionRow?.directory).toBe(sessionRow?.workspace_directory)
+    expect(sessionRow?.directory).not.toBe(repo)
+  })
+
   test("coding 超时但已经产生真实改动时，会继续进入编译并保留友好提示", async () => {
     await using tmp = await tmpdir()
     const repo = await createRepo(tmp.path, "timeout-build")

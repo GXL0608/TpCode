@@ -9,8 +9,11 @@ import {
   hasProjectPermissions,
   hiddenWorkspaceDirectory,
   latestRootSession,
+  productContextStateSynced,
   projectSupportsWorkspace,
   projectWorkspaceDirectories,
+  rememberedSessionKey,
+  sortSessions,
   syncWorkspaceOrder,
   workspaceModeEnabled,
   workspaceKey,
@@ -120,6 +123,52 @@ describe("layout workspace helpers", () => {
     )
 
     expect(result?.id).toBe("workspace")
+  })
+
+  test("keeps sessions sorted by updated time even inside the recent window", () => {
+    const result = [
+      session({
+        id: "older",
+        directory: "/root",
+        time: { created: 1, updated: 119_000, archived: undefined },
+      }),
+      session({
+        id: "newer",
+        directory: "/root",
+        time: { created: 2, updated: 119_500, archived: undefined },
+      }),
+    ].sort(sortSessions(120_000))
+
+    expect(result.map((item) => item.id)).toEqual(["newer", "older"])
+  })
+
+  test("builds a stable remembered session key only after the session has real messages", () => {
+    expect(
+      rememberedSessionKey({
+        directory: "/root",
+        id: "ses_1",
+        message_count: 0,
+      }),
+    ).toBeUndefined()
+
+    expect(
+      rememberedSessionKey({
+        directory: "/root",
+        id: "ses_1",
+        message_count: 1,
+      }),
+    ).toBe("/root\0ses_1")
+  })
+
+  test("treats null and undefined last_project_id as the same empty product context", () => {
+    expect(
+      productContextStateSynced({
+        open_project_ids: [],
+        last_project_id: null,
+        state_open_project_ids: [],
+        state_last_project_id: undefined,
+      }),
+    ).toBe(true)
   })
 
   test("detects project permissions with a filter", () => {

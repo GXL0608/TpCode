@@ -10,7 +10,6 @@ import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Flag } from "@/flag/flag"
 import { AccountSystemSettingService } from "@/user/system-setting"
-import { AccountProviderState } from "@/provider/account-provider-state"
 import { UserRbac } from "@/user/rbac"
 
 /** 中文注释：读取当前请求的 provider 配置作用域。 */
@@ -46,7 +45,14 @@ function requireProviderConfig(c: Context) {
 
 /** 中文注释：为 Build 权限用户构建合并后的可见模型目录。 */
 async function managedProviders(user_id: string) {
-  const [state, connected] = await Promise.all([AccountProviderState.load(user_id), Provider.list()])
+  const [state, connected] = await Promise.all([Provider.accountState(user_id), Provider.list()])
+  if (!state) {
+    return {
+      all: [],
+      default: {},
+      connected: [],
+    }
+  }
   const map = new Map<string, z.infer<typeof Provider.Info>>()
   for (const item of state.selectable_models) {
     const provider = connected[item.provider_id]
@@ -93,8 +99,6 @@ export const ProviderRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        const allProviders = await ModelsDev.get()
-        const connected = await Provider.list()
         const user_id = c.get("account_user_id" as never) as string | undefined
 
         const strictAccount = Flag.TPCODE_ACCOUNT_ENABLED
@@ -103,6 +107,7 @@ export const ProviderRoutes = lazy(() =>
             const scoped = await managedProviders(user_id)
             return c.json(scoped)
           }
+          const connected = await Provider.list()
           const current = await Provider.defaultModel().catch(() => undefined)
           if (!current) {
             return c.json({
@@ -134,6 +139,8 @@ export const ProviderRoutes = lazy(() =>
             connected: [scoped.id],
           })
         }
+        const allProviders = await ModelsDev.get()
+        const connected = await Provider.list()
         const config = strictAccount ? undefined : await Config.get()
         const control = strictAccount ? await AccountSystemSettingService.providerControl() : undefined
         const disabled = new Set(strictAccount ? (control?.disabled_providers ?? []) : (config?.disabled_providers ?? []))

@@ -2040,7 +2040,13 @@ export const AccountRoutes = lazy(() =>
       async (c) => {
         const query = c.req.valid("query")
         const product = query.product_id
-          ? await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, query.product_id!)).get())
+          ? await Database.use((db) =>
+              db
+                .select()
+                .from(TpProductTable)
+                .where(and(eq(TpProductTable.id, query.product_id!), isNull(TpProductTable.time_deleted)))
+                .get(),
+            )
           : undefined
         if (query.product_id && !product) {
           return c.json(

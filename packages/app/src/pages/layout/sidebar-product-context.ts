@@ -48,6 +48,30 @@ export function productContextPaths(product?: ProductLike) {
   return [product.worktree]
 }
 
+/** 中文注释：产品对象缺少 project_id/related_project_ids 时，回退用 paths/roots 匹配本地项目，最后再保底当前上下文项目，避免把产品项目集合误判为空。 */
+export function productContextProjectIDs(input: {
+  product?: ProductLike
+  projects: readonly ProjectLike[]
+  current_project_id?: string
+}) {
+  const ids = productProjectIDs(input.product)
+  if (ids.length > 0) return ids
+  const paths = productContextPaths(input.product)
+  const matched = input.projects
+    .flatMap((project) => {
+      if (!project.id) return [] as string[]
+      const directories = [project.worktree, ...(project.sandboxes ?? [])]
+      if (!directories.some((directory) => paths.some((item) => directoryKey(item) === directoryKey(directory)))) {
+        return [] as string[]
+      }
+      return [project.id]
+    })
+    .filter((project_id, index, list) => list.indexOf(project_id) === index)
+  if (matched.length > 0) return matched
+  if (!input.current_project_id) return [] as string[]
+  return [input.current_project_id]
+}
+
 /** 中文注释：当前目录仍落在锚点项目时，优先按产品上下文决定侧栏标题和解决方案路径展示。 */
 export function sidebarProductContext(input: {
   product?: ProductLike

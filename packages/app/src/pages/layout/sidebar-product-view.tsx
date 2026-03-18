@@ -92,6 +92,7 @@ export function SidebarProductPanel(props: {
   sessions: Accessor<ProductSidebarSession[]>
   sessionProps: Omit<SessionItemProps, "session" | "slug" | "children" | "mobile" | "dense" | "popover">
   onCreateSession: () => void
+  onDeleteSession?: (session: Session) => void
   newSessionLabel: Accessor<string>
   newSessionKeybind: Accessor<string | undefined>
 }) {
@@ -129,6 +130,7 @@ export function SidebarProductPanel(props: {
                   mobile={props.mobile}
                   popover={false}
                   children={item.children}
+                  deleteSession={props.onDeleteSession}
                 />
               )}
             </For>

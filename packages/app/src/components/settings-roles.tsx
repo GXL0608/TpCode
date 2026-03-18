@@ -446,7 +446,7 @@ export const SettingsRoles = () => {
 
   const removeRole = async (item: AccountRole) => {
     const ok = globalThis.confirm(
-      `确认删除角色「${item.name || item.code}」？\n\n删除后会同时移除该角色的成员绑定、权限配置，以及关联的产品/项目访问关系，且无法恢复。`,
+      `确认删除角色「${item.name || item.code}」？\n\n删除后该角色会从默认列表中隐藏，成员绑定、权限配置和关联的产品/项目访问关系会保留删除标记。`,
     )
     if (!ok) return
     setState("pending", true)
@@ -461,7 +461,7 @@ export const SettingsRoles = () => {
       setState("error", await parseAccountError(response))
       return
     }
-    setState("message", `角色 ${item.name || item.code} 已删除`)
+    setState("message", `角色 ${item.name || item.code} 已逻辑删除`)
     const page = state.roles.length === 1 && state.rolePage > 1 ? state.rolePage - 1 : state.rolePage
     await auth.reload()
     if (!auth.has("role:manage")) return

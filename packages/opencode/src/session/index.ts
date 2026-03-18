@@ -111,8 +111,19 @@ export namespace Session {
     return project_id === a.context_project_id
   }
 
+  /** 中文注释：统一过滤未逻辑删除的会话，避免删除后的会话继续参与读取、列表和权限校验。 */
+  function activeSession() {
+    return isNull(SessionTable.time_deleted)
+  }
+
   async function assertWritable(sessionID: string) {
-    const row = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(SessionTable)
+        .where(and(eq(SessionTable.id, sessionID), activeSession()))
+        .get(),
+    )
     if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
     if (!canWrite(row)) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
     return row
@@ -907,7 +918,13 @@ export namespace Session {
   }
 
   async function read(id: string) {
-    const row = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(SessionTable)
+        .where(and(eq(SessionTable.id, id), activeSession()))
+        .get(),
+    )
     if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
     if (!canRead(row)) throw new NotFoundError({ message: `Session not found: ${id}` })
     return fromRow(row)
@@ -1434,6 +1451,8 @@ export namespace Session {
 
     const limit = input?.limit ?? 100
 
+    conditions.push(activeSession())
+
     const rows = await Database.use((db) =>
       db
         .select()
@@ -1481,6 +1500,7 @@ export namespace Session {
     if (!input?.archived) {
       conditions.push(isNull(SessionTable.time_archived))
     }
+    conditions.push(activeSession())
     if (a?.context_product_id) {
       conditions.push(eq(SessionTable.context_product_id, a.context_product_id))
     } else if (a?.context_project_id) {
@@ -1535,7 +1555,7 @@ export namespace Session {
   export const children = fn(Identifier.schema("session"), async (parentID) => {
     const project = Instance.project
     const a = actor()
-    const conditions: SQL[] = [eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID)]
+    const conditions: SQL[] = [eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID), activeSession()]
     if (a) {
       conditions.push(eq(SessionTable.user_id, a.user_id))
       if (a.context_product_id) {
@@ -1569,8 +1589,16 @@ export namespace Session {
         workspaceID: row.workspace_id,
       })
     }
+    const now = Date.now()
     await Database.use(async (db) => {
-      await db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run()
+      await db
+        .update(SessionTable)
+        .set({
+          time_deleted: now,
+          time_updated: now,
+        })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
       Database.effect(() =>
         Bus.publish(Event.Deleted, {
           info: session,

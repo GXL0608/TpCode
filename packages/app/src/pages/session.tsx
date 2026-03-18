@@ -15,11 +15,12 @@ import { useGlobalSync } from "@/context/global-sync"
 import { checksum, base64Encode } from "@opencode-ai/util/encode"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useLanguage } from "@/context/language"
-import { useNavigate, useParams } from "@solidjs/router"
+import { useLocation, useNavigate, useParams } from "@solidjs/router"
 import { UserMessage } from "@opencode-ai/sdk/v2"
 import { useSDK } from "@/context/sdk"
 import { usePrompt } from "@/context/prompt"
 import { useComments } from "@/context/comments"
+import { useAccountAuth } from "@/context/account-auth"
 import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { SessionHeader, NewSessionView } from "@/components/session"
 import { same } from "@/utils/same"
@@ -34,7 +35,7 @@ import { SessionComposerRegion, createSessionComposerState } from "@/pages/sessi
 import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
 import { shouldConsumePromptHandoff } from "@/context/layout"
-import { freshSessionHref } from "@/utils/session-route"
+import { freshSessionContextHref, freshSessionKey, isFreshSessionSearch } from "@/utils/session-route"
 
 export default function Page() {
   const layout = useLayout()
@@ -43,6 +44,8 @@ export default function Page() {
   const sync = useSync()
   const dialog = useDialog()
   const language = useLanguage()
+  const auth = useAccountAuth()
+  const location = useLocation()
   const params = useParams()
   const navigate = useNavigate()
   const sdk = useSDK()
@@ -97,6 +100,32 @@ export default function Page() {
         view().reviewPanel.close()
         layout.fileTree.close()
       },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => ({
+        id: params.id,
+        dir: params.dir,
+        search: location.search,
+        fresh_key: new URLSearchParams(location.search).get("fresh_key") ?? "",
+      }),
+      (value) => {
+        if (value.id || !value.dir) return
+        if (!isFreshSessionSearch(value.search)) return
+        const handoff = layout.handoff.prompt(value.dir)
+        if (handoff && Date.now() - handoff.at <= 60_000) return
+        prompt.reset()
+        prompt.context.clear()
+        comments.clear()
+        setStore("messageId", undefined)
+        setStore("newSessionWorktree", "main")
+        setStore("turnStart", 0)
+        // 中文注释：显式再次新建会话时同步重置当前智能体，避免继续沿用上一个新会话页的 build/planner 状态。
+        local.agent.set(undefined)
+      },
+      { defer: true },
     ),
   )
 
@@ -1170,7 +1199,14 @@ export default function Page() {
                     if (!target) return
                     if (target === sdk.directory) return
                     layout.projects.open(target)
-                    navigate(freshSessionHref(base64Encode(target)))
+                    navigate(
+                      freshSessionContextHref({
+                        directory: base64Encode(target),
+                        search: location.search,
+                        fallback_product_id: auth.user()?.context_product_id,
+                        fresh_key: freshSessionKey(),
+                      }),
+                    )
                   }}
                 />
               </Match>

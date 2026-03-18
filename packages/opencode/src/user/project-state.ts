@@ -1,7 +1,7 @@
 import path from "path"
 import { ProjectTable } from "@/project/project.sql"
 import { MessageTable, SessionTable } from "@/session/session.sql"
-import { Database, eq, inArray, or } from "@/storage/db"
+import { Database, and, eq, inArray, isNull, or } from "@/storage/db"
 import { Filesystem } from "@/util/filesystem"
 import { AccountContextService } from "./context"
 import { AccountProductService } from "./product"
@@ -96,9 +96,12 @@ async function fallbackSessions(input: {
       })
       .from(SessionTable)
       .where(
-        or(
-          inArray(SessionTable.project_id, project_ids),
-          inArray(SessionTable.context_project_id, project_ids),
+        and(
+          or(
+            inArray(SessionTable.project_id, project_ids),
+            inArray(SessionTable.context_project_id, project_ids),
+          ),
+          isNull(SessionTable.time_deleted),
         ),
       )
       .all(),
@@ -290,7 +293,7 @@ export namespace AccountProjectStateService {
                 time_updated: SessionTable.time_updated,
               })
               .from(SessionTable)
-              .where(inArray(SessionTable.id, last_session_ids))
+              .where(and(inArray(SessionTable.id, last_session_ids), isNull(SessionTable.time_deleted)))
               .all(),
           )
     const sessionByID = new Map(sessions.map((session) => [session.id, session]))

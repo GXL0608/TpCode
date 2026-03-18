@@ -81,6 +81,7 @@ export type SessionItemProps = {
   clearHoverProjectSoon: () => void
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   archiveSession: (session: Session) => Promise<void>
+  deleteSession?: (session: Session) => void
 }
 
 const SessionRow = (props: {
@@ -347,6 +348,23 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
             }}
           />
         </Tooltip>
+        <Show when={props.deleteSession}>
+          {(remove) => (
+            <Tooltip value={language.t("common.delete")} placement="top">
+              <IconButton
+                icon="trash"
+                variant="ghost"
+                class="size-6 rounded-md"
+                aria-label={language.t("common.delete")}
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  remove()(props.session)
+                }}
+              />
+            </Tooltip>
+          )}
+        </Show>
       </div>
     </div>
   )

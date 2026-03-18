@@ -36,6 +36,21 @@ const WellKnownAuth = z.object({
 const ProviderAuth = z.discriminatedUnion("type", [OauthAuth, ApiAuth, WellKnownAuth])
 const ProviderAuthMap = z.record(z.string(), ProviderAuth)
 const ProviderConfigMap = z.record(z.string(), Config.Provider)
+const ProviderDeletedMap = z.record(z.string(), z.number())
+const ProviderAuthDeletedMap = z.record(
+  z.string(),
+  z.object({
+    time_deleted: z.number(),
+    auth: ProviderAuth,
+  }),
+)
+const ProviderConfigDeletedMap = z.record(
+  z.string(),
+  z.object({
+    time_deleted: z.number(),
+    config: Config.Provider,
+  }),
+)
 
 type ProviderConfig = z.output<typeof Config.Provider>
 type ProviderModelConfig = NonNullable<ProviderConfig["models"]>[string]
@@ -57,6 +72,9 @@ async function write(input: {
   provider_auth_cipher?: string
   provider_control_json?: z.output<typeof UserProviderControl>
   provider_configs_json?: z.output<typeof ProviderConfigMap>
+  provider_deleted_json?: z.output<typeof ProviderDeletedMap>
+  provider_auth_deleted_json?: z.output<typeof ProviderAuthDeletedMap>
+  provider_config_deleted_json?: z.output<typeof ProviderConfigDeletedMap>
 }) {
   await Database.use((db) =>
     db
@@ -66,6 +84,9 @@ async function write(input: {
         provider_auth_cipher: input.provider_auth_cipher ?? null,
         provider_control_json: input.provider_control_json ?? null,
         provider_configs_json: input.provider_configs_json ?? null,
+        provider_deleted_json: input.provider_deleted_json ?? null,
+        provider_auth_deleted_json: input.provider_auth_deleted_json ?? null,
+        provider_config_deleted_json: input.provider_config_deleted_json ?? null,
         time_updated: Date.now(),
       })
       .onConflictDoUpdate({
@@ -74,6 +95,9 @@ async function write(input: {
           provider_auth_cipher: input.provider_auth_cipher ?? null,
           provider_control_json: input.provider_control_json ?? null,
           provider_configs_json: input.provider_configs_json ?? null,
+          provider_deleted_json: input.provider_deleted_json ?? null,
+          provider_auth_deleted_json: input.provider_auth_deleted_json ?? null,
+          provider_config_deleted_json: input.provider_config_deleted_json ?? null,
           time_updated: Date.now(),
         },
       })
@@ -103,6 +127,27 @@ function readConfigs(value: unknown) {
   const parsed = ProviderConfigMap.safeParse(value)
   if (parsed.success) return parsed.data
   return {} as z.output<typeof ProviderConfigMap>
+}
+
+/** 中文注释：解析整条 provider 的逻辑删除时间映射。 */
+function readDeletedProviders(value: unknown) {
+  const parsed = ProviderDeletedMap.safeParse(value)
+  if (parsed.success) return parsed.data
+  return {} as z.output<typeof ProviderDeletedMap>
+}
+
+/** 中文注释：解析 provider 认证逻辑删除快照。 */
+function readDeletedAuths(value: unknown) {
+  const parsed = ProviderAuthDeletedMap.safeParse(value)
+  if (parsed.success) return parsed.data
+  return {} as z.output<typeof ProviderAuthDeletedMap>
+}
+
+/** 中文注释：解析 provider 配置逻辑删除快照。 */
+function readDeletedConfigs(value: unknown) {
+  const parsed = ProviderConfigDeletedMap.safeParse(value)
+  if (parsed.success) return parsed.data
+  return {} as z.output<typeof ProviderConfigDeletedMap>
 }
 
 /** 中文注释：对模型引用字符串做 provider/model 解析。 */
@@ -188,6 +233,9 @@ export namespace AccountUserProviderSettingService {
       provider_auth_cipher: current?.provider_auth_cipher ?? undefined,
       provider_control_json: Object.keys(parsed).length > 0 ? parsed : undefined,
       provider_configs_json: readConfigs(current?.provider_configs_json),
+      provider_deleted_json: readDeletedProviders(current?.provider_deleted_json),
+      provider_auth_deleted_json: readDeletedAuths(current?.provider_auth_deleted_json),
+      provider_config_deleted_json: readDeletedConfigs(current?.provider_config_deleted_json),
     })
     return parsed
   }
@@ -210,11 +258,18 @@ export namespace AccountUserProviderSettingService {
       ...readAuths(current?.provider_auth_cipher),
       [provider_id]: parsed,
     }
+    const deleted = { ...readDeletedProviders(current?.provider_deleted_json) }
+    const deletedAuth = { ...readDeletedAuths(current?.provider_auth_deleted_json) }
+    delete deleted[provider_id]
+    delete deletedAuth[provider_id]
     await write({
       user_id,
       provider_auth_cipher: UserCipher.encrypt(JSON.stringify(next)),
       provider_control_json: readControl(current?.provider_control_json),
       provider_configs_json: readConfigs(current?.provider_configs_json),
+      provider_deleted_json: Object.keys(deleted).length > 0 ? deleted : undefined,
+      provider_auth_deleted_json: Object.keys(deletedAuth).length > 0 ? deletedAuth : undefined,
+      provider_config_deleted_json: readDeletedConfigs(current?.provider_config_deleted_json),
     })
     return parsed
   }
@@ -223,12 +278,23 @@ export namespace AccountUserProviderSettingService {
   export async function removeProviderAuth(user_id: string, provider_id: string) {
     const current = await row(user_id)
     const next = { ...readAuths(current?.provider_auth_cipher) }
+    const removed = next[provider_id]
     delete next[provider_id]
+    const deletedAuth = { ...readDeletedAuths(current?.provider_auth_deleted_json) }
+    if (removed) {
+      deletedAuth[provider_id] = {
+        time_deleted: Date.now(),
+        auth: removed,
+      }
+    }
     await write({
       user_id,
       provider_auth_cipher: Object.keys(next).length > 0 ? UserCipher.encrypt(JSON.stringify(next)) : undefined,
       provider_control_json: readControl(current?.provider_control_json),
       provider_configs_json: readConfigs(current?.provider_configs_json),
+      provider_deleted_json: readDeletedProviders(current?.provider_deleted_json),
+      provider_auth_deleted_json: Object.keys(deletedAuth).length > 0 ? deletedAuth : undefined,
+      provider_config_deleted_json: readDeletedConfigs(current?.provider_config_deleted_json),
     })
   }
 
@@ -250,11 +316,18 @@ export namespace AccountUserProviderSettingService {
       ...readConfigs(current?.provider_configs_json),
       [provider_id]: parsed,
     }
+    const deleted = { ...readDeletedProviders(current?.provider_deleted_json) }
+    const deletedConfig = { ...readDeletedConfigs(current?.provider_config_deleted_json) }
+    delete deleted[provider_id]
+    delete deletedConfig[provider_id]
     await write({
       user_id,
       provider_auth_cipher: current?.provider_auth_cipher ?? undefined,
       provider_control_json: readControl(current?.provider_control_json),
       provider_configs_json: next,
+      provider_deleted_json: Object.keys(deleted).length > 0 ? deleted : undefined,
+      provider_auth_deleted_json: readDeletedAuths(current?.provider_auth_deleted_json),
+      provider_config_deleted_json: Object.keys(deletedConfig).length > 0 ? deletedConfig : undefined,
     })
     return parsed
   }
@@ -263,12 +336,23 @@ export namespace AccountUserProviderSettingService {
   export async function removeProviderConfig(user_id: string, provider_id: string) {
     const current = await row(user_id)
     const next = { ...readConfigs(current?.provider_configs_json) }
+    const removed = next[provider_id]
     delete next[provider_id]
+    const deletedConfig = { ...readDeletedConfigs(current?.provider_config_deleted_json) }
+    if (removed) {
+      deletedConfig[provider_id] = {
+        time_deleted: Date.now(),
+        config: removed,
+      }
+    }
     await write({
       user_id,
       provider_auth_cipher: current?.provider_auth_cipher ?? undefined,
       provider_control_json: readControl(current?.provider_control_json),
       provider_configs_json: Object.keys(next).length > 0 ? next : undefined,
+      provider_deleted_json: readDeletedProviders(current?.provider_deleted_json),
+      provider_auth_deleted_json: readDeletedAuths(current?.provider_auth_deleted_json),
+      provider_config_deleted_json: Object.keys(deletedConfig).length > 0 ? deletedConfig : undefined,
     })
   }
 
@@ -278,8 +362,26 @@ export namespace AccountUserProviderSettingService {
     const auth = { ...readAuths(current?.provider_auth_cipher) }
     const config = { ...readConfigs(current?.provider_configs_json) }
     const control = readControl(current?.provider_control_json)
+    const deleted = { ...readDeletedProviders(current?.provider_deleted_json) }
+    const deletedAuth = { ...readDeletedAuths(current?.provider_auth_deleted_json) }
+    const deletedConfig = { ...readDeletedConfigs(current?.provider_config_deleted_json) }
+    const removedAuth = auth[provider_id]
+    const removedConfig = config[provider_id]
     delete auth[provider_id]
     delete config[provider_id]
+    if (removedAuth) {
+      deletedAuth[provider_id] = {
+        time_deleted: Date.now(),
+        auth: removedAuth,
+      }
+    }
+    if (removedConfig) {
+      deletedConfig[provider_id] = {
+        time_deleted: Date.now(),
+        config: removedConfig,
+      }
+    }
+    deleted[provider_id] = Date.now()
     const nextControl = {
       ...control,
       enabled_providers: control.enabled_providers?.filter((item) => item !== provider_id),
@@ -294,6 +396,9 @@ export namespace AccountUserProviderSettingService {
         Object.entries(nextControl).filter(([, value]) => (Array.isArray(value) ? value.length > 0 : value !== undefined)),
       ) as z.output<typeof UserProviderControl>,
       provider_configs_json: Object.keys(config).length > 0 ? config : undefined,
+      provider_deleted_json: deleted,
+      provider_auth_deleted_json: Object.keys(deletedAuth).length > 0 ? deletedAuth : undefined,
+      provider_config_deleted_json: Object.keys(deletedConfig).length > 0 ? deletedConfig : undefined,
     })
   }
 

@@ -151,6 +151,19 @@ export namespace Server {
     return false
   }
 
+  /** 中文注释：产品上下文下即使暂时没有可访问的项目目录，也应该允许会话主链和首屏配置接口先工作起来。 */
+  function productContextPath(pathname: string) {
+    if (pathname === "/config" || pathname.startsWith("/config/")) return true
+    if (pathname === "/event") return true
+    if (pathname === "/experimental" || pathname.startsWith("/experimental/")) return true
+    if (pathname === "/find" || pathname.startsWith("/find/")) return true
+    if (pathname === "/global" || pathname.startsWith("/global/")) return true
+    if (pathname === "/path") return true
+    if (pathname === "/project" || pathname.startsWith("/project/")) return true
+    if (pathname === "/session" || pathname.startsWith("/session/")) return true
+    return false
+  }
+
   function writeRequest(method: string) {
     return method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE"
   }
@@ -501,7 +514,7 @@ export namespace Server {
                 path.startsWith("/auth/") ||
                 path === "/config/providers"
               const productContextReady =
-                !!user.context_product_id && (path.startsWith("/build") || path.startsWith("/product/"))
+                !!user.context_product_id && (path.startsWith("/build") || path.startsWith("/product/") || productContextPath(path))
               if (
                 !path.startsWith("/account") &&
                 path !== "/global/health" &&

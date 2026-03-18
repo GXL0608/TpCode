@@ -73,17 +73,6 @@ export default function Home() {
       state: local,
       current_project_id: auth.user()?.context_project_id,
     })
-    const current = accountProject.data()
-    const same =
-      next.open_project_ids.length === current.open_project_ids.length &&
-      next.open_project_ids.every((item, index) => item === current.open_project_ids[index]) &&
-      next.last_project_id === current.last_project_id
-    if (!same) {
-      await accountProject.patch({
-        last_project_id: next.last_project_id,
-        open_project_ids: next.open_project_ids,
-      })
-    }
     if (!next.href) return
     navigate(next.href)
   }
@@ -115,17 +104,6 @@ export default function Home() {
       if (!next.href) {
         setRestoring(false)
         return
-      }
-      const current = accountProject.data()
-      const same =
-        next.open_project_ids.length === current.open_project_ids.length &&
-        next.open_project_ids.every((item, index) => item === current.open_project_ids[index]) &&
-        next.last_project_id === current.last_project_id
-      if (!same) {
-        await accountProject.patch({
-          last_project_id: next.last_project_id,
-          open_project_ids: next.open_project_ids,
-        })
       }
       navigate(next.href, { replace: true })
     })()

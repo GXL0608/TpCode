@@ -70,7 +70,7 @@ import {
 import { base64Encode } from "@opencode-ai/util/encode"
 import { buildPackageDisabledReason, buildPackagePrompt, canUseBuildPackage } from "./build-package"
 import { errorMessage } from "@/pages/layout/helpers"
-import { freshSessionHref } from "@/utils/session-route"
+import { freshSessionHref, freshSessionKey } from "@/utils/session-route"
 import type { Workspace } from "@opencode-ai/sdk/v2/client"
 
 interface PromptInputProps {
@@ -1624,7 +1624,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     const slug = base64Encode(target.worktree)
     layout.handoff.setPrompt(slug, next, next.length)
-    navigate(freshSessionHref(slug))
+    navigate(freshSessionHref(slug, undefined, freshSessionKey()))
     return {
       ok: true,
     } as const

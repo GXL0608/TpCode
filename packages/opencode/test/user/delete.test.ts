@@ -1,5 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test"
+import { Database, eq } from "../../src/storage/db"
 import { Flag } from "../../src/flag/flag"
+import { TpRoleTable } from "../../src/user/role.sql"
+import { TpUserTable } from "../../src/user/user.sql"
 
 const accountEnabled = Flag.TPCODE_ACCOUNT_ENABLED
 
@@ -55,8 +58,32 @@ describe("account delete", () => {
     })
     expect(deleted.ok).toBe(true)
 
+    const stored = await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, created.id)).get())
+    expect(stored?.time_deleted).toBeNumber()
+    const listed = await user.listUsers({ keyword: username })
+    expect(listed.some((item) => item.username === username)).toBe(false)
+
+    const recreated = await user.createUser({
+      username,
+      password,
+      display_name: "Delete User Recreated",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["developer"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(recreated.ok).toBe(true)
+
     const denied = await user.authorize(token)
     expect(denied).toBeUndefined()
+
+    if ("id" in recreated && recreated.id) {
+      const cleanup = await user.deleteUser({
+        user_id: recreated.id,
+        actor_user_id: "user_tp_admin",
+      })
+      expect(cleanup.ok).toBe(true)
+    }
   })
 
   test.skipIf(!accountEnabled)("cannot delete current user", async () => {
@@ -124,6 +151,18 @@ describe("account delete", () => {
     })
     expect(deleted.ok).toBe(true)
 
+    const stored = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, roleCode)).get())
+    expect(stored?.time_deleted).toBeNumber()
+    const listed = await user.listRoles()
+    expect(listed.some((item) => item.code === roleCode)).toBe(false)
+
+    const recreated = await user.createRole({
+      code: roleCode,
+      name: "Delete Role Recreated",
+      actor_user_id: "user_tp_admin",
+    })
+    expect(recreated.ok).toBe(true)
+
     const refreshed = await user.authorize(token)
     expect(refreshed?.roles).not.toContain(roleCode)
     expect(refreshed?.permissions).not.toContain("session:create")
@@ -131,6 +170,13 @@ describe("account delete", () => {
     if ("id" in createdUser && createdUser.id) {
       const cleanup = await user.deleteUser({
         user_id: createdUser.id,
+        actor_user_id: "user_tp_admin",
+      })
+      expect(cleanup.ok).toBe(true)
+    }
+    if ("id" in recreated && recreated.id) {
+      const cleanup = await user.deleteRole({
+        role_code: roleCode,
         actor_user_id: "user_tp_admin",
       })
       expect(cleanup.ok).toBe(true)

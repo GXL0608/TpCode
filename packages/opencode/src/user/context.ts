@@ -1,6 +1,6 @@
 import { Project } from "@/project/project"
 import { ProjectTable } from "@/project/project.sql"
-import { Database, and, eq, inArray } from "@/storage/db"
+import { Database, and, eq, inArray, isNull } from "@/storage/db"
 import { Flag } from "@/flag/flag"
 import { TpRoleTable, TpUserRoleTable } from "./role.sql"
 import { TpProjectRoleAccessTable } from "./project-role-access.sql"
@@ -50,6 +50,11 @@ function matchesProductProject(input: {
 
 function unique(input: string[]) {
   return [...new Set(input)]
+}
+
+/** 中文注释：统一过滤未逻辑删除的角色，避免软删除角色继续参与项目授权推导。 */
+function activeRole() {
+  return isNull(TpRoleTable.time_deleted)
 }
 
 const CONTEXT_CACHE_TTL_MS = 300_000
@@ -115,7 +120,13 @@ async function userRoles(user_id: string) {
   const links = await Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
   if (links.length === 0) return { ids: [] as string[], codes: [] as string[] }
   const ids = unique(links.map((item) => item.role_id))
-  const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, ids)).all())
+  const rows = await Database.use((db) =>
+    db
+      .select()
+      .from(TpRoleTable)
+      .where(and(inArray(TpRoleTable.id, ids), activeRole()))
+      .all(),
+  )
   return { ids, codes: rows.map((item) => item.code) }
 }
 
@@ -321,7 +332,13 @@ export namespace AccountContextService {
     const roles =
       roleIDs.length === 0
         ? []
-        : await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, roleIDs)).all())
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpRoleTable)
+              .where(and(inArray(TpRoleTable.id, roleIDs), activeRole()))
+              .all(),
+          )
     const roleByID = new Map(roles.map((item) => [item.id, item]))
     return rows.map((item) => ({
       project_id: item.project_id,
@@ -339,7 +356,13 @@ export namespace AccountContextService {
     const roles =
       role_codes.length === 0
         ? []
-        : await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, role_codes)).all())
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpRoleTable)
+              .where(and(inArray(TpRoleTable.code, role_codes), activeRole()))
+              .all(),
+          )
     if (roles.length !== role_codes.length) return { ok: false as const, code: "role_missing" }
     await Database.use(async (db) => {
       await db.delete(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.project_id, input.project_id)).run()
@@ -388,7 +411,13 @@ export namespace AccountContextService {
     const users =
       userIDs.length === 0
         ? []
-        : await Database.use((db) => db.select().from(TpUserTable).where(inArray(TpUserTable.id, userIDs)).all())
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpUserTable)
+              .where(and(inArray(TpUserTable.id, userIDs), isNull(TpUserTable.time_deleted)))
+              .all(),
+          )
     const userByID = new Map(users.map((item) => [item.id, item]))
     return rows.map((item) => ({
       project_id: item.project_id,
@@ -403,7 +432,13 @@ export namespace AccountContextService {
   export async function setUserAccess(input: { project_id: string; user_id: string; mode: "allow" | "deny" | "remove" }) {
     const project = await Database.use((db) => db.select({ id: ProjectTable.id }).from(ProjectTable).where(eq(ProjectTable.id, input.project_id)).get())
     if (!project) return { ok: false as const, code: "project_missing" }
-    const user = await Database.use((db) => db.select({ id: TpUserTable.id }).from(TpUserTable).where(eq(TpUserTable.id, input.user_id)).get())
+    const user = await Database.use((db) =>
+      db
+        .select({ id: TpUserTable.id })
+        .from(TpUserTable)
+        .where(and(eq(TpUserTable.id, input.user_id), isNull(TpUserTable.time_deleted)))
+        .get(),
+    )
     if (!user) return { ok: false as const, code: "user_missing" }
     if (input.mode === "remove") {
       await Database.use((db) =>
@@ -437,7 +472,13 @@ export namespace AccountContextService {
   }
 
   export async function roleProjects(role_code: string) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, role_code), activeRole()))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" }
     const links = await Database.use((db) =>
       db.select().from(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.role_id, role.id)).all(),
@@ -461,7 +502,13 @@ export namespace AccountContextService {
   }
 
   export async function setRoleProjects(input: { role_code: string; project_ids: string[] }) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, input.role_code), activeRole()))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" }
     const project_ids = unique(input.project_ids)
     const projects =

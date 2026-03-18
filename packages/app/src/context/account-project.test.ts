@@ -361,6 +361,37 @@ describe("account project list", () => {
     ).toBe("/backend")
   })
 
+  test("falls back to product paths when project catalog is unavailable", () => {
+    expect(
+      productEntryDirectory({
+        product: {
+          paths: ["/Volumes/TPCode/07慢病系统-JAVA/后端", "/Volumes/TPCode/07慢病系统-JAVA/前端"],
+        },
+        projects: [],
+      }),
+    ).toBe("/Volumes/TPCode/07慢病系统-JAVA/后端")
+  })
+
+  test("falls back to solution roots when product paths are missing", () => {
+    expect(
+      productEntryDirectory({
+        product: {
+          solutions: [
+            {
+              roots: [
+                {
+                  directory: "/Volumes/TPCode/02HIS-CS/CSHIS",
+                  enabled: true,
+                },
+              ],
+            },
+          ],
+        },
+        projects: [],
+      }),
+    ).toBe("/Volumes/TPCode/02HIS-CS/CSHIS")
+  })
+
   test("clears the stale current project when the selected product has no anchor project", () => {
     expect(
       currentProjectID({
@@ -412,8 +443,17 @@ describe("account project list", () => {
   test("skips the immediate reload after an explicit context switch to the same project", () => {
     expect(
       shouldSkipAccountProjectReload({
-        skip_for: "b",
+        skip_for_project: "b",
         context_project_id: "b",
+      }),
+    ).toBe(true)
+  })
+
+  test("skips the immediate reload after an explicit product switch to the same product", () => {
+    expect(
+      shouldSkipAccountProjectReload({
+        skip_for_product: "product_b",
+        context_product_id: "product_b",
       }),
     ).toBe(true)
   })
@@ -421,14 +461,20 @@ describe("account project list", () => {
   test("does not skip reload when the context does not match the pending skip marker", () => {
     expect(
       shouldSkipAccountProjectReload({
-        skip_for: "b",
+        skip_for_project: "b",
         context_project_id: "c",
       }),
     ).toBe(false)
     expect(
       shouldSkipAccountProjectReload({
-        skip_for: undefined,
+        skip_for_project: undefined,
         context_project_id: "b",
+      }),
+    ).toBe(false)
+    expect(
+      shouldSkipAccountProjectReload({
+        skip_for_product: "product_b",
+        context_product_id: "product_c",
       }),
     ).toBe(false)
   })

@@ -24,6 +24,7 @@ import { useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
 import { archiveCleanupFailed, archiveWithConfirm } from "@/utils/session-archive"
+import { removeSessionBranch } from "@/utils/session-delete"
 import { setReasoningManual, type ReasoningState } from "@opencode-ai/util/reasoning-state"
 
 type MessageComment = {
@@ -291,36 +292,7 @@ export function MessageTimeline(props: {
 
     sync.set(
       produce((draft) => {
-        const removed = new Set<string>([sessionID])
-
-        const byParent = new Map<string, string[]>()
-        for (const item of draft.session) {
-          const parentID = item.parentID
-          if (!parentID) continue
-          const existing = byParent.get(parentID)
-          if (existing) {
-            existing.push(item.id)
-            continue
-          }
-          byParent.set(parentID, [item.id])
-        }
-
-        const stack = [sessionID]
-        while (stack.length) {
-          const parentID = stack.pop()
-          if (!parentID) continue
-
-          const children = byParent.get(parentID)
-          if (!children) continue
-
-          for (const child of children) {
-            if (removed.has(child)) continue
-            removed.add(child)
-            stack.push(child)
-          }
-        }
-
-        draft.session = draft.session.filter((s) => !removed.has(s.id))
+        draft.session = removeSessionBranch(draft.session, sessionID)
       }),
     )
 

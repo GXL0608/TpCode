@@ -274,6 +274,21 @@ function builtinUser(user: UserRow) {
   return user.username === "admin" && (user.external_source ?? "").trim() === "tpcode"
 }
 
+/** 中文注释：统一过滤未逻辑删除的用户，避免删除后的账号继续参与鉴权和列表展示。 */
+function activeUser() {
+  return isNull(TpUserTable.time_deleted)
+}
+
+/** 中文注释：统一过滤未逻辑删除的角色，避免删除后的角色继续参与权限计算。 */
+function activeRole() {
+  return isNull(TpRoleTable.time_deleted)
+}
+
+/** 中文注释：统一过滤未逻辑删除的产品，避免删除后的产品继续作为账号上下文候选。 */
+function activeProduct() {
+  return isNull(TpProductTable.time_deleted)
+}
+
 /** 中文注释：统一组装登录态用户信息，同时返回产品与项目双上下文，方便前后端平滑迁移。 */
 function profile(input: {
   user: UserRow
@@ -659,11 +674,23 @@ export namespace UserService {
   }
 
   export async function userByID(user_id: string) {
-    return await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, user_id)).get())
+    return await Database.use((db) =>
+      db
+        .select()
+        .from(TpUserTable)
+        .where(and(eq(TpUserTable.id, user_id), activeUser()))
+        .get(),
+    )
   }
 
   export async function userByUsername(username: string) {
-    return await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, username)).get())
+    return await Database.use((db) =>
+      db
+        .select()
+        .from(TpUserTable)
+        .where(and(eq(TpUserTable.username, username), activeUser()))
+        .get(),
+    )
   }
 
   export async function orgByCode(code: string) {
@@ -674,7 +701,13 @@ export namespace UserService {
     const links = await Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
     const ids = [...new Set(links.map((item) => item.role_id))]
     if (ids.length === 0) return [] as string[]
-    const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, ids)).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(inArray(TpRoleTable.id, ids), activeRole()))
+        .all(),
+    )
     return rows.map((item) => item.code)
   }
 
@@ -682,8 +715,17 @@ export namespace UserService {
     const links = await Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
     const role_ids = [...new Set(links.map((item) => item.role_id))]
     if (role_ids.length === 0) return [] as string[]
+    const roles = await Database.use((db) =>
+      db
+        .select({ id: TpRoleTable.id })
+        .from(TpRoleTable)
+        .where(and(inArray(TpRoleTable.id, role_ids), activeRole()))
+        .all(),
+    )
+    const active_role_ids = roles.map((item) => item.id)
+    if (active_role_ids.length === 0) return [] as string[]
     const permLinks = await Database.use((db) =>
-      db.select().from(TpRolePermissionTable).where(inArray(TpRolePermissionTable.role_id, role_ids)).all(),
+      db.select().from(TpRolePermissionTable).where(inArray(TpRolePermissionTable.role_id, active_role_ids)).all(),
     )
     const perm_ids = [...new Set(permLinks.map((item) => item.permission_id))]
     if (perm_ids.length === 0) return [] as string[]
@@ -933,7 +975,13 @@ export namespace UserService {
   async function restoreContext(user_id: string) {
     const product_id = await AccountContextService.lastProduct(user_id)
     if (product_id) {
-      const row = await Database.use((db) => db.select({ id: TpProductTable.id }).from(TpProductTable).where(eq(TpProductTable.id, product_id)).get())
+      const row = await Database.use((db) =>
+        db
+          .select({ id: TpProductTable.id })
+          .from(TpProductTable)
+          .where(and(eq(TpProductTable.id, product_id), activeProduct()))
+          .get(),
+      )
       if (row) {
         const project_id = await AccountContextService.lastProject(user_id)
         return {
@@ -1816,7 +1864,13 @@ export namespace UserService {
 
   async function roleIDs(codes: string[]) {
     if (codes.length === 0) return [] as string[]
-    const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, codes)).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(inArray(TpRoleTable.code, codes), activeRole()))
+        .all(),
+    )
     return rows.map((item) => item.id)
   }
 
@@ -1938,7 +1992,14 @@ export namespace UserService {
   }
 
   export async function listRoles() {
-    const rows = await Database.use((db) => db.select().from(TpRoleTable).orderBy(TpRoleTable.code).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(activeRole())
+        .orderBy(TpRoleTable.code)
+        .all(),
+    )
     return await roleItems(rows)
   }
 
@@ -1951,6 +2012,7 @@ export namespace UserService {
         db
           .select()
           .from(TpRoleTable)
+          .where(activeRole())
           .orderBy(TpRoleTable.code)
           .limit(page_size)
           .offset(offset)
@@ -1962,6 +2024,7 @@ export namespace UserService {
             total: sql<number>`count(*)`,
           })
           .from(TpRoleTable)
+          .where(activeRole())
           .get(),
       ),
     ])
@@ -1975,7 +2038,7 @@ export namespace UserService {
   }
 
   function userFilter(input?: { org_id?: string; department_id?: string; keyword?: string }) {
-    const conditions: SQL[] = []
+    const conditions: SQL[] = [activeUser()]
     if (input?.org_id) conditions.push(eq(TpUserTable.org_id, input.org_id))
     if (input?.department_id) conditions.push(eq(TpUserTable.department_id, input.department_id))
     if (input?.keyword) {
@@ -2003,11 +2066,11 @@ export namespace UserService {
         ? []
         : await Database.use((db) =>
             db
-              .select()
-              .from(TpRoleTable)
-              .where(inArray(TpRoleTable.id, role_ids))
-              .all(),
-          )
+          .select()
+          .from(TpRoleTable)
+          .where(and(inArray(TpRoleTable.id, role_ids), activeRole()))
+          .all(),
+      )
     const roleCode = new Map(roles.map((item) => [item.id, item.code]))
 
     const rolePermLinks =
@@ -2261,7 +2324,13 @@ export namespace UserService {
     if (!roleCodeValid(code)) return { ok: false as const, code: "role_code_invalid" }
     const name = input.name.trim()
     if (!name) return { ok: false as const, code: "role_name_invalid" }
-    const exists = await Database.use((db) => db.select({ id: TpRoleTable.id }).from(TpRoleTable).where(eq(TpRoleTable.code, code)).get())
+    const exists = await Database.use((db) =>
+      db
+        .select({ id: TpRoleTable.id })
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, code), activeRole()))
+        .get(),
+    )
     if (exists) return { ok: false as const, code: "role_exists" }
     const permission_codes = [
       ...new Set(
@@ -2417,7 +2486,7 @@ export namespace UserService {
             db
               .select()
               .from(TpUserTable)
-              .where(inArray(TpUserTable.username, usernames))
+              .where(and(inArray(TpUserTable.username, usernames), activeUser()))
               .all(),
           )
     const users = new Map(existing.map((item) => [item.username, item]))
@@ -2894,7 +2963,18 @@ export namespace UserService {
     if (!user) return { ok: false as const, code: "user_missing" }
     if (input.actor_user_id && input.actor_user_id === input.user_id) return { ok: false as const, code: "user_self_delete_forbidden" }
     if (builtinUser(user)) return { ok: false as const, code: "user_builtin_forbidden" }
-    await Database.use((db) => db.delete(TpUserTable).where(eq(TpUserTable.id, input.user_id)).run())
+    const now = Date.now()
+    await Database.use((db) =>
+      db
+        .update(TpUserTable)
+        .set({
+          status: "inactive",
+          time_deleted: now,
+          time_updated: now,
+        })
+        .where(eq(TpUserTable.id, input.user_id))
+        .run(),
+    )
     invalidateByUserID(input.user_id)
     AccountContextService.invalidateProjectAccess({ user_id: input.user_id })
     auditLater({
@@ -2919,7 +2999,13 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, input.role_code), activeRole()))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" }
     const codes = [...new Set(input.permission_codes)]
     const permission_ids = await permissionIDs(codes)
@@ -2964,7 +3050,13 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, input.role_code), activeRole()))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" }
     if (builtinRole(role.code)) return { ok: false as const, code: "role_builtin_forbidden" }
     const affectedUsers = await Database.use((db) =>
@@ -2974,7 +3066,18 @@ export namespace UserService {
         .where(eq(TpUserRoleTable.role_id, role.id))
         .all(),
     )
-    await Database.use((db) => db.delete(TpRoleTable).where(eq(TpRoleTable.id, role.id)).run())
+    const now = Date.now()
+    await Database.use((db) =>
+      db
+        .update(TpRoleTable)
+        .set({
+          status: "inactive",
+          time_deleted: now,
+          time_updated: now,
+        })
+        .where(eq(TpRoleTable.id, role.id))
+        .run(),
+    )
     for (const item of affectedUsers) {
       invalidateByUserID(item.user_id)
       AccountContextService.invalidateProjectAccess({ user_id: item.user_id })

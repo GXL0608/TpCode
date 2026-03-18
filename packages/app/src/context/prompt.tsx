@@ -225,6 +225,9 @@ function createPromptSession(dir: string, id: string | undefined) {
           ...items.map((item) => ({ ...item, key: contextItemKey(item) })),
         ])
       },
+      clear() {
+        setStore("context", "items", [])
+      },
     },
     set: actions.set,
     reset: actions.reset,
@@ -291,6 +294,7 @@ export const { use: usePrompt, provider: PromptProvider } = createSimpleContext(
         updateComment: (path: string, commentID: string, next: Partial<FileContextItem> & { comment?: string }) =>
           session().context.updateComment(path, commentID, next),
         replaceComments: (items: FileContextItem[]) => session().context.replaceComments(items),
+        clear: () => session().context.clear(),
       },
       set: (prompt: Prompt, cursorPosition?: number) => session().set(prompt, cursorPosition),
       reset: () => session().reset(),

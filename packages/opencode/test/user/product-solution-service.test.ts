@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { $ } from "bun"
-import { Database } from "../../src/storage/db"
+import { Database, eq } from "../../src/storage/db"
 import { TpProductSolutionBindingTable } from "../../src/user/product-solution-binding.sql"
 import { TpProductTable } from "../../src/user/product.sql"
 import { TpProductSolutionRootTable } from "../../src/user/product-solution-root.sql"
@@ -279,6 +279,102 @@ describe("product solution service", () => {
 
     expect(itemA?.solutions?.map((item) => item.id)).toEqual([solution.item.id])
     expect(itemB?.solutions?.map((item) => item.id)).toEqual([solution.item.id])
+  })
+
+  test("soft deletes products, solutions and bindings while keeping them out of active lists", async () => {
+    await using tmp = await tmpdir()
+    const frontend = await createRepo(tmp.path, "soft-delete-frontend")
+    const backend = await createRepo(tmp.path, "soft-delete-backend")
+
+    const product = await AccountProductService.create({
+      name: "逻辑删除产品",
+      directory: frontend,
+    })
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+
+    const created = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "逻辑删除方案",
+      code: "soft-delete-solution",
+      build_profile: {
+        workdirs: ["."],
+        compile_command: "echo build",
+        artifact_include: ["dist/**"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: backend,
+          display_name: "后端",
+        },
+      ],
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+
+    const unbound = await ProductSolutionService.unbind({
+      product_id: product.item.id,
+      solution_id: created.item.id,
+    })
+    expect(unbound.ok).toBe(true)
+
+    const binding = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionBindingTable)
+        .where(eq(TpProductSolutionBindingTable.product_id, product.item.id))
+        .get(),
+    )
+    expect(binding?.time_deleted).toBeNumber()
+    expect(await ProductSolutionService.list(product.item.id)).toHaveLength(0)
+
+    const rebound = await ProductSolutionService.bind({
+      product_id: product.item.id,
+      solution_id: created.item.id,
+    })
+    expect(rebound.ok).toBe(true)
+
+    const removedSolution = await ProductSolutionService.remove(created.item.id)
+    expect(removedSolution.ok).toBe(true)
+    const storedSolution = await Database.use((db) =>
+      db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, created.item.id)).get(),
+    )
+    expect(storedSolution?.time_deleted).toBeNumber()
+    expect((await ProductSolutionService.listLibrary()).some((item) => item.id === created.item.id)).toBe(false)
+
+    const recreated = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "逻辑删除方案重建",
+      code: "soft-delete-solution",
+      build_profile: {
+        workdirs: ["."],
+        compile_command: "echo build",
+        artifact_include: ["dist/**"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: backend,
+          display_name: "后端",
+        },
+      ],
+    })
+    expect(recreated.ok).toBe(true)
+
+    const removedProduct = await AccountProductService.remove(product.item.id)
+    expect(removedProduct.ok).toBe(true)
+    const storedProduct = await Database.use((db) =>
+      db.select().from(TpProductTable).where(eq(TpProductTable.id, product.item.id)).get(),
+    )
+    expect(storedProduct?.time_deleted).toBeNumber()
+    expect((await AccountProductService.list()).some((item) => item.id === product.item.id)).toBe(false)
+
+    const recreatedProduct = await AccountProductService.create({
+      name: "逻辑删除产品",
+      directory: "",
+    })
+    expect(recreatedProduct.ok).toBe(true)
   })
 
   test("unbinds a shared solution from one product without removing the solution", async () => {

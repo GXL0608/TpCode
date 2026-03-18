@@ -11,7 +11,8 @@ import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
 import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
-import { freshSessionHref } from "@/utils/session-route"
+import { useAccountAuth } from "@/context/account-auth"
+import { freshSessionContextHref, freshSessionKey } from "@/utils/session-route"
 import { applyPath, backPath, forwardPath } from "./titlebar-history"
 
 type TauriDesktopWindow = {
@@ -37,6 +38,7 @@ const currentDesktopWindow = () => tauriApi()?.window?.getCurrentWindow?.()
 const currentThemeWindow = () => tauriApi()?.webviewWindow?.getCurrentWebviewWindow?.()
 
 export function Titlebar() {
+  const auth = useAccountAuth()
   const layout = useLayout()
   const platform = usePlatform()
   const command = useCommand()
@@ -235,7 +237,14 @@ export function Titlebar() {
                   class="titlebar-icon w-8 h-6 p-0 box-border"
                   onClick={() => {
                     if (!params.dir) return
-                    navigate(freshSessionHref(params.dir))
+                    navigate(
+                      freshSessionContextHref({
+                        directory: params.dir,
+                        search: location.search,
+                        fallback_product_id: auth.user()?.context_product_id,
+                        fresh_key: freshSessionKey(),
+                      }),
+                    )
                   }}
                   aria-label={language.t("command.session.new")}
                 />

@@ -1195,6 +1195,7 @@ export namespace Provider {
     }
 
     return {
+      account,
       models: languages,
       providers,
       sdk,
@@ -1204,6 +1205,16 @@ export namespace Provider {
 
   export async function list() {
     return state().then((state) => state.providers)
+  }
+
+  /** 中文注释：优先复用当前 provider state 内已加载的账号态数据，避免同一请求里重复执行账号 provider 聚合。 */
+  export async function accountState(user_id?: string) {
+    if (!strictAccountScope()) return
+    const current = AccountCurrent.optional()
+    if (user_id && current?.user_id !== user_id) {
+      return AccountProviderState.load(user_id)
+    }
+    return state().then((result) => result.account)
   }
 
   async function getSDK(model: Model) {

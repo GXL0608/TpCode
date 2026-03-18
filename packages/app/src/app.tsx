@@ -31,6 +31,7 @@ import DirectoryLayout from "@/pages/directory-layout"
 import Layout from "@/pages/layout"
 import Session from "@/pages/session"
 import { ErrorPage } from "./pages/error"
+import { loginRedirectHref } from "@/utils/account-login-redirect"
 
 const Home = lazy(() => import("@/pages/home"))
 const AccountProjectSelect = lazy(() => import("@/pages/account-project-select"))
@@ -114,10 +115,11 @@ const ApprovalWorkflowRoute = () => (
   </Suspense>
 )
 
+/** 中文注释：受保护页面在未登录时必须保留完整深链接，登录成功后才能正确回到原会话或产品页。 */
 function ProtectedRoute(props: ParentProps) {
   const auth = useAccountAuth()
   const location = useLocation()
-  const redirect = () => `/login${location.search}`
+  const redirect = () => loginRedirectHref(location.pathname, location.search)
   return (
     <Show when={auth.ready()} fallback={<Loading />}>
       <Show when={auth.authenticated()} fallback={<Navigate href={redirect()} />}>
@@ -277,7 +279,16 @@ export function AppInterface(props: {
     </ProtectedRoute>
   )
 
-  const SelectShell = (shellProps: ParentProps) => <ProtectedRoute>{shellProps.children}</ProtectedRoute>
+  /** 中文注释：产品选择页需要账号项目上下文和全局同步数据，但不需要进入主布局壳。 */
+  const SelectShell = (shellProps: ParentProps) => (
+    <ProtectedRoute>
+      <GlobalSDKProvider>
+        <GlobalSyncProvider>
+          <AccountProjectProvider>{shellProps.children}</AccountProjectProvider>
+        </GlobalSyncProvider>
+      </GlobalSDKProvider>
+    </ProtectedRoute>
+  )
 
   const AccountOnlyShell = (shellProps: ParentProps) => (
     <ProtectedRoute>
@@ -374,13 +385,22 @@ export function AppInterface(props: {
               path="/:dir"
               component={(routeProps) => (
                 <ProtectedShell>
-                  <DirectoryLayout {...routeProps} />
+                  <DirectoryLayout {...routeProps}>
+                    <SessionIndexRoute />
+                  </DirectoryLayout>
                 </ProtectedShell>
               )}
-            >
-              <Route path="" component={SessionIndexRoute} />
-              <Route path="session/:id?" component={SessionRoute} />
-            </Route>
+            />
+            <Route
+              path="/:dir/session/:id?"
+              component={(routeProps) => (
+                <ProtectedShell>
+                  <DirectoryLayout {...routeProps}>
+                    <SessionRoute />
+                  </DirectoryLayout>
+                </ProtectedShell>
+              )}
+            />
           </Router>
         </AccountAuthProvider>
       </ServerKey>

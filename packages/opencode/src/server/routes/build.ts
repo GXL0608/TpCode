@@ -17,6 +17,7 @@ const BuildJobCreateBody = z.object({
   solution_id: z.string().optional(),
   prompt_text: z.string().optional(),
   saved_plan_id: z.string().optional(),
+  session_id: z.string().optional(),
   providerID: z.string().optional(),
   modelID: z.string().optional(),
   run_mode: z.enum(["async", "sync"]).optional(),
@@ -201,12 +202,19 @@ export const BuildRoutes = lazy(() =>
         }
         const runtime = await resolveRuntimeModel(c, body)
         if (!runtime.ok) return runtime.response
+        if (body.session_id?.trim()) {
+          const readable = await Session.readableSessionIDs([body.session_id.trim()])
+          if (!readable.has(body.session_id.trim())) {
+            return c.json({ ok: false, code: "session_missing" }, 404)
+          }
+        }
         const created = await BuildJobService.create({
           source_type: body.source_type,
           product_id,
           solution_id: body.solution_id,
           prompt_text: body.prompt_text,
           saved_plan_id: body.saved_plan_id,
+          session_id: body.session_id,
           runtime_model: runtime.runtime_model,
         })
         if (!created.ok) return c.json(created, 400)

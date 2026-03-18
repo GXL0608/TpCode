@@ -5,7 +5,7 @@ import { $ } from "bun"
 import { ulid } from "ulid"
 import { Archive } from "@/util/archive"
 import { BuildProfile, normalizeBuildProfile } from "./profile"
-import { Database, and, asc, desc, eq, inArray, or } from "@/storage/db"
+import { Database, and, asc, desc, eq, inArray, isNull, or } from "@/storage/db"
 import { TpBuildArtifactTable } from "./artifact.sql"
 import { TpBuildJobTable } from "./job.sql"
 import { TpBuildJobStageTable } from "./job-stage.sql"
@@ -14,6 +14,7 @@ import { TpProductTable } from "@/user/product.sql"
 import { Session } from "@/session"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageV2 } from "@/session/message-v2"
+import { SessionTable } from "@/session/session.sql"
 import { Workspace } from "@/control-plane/workspace"
 import { Instance } from "@/project/instance"
 import { Project } from "@/project/project"
@@ -977,6 +978,98 @@ async function cleanupCompileSandboxes(items: Array<{ workspace_id: string }>) {
   }
 }
 
+/** 中文注释：会话式 build job 优先复用当前会话绑定的 overlay 工作区，不存在时再补建并回写会话上下文。 */
+async function ensureBuildSessionContext(input: {
+  job_id: string
+  session_id: string
+  project_id: string
+  project_worktree: string
+  product_name: string
+  members: Awaited<ReturnType<typeof productMembers>>
+}) {
+  const session = await Database.use((db) =>
+    db
+      .select()
+      .from(SessionTable)
+      .where(and(eq(SessionTable.id, input.session_id), isNull(SessionTable.time_deleted)))
+      .get(),
+  )
+  if (!session) return { ok: false as const, code: "session_missing" as const }
+
+  const current = session.workspace_id ? await Workspace.get(session.workspace_id).catch(() => undefined) : undefined
+  const overlay = current ? BuildOverlay.fromWorkspace(current) : undefined
+  if (current && overlay) {
+    if (session.directory !== current.directory || session.workspace_directory !== current.directory) {
+      await Database.use((db) =>
+        db
+          .update(SessionTable)
+          .set({
+            directory: current.directory,
+            workspace_directory: current.directory,
+            workspace_kind: current.kind,
+            workspace_status: "ready",
+            workspace_cleanup_status: "none",
+            time_updated: Date.now(),
+          })
+          .where(eq(SessionTable.id, input.session_id))
+          .run(),
+      )
+    }
+    await updateJob({
+      job_id: input.job_id,
+      session_id: input.session_id,
+      workspace_id: current.id,
+    })
+    return {
+      ok: true as const,
+      session_id: input.session_id,
+      workspace: current,
+      overlay,
+    }
+  }
+
+  const workspace = await Instance.provide({
+    directory: input.project_worktree,
+    fn: () =>
+      Workspace.createOverlay({
+        projectID: input.project_id,
+        sourceRoots: [...new Set(input.members.map((item) => item.directory))],
+        members: input.members,
+        name: [input.product_name, input.job_id].join("-"),
+      }),
+  })
+  const next_overlay = BuildOverlay.fromWorkspace(workspace)
+  if (!next_overlay) return { ok: false as const, code: "overlay_workspace_missing" as const }
+
+  await Database.use((db) =>
+    db
+      .update(SessionTable)
+      .set({
+        directory: workspace.directory,
+        workspace_id: workspace.id,
+        workspace_directory: workspace.directory,
+        workspace_branch: workspace.branch,
+        workspace_kind: workspace.kind,
+        workspace_status: "ready",
+        workspace_cleanup_status: "none",
+        time_updated: Date.now(),
+      })
+      .where(eq(SessionTable.id, input.session_id))
+      .run(),
+  )
+  await updateJob({
+    job_id: input.job_id,
+    session_id: input.session_id,
+    workspace_id: workspace.id,
+  })
+  return {
+    ok: true as const,
+    session_id: input.session_id,
+    workspace,
+    overlay: next_overlay,
+  }
+}
+
 export namespace BuildJobService {
   export async function create(input: {
     source_type: "prompt" | "saved_plan"
@@ -984,12 +1077,19 @@ export namespace BuildJobService {
     solution_id?: string
     prompt_text?: string
     saved_plan_id?: string
+    session_id?: string
     runtime_model?: {
       providerID: string
       modelID: string
     }
   }) {
-    const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
+    const product = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, input.product_id), isNull(TpProductTable.time_deleted)))
+        .get(),
+    )
     if (!product) return { ok: false as const, code: "product_missing" as const }
     const solution_scope = input.solution_id?.trim() ? "single" : "product_all"
     const solution = await ProductSolutionService.resolve({
@@ -1009,6 +1109,16 @@ export namespace BuildJobService {
       const saved = await Database.use((db) => db.select().from(TpSavedPlanTable).where(eq(TpSavedPlanTable.id, source_id)).get())
       if (!saved) return { ok: false as const, code: "saved_plan_missing" as const }
       plan_content = saved.plan_content
+    }
+    if (input.session_id?.trim()) {
+      const session = await Database.use((db) =>
+        db
+          .select({ id: SessionTable.id })
+          .from(SessionTable)
+          .where(and(eq(SessionTable.id, input.session_id!.trim()), isNull(SessionTable.time_deleted)))
+          .get(),
+      )
+      if (!session) return { ok: false as const, code: "session_missing" as const }
     }
     const active =
       input.source_type === "saved_plan" && source_id
@@ -1038,6 +1148,7 @@ export namespace BuildJobService {
           solution_id: solution.id,
           runtime_provider_id: input.runtime_model?.providerID,
           runtime_model_id: input.runtime_model?.modelID,
+          session_id: input.session_id?.trim(),
           status: "pending",
           current_stage: null,
           plan_content,
@@ -1157,7 +1268,13 @@ export namespace BuildJobService {
       return { ok: false as const, code: "build_job_running" as const }
     }
 
-    const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, job.product_id)).get())
+    const product = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, job.product_id), isNull(TpProductTable.time_deleted)))
+        .get(),
+    )
     if (!product) return { ok: false as const, code: "product_missing" as const }
     const solutions = await runSolutions(job)
     if (solutions.length === 0) return { ok: false as const, code: "solution_missing" as const }
@@ -1296,17 +1413,31 @@ export namespace BuildJobService {
             }
           })
         : await withAnchorProjectContext(project.id, async () => {
-        const workspace = await Instance.provide({
-          directory: project.worktree,
-          fn: () =>
-            Workspace.createOverlay({
-              projectID: project.id,
-              sourceRoots: [...new Set(member_rows.map((item) => item.directory))],
+        const coding_context = job.session_id?.trim()
+          ? await ensureBuildSessionContext({
+              job_id,
+              session_id: job.session_id,
+              project_id: project.id,
+              project_worktree: project.worktree,
+              product_name: product.name,
               members: member_rows,
-              name: [product.name, job.id].join("-"),
-            }),
-        })
-        const overlay = BuildOverlay.fromWorkspace(workspace)
+            })
+          : undefined
+        if (coding_context && !coding_context.ok) return coding_context
+        const workspace =
+          coding_context && coding_context.ok
+            ? coding_context.workspace
+            : await Instance.provide({
+                directory: project.worktree,
+                fn: () =>
+                  Workspace.createOverlay({
+                    projectID: project.id,
+                    sourceRoots: [...new Set(member_rows.map((item) => item.directory))],
+                    members: member_rows,
+                    name: [product.name, job.id].join("-"),
+                  }),
+              })
+        const overlay = coding_context && coding_context.ok ? coding_context.overlay : BuildOverlay.fromWorkspace(workspace)
         if (!overlay) return { ok: false as const, code: "overlay_workspace_missing" as const }
         const hints = await codingHints({
           text: job.plan_content ?? job.prompt_text ?? "",
@@ -1314,20 +1445,22 @@ export namespace BuildJobService {
           members: member_rows,
         })
 
-        const session = await Instance.provide({
-          directory: project.worktree,
-          fn: () =>
-            Session.createNext({
-              directory: workspace.directory,
-              title: `Build Job ${product.name}`,
-              workspaceID: workspace.id,
-              workspaceDirectory: workspace.directory,
-              workspaceBranch: workspace.branch ?? undefined,
-              workspaceKind: workspace.kind,
-              workspaceStatus: "ready",
-              workspaceCleanupStatus: "none",
-            }),
-        })
+        const session = coding_context && coding_context.ok
+          ? { id: coding_context.session_id }
+          : await Instance.provide({
+              directory: project.worktree,
+              fn: () =>
+                Session.createNext({
+                  directory: workspace.directory,
+                  title: `Build Job ${product.name}`,
+                  workspaceID: workspace.id,
+                  workspaceDirectory: workspace.directory,
+                  workspaceBranch: workspace.branch ?? undefined,
+                  workspaceKind: workspace.kind,
+                  workspaceStatus: "ready",
+                  workspaceCleanupStatus: "none",
+                }),
+            })
 
         await updateJob({
           job_id,

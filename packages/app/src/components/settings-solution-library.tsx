@@ -254,9 +254,9 @@ export const SettingsSolutionLibrary = () => {
     if (typeof item?.id === "string") setState("selectedSolutionID", item.id)
   }
 
-  /** 中文注释：从全局方案库中彻底删除方案，供冗余历史方案清理场景使用。 */
+  /** 中文注释：从全局方案库中逻辑删除方案，并保留删除标记供后续追踪与恢复。 */
   const remove = async (item: SolutionItem) => {
-    if (!globalThis.confirm(`确认彻底删除解决方案「${item.name}」？这会同时解除所有产品绑定。`)) return
+    if (!globalThis.confirm(`确认删除解决方案「${item.name}」？\n\n删除后方案会从默认列表中隐藏，并同步解除所有产品绑定。`)) return
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -269,7 +269,7 @@ export const SettingsSolutionLibrary = () => {
       setState("error", await resolveError(response))
       return
     }
-    setState("message", "解决方案已删除")
+    setState("message", "解决方案已逻辑删除")
     if (state.selectedSolutionID === item.id) setState("selectedSolutionID", "")
     await load()
   }

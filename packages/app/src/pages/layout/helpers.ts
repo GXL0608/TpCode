@@ -32,18 +32,39 @@ export function projectWorkspaceDirectories(input: {
   return [root, current, ...visible.filter((directory) => workspaceKey(directory) !== workspaceKey(root))]
 }
 
+/** 中文注释：会话列表统一按最近活跃时间倒序展示，只在时间完全相同的时候再用 id 做稳定排序。 */
 export function sortSessions(now: number) {
-  const oneMinuteAgo = now - 60 * 1000
   return (a: Session, b: Session) => {
     const aUpdated = a.time.updated ?? a.time.created
     const bUpdated = b.time.updated ?? b.time.created
-    const aRecent = aUpdated > oneMinuteAgo
-    const bRecent = bUpdated > oneMinuteAgo
-    if (aRecent && bRecent) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-    if (aRecent && !bRecent) return -1
-    if (!aRecent && bRecent) return 1
-    return bUpdated - aUpdated
+    if (bUpdated !== aUpdated) return bUpdated - aUpdated
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
   }
+}
+
+/** 中文注释：只有当前会话已产生真实消息时，才生成稳定的“最近会话”记忆键，避免流式消息增长时重复写入状态。 */
+export function rememberedSessionKey(input: {
+  directory?: string
+  id?: string
+  message_count?: number
+}) {
+  if (!input.directory || !input.id) return
+  if ((input.message_count ?? 0) <= 0) return
+  return `${input.directory}\0${input.id}`
+}
+
+/** 中文注释：产品上下文同步时把 null 与 undefined 视为同一个“空项目”，避免没有关联项目的产品页持续重复 PATCH state。 */
+export function productContextStateSynced(input: {
+  open_project_ids: string[]
+  last_project_id: string | null | undefined
+  state_open_project_ids: string[]
+  state_last_project_id: string | null | undefined
+}) {
+  const sameOpen =
+    input.open_project_ids.length === input.state_open_project_ids.length &&
+    input.open_project_ids.every((item, index) => item === input.state_open_project_ids[index])
+  if (!sameOpen) return false
+  return (input.last_project_id ?? null) === (input.state_last_project_id ?? null)
 }
 
 export const isRootVisibleSession = (session: Session, directory: string) =>

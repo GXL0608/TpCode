@@ -81,8 +81,10 @@ import {
   getDraggableId,
   hiddenWorkspaceDirectory,
   latestRootSession,
+  productContextStateSynced,
   projectWorkspaceDirectories,
   projectSupportsWorkspace,
+  rememberedSessionKey,
   sortSessions,
   sortedRootSessions,
   syncWorkspaceOrder,
@@ -100,6 +102,7 @@ import { workspaceOpenState, workspaceVisibleName } from "./layout/sidebar-works
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
 import { sidebarProductContext } from "./layout/sidebar-product-context"
+import { productContextProjectIDs } from "./layout/sidebar-product-context"
 import {
   SidebarProductContent,
   SidebarProductPanel,
@@ -111,7 +114,8 @@ import {
   productSidebarSessions,
   useProductSidebar,
 } from "./layout/sidebar-product-view-helpers"
-import { freshSessionHref, isFreshSessionSearch } from "@/utils/session-route"
+import { freshSessionHref, freshSessionKey, isFreshSessionSearch } from "@/utils/session-route"
+import { removeSessionBranch } from "@/utils/session-delete"
 
 const FeedbackLauncher = lazy(() => import("@/components/feedback-launcher").then((item) => ({ default: item.FeedbackLauncher })))
 
@@ -202,7 +206,13 @@ export default function Layout(props: ParentProps) {
   const currentContextProduct = createMemo(() => sidebarProducts().find((item) => item.id === auth.user()?.context_product_id))
   /** 中文注释：默认登录恢复产品时，产品详情列表可能稍后才返回，会话列表过滤必须直接以当前产品上下文为准，避免首屏短暂空白。 */
   const currentContextProductID = createMemo(() => auth.user()?.context_product_id ?? currentContextProduct()?.id)
-  const currentContextProjectIDs = createMemo(() => productProjectIDs(currentContextProduct()))
+  const currentContextProjectIDs = createMemo(() =>
+    productContextProjectIDs({
+      product: currentContextProduct(),
+      projects: globalSync.data.project,
+      current_project_id: auth.user()?.context_project_id,
+    }),
+  )
 
   const projectByRoot = (root: string) => globalSync.data.project.find((project) => project.worktree === root)
   const projectIDByRoot = (root: string) => projectByRoot(root)?.id
@@ -305,13 +315,17 @@ export default function Layout(props: ParentProps) {
     if (!currentContextProduct()) return
     const ids = currentContextProjectIDs()
     const open = ids
-    const same =
-      open.length === projectState().open_project_ids.length &&
-      open.every((item, index) => item === projectState().open_project_ids[index])
     const last_project_id = ids.length === 0
       ? null
       : (ids.includes(projectState().last_project_id ?? "") ? projectState().last_project_id ?? ids[0] : ids[0])
-    if (same && last_project_id === projectState().last_project_id) return
+    if (
+      productContextStateSynced({
+        open_project_ids: open,
+        last_project_id,
+        state_open_project_ids: projectState().open_project_ids,
+        state_last_project_id: projectState().last_project_id,
+      })
+    ) return
     void accountProject.patch({
       last_project_id,
       open_project_ids: open,
@@ -359,7 +373,7 @@ export default function Layout(props: ParentProps) {
         }
         setProductSessionsReady(false)
         let cancelled = false
-        void globalSDK.client.session
+        void globalSDK.client.experimental.session
           .list({
             limit: 10,
           })
@@ -1135,6 +1149,48 @@ export default function Layout(props: ParentProps) {
     }
   }
 
+  /** 中文注释：产品侧栏和项目侧栏删除会话时统一走软删接口，并同步清理本地会话树与产品会话缓存。 */
+  async function deleteSession(session: Session) {
+    const [store, setStore] = globalSync.child(session.directory)
+    const sessions = (store.session ?? []).filter((item) => !item.parentID && !item.time?.archived)
+    const index = sessions.findIndex((item) => item.id === session.id)
+    const nextSession = index === -1 ? undefined : (sessions[index + 1] ?? sessions[index - 1])
+    const ok = globalThis.confirm?.(language.t("session.delete.confirm", { name: session.title })) ?? true
+    if (!ok) return
+
+    const result = await globalSDK.client.session
+      .delete({
+        sessionID: session.id,
+      })
+      .then((item) => item.data)
+      .catch((err) => {
+        showToast({
+          title: language.t("session.delete.failed.title"),
+          description: errorMessage(err, language.t("common.requestFailed")),
+        })
+        return false
+      })
+    if (!result) return
+
+    setStore(
+      produce((draft) => {
+        draft.session = removeSessionBranch(draft.session, session.id)
+      }),
+    )
+    setProductSessions((items) => removeSessionBranch(items, session.id))
+
+    if (session.id !== params.id) return
+    if (session.parentID) {
+      navigate(`/${params.dir}/session/${session.parentID}`)
+      return
+    }
+    if (nextSession) {
+      navigate(`/${params.dir}/session/${nextSession.id}`)
+      return
+    }
+    navigate(`/${params.dir}/session`)
+  }
+
   command.register("layout", () => {
     const commands: CommandOption[] = [
       {
@@ -1415,11 +1471,11 @@ export default function Layout(props: ParentProps) {
       })
       return
     }
-    const payload = await auth.contextProducts()
-    const current = payload?.products.find((item) => item.id === target.id) ?? target
+    const products = sidebarProducts()
+    const current = products.find((item) => item.id === target.id) ?? target
     const next = nextProductNavigation({
       product: current,
-      products: payload?.products,
+      products,
       projects: globalSync.data.project,
       state: projectState(),
       current_project_id: auth.user()?.context_project_id,
@@ -1430,17 +1486,6 @@ export default function Layout(props: ParentProps) {
         description: "请联系管理员检查产品关联的解决方案路径",
       })
       return
-    }
-    const currentState = projectState()
-    const same =
-      next.open_project_ids.length === currentState.open_project_ids.length &&
-      next.open_project_ids.every((item, index) => item === currentState.open_project_ids[index]) &&
-      next.last_project_id === currentState.last_project_id
-    if (!same) {
-      await accountProject.patch({
-        last_project_id: next.last_project_id,
-        open_project_ids: next.open_project_ids,
-      })
     }
     navigateWithSidebarReset(next.href)
   }
@@ -1785,21 +1830,13 @@ export default function Layout(props: ParentProps) {
         const dir = params.dir
         const id = params.id
         const directory = dir ? decode64(dir) : undefined
-        const count =
-          directory && id
-            ? (globalSync.child(directory, { bootstrap: false })[0].message[id]?.length ?? 0)
-            : 0
-        return { ready: pageReady(), dir, id, directory, count }
+        return { ready: pageReady(), dir, id, directory }
       },
       (value) => {
         if (!value.ready) return
         const directory = value.directory
         const id = value.id
         if (!directory) return
-        const at = Date.now()
-        if (id && value.count > 0) {
-          rememberSessionForRoot(projectRoot(directory), { directory, id, at })
-        }
         if (!id) return
         notification.session.markViewed(id)
         const expanded = untrack(() => workspaceExpandedMap()[directory])
@@ -1807,6 +1844,37 @@ export default function Layout(props: ParentProps) {
           void accountProject.setWorkspaceExpanded(directory, true)
         }
         requestAnimationFrame(() => scrollToSession(id, `${directory}:${id}`))
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => {
+        const dir = params.dir
+        const id = params.id
+        const directory = dir ? decode64(dir) : undefined
+        return rememberedSessionKey({
+          directory,
+          id,
+          message_count:
+            directory && id
+              ? (globalSync.child(directory, { bootstrap: false })[0].message[id]?.length ?? 0)
+              : 0,
+        })
+      },
+      (key) => {
+        /** 中文注释：记忆键只会在“无消息 -> 首次有消息”或切换到新会话时变化，因此这里只会持久化一次最近会话。 */
+        if (!pageReady()) return
+        if (!key) return
+        const [directory, id] = key.split("\0")
+        if (!directory || !id) return
+        rememberSessionForRoot(projectRoot(directory), {
+          directory,
+          id,
+          at: Date.now(),
+        })
       },
       { defer: true },
     ),
@@ -2359,8 +2427,9 @@ export default function Layout(props: ParentProps) {
         onCreateSession={() => {
           const target = directory()
           if (!target) return
-          navigateWithSidebarReset(freshSessionHref(base64Encode(target), currentContextProduct()?.id))
+          navigateWithSidebarReset(freshSessionHref(base64Encode(target), currentContextProduct()?.id, freshSessionKey()))
         }}
+        onDeleteSession={deleteSession}
         newSessionLabel={() => language.t("command.session.new")}
         newSessionKeybind={() => command.keybind("session.new")}
       />

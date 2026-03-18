@@ -389,7 +389,7 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
   }
 
   const removeProduct = async (item: ProductItem) => {
-    if (!globalThis.confirm(`确认删除产品「${item.name}」？`)) return
+    if (!globalThis.confirm(`确认删除产品「${item.name}」？\n\n删除后该产品会从默认列表中隐藏，并保留删除标记。`)) return
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -402,7 +402,7 @@ export const SettingsProjects = (props: { onOpenSolutionLibrary?: () => void }) 
       setState("error", await resolveError(response))
       return
     }
-    setState("message", "产品已删除")
+    setState("message", "产品已逻辑删除")
     await load()
   }
 

@@ -116,6 +116,16 @@ export function productEntryDirectory<T extends Pick<Project, "id" | "worktree">
     project_id?: string
     related_project_ids?: string[]
     worktree?: string
+    paths?: string[]
+    solutions?: Array<{
+      roots?: Array<{
+        directory: string
+        enabled?: boolean
+        meta?: {
+          directories?: string[]
+        }
+      }>
+    }>
   }
   projects: readonly T[]
   current_project_id?: string
@@ -124,6 +134,18 @@ export function productEntryDirectory<T extends Pick<Project, "id" | "worktree">
   const project_id = productEntryProjectID(input)
   const project = input.projects.find((item) => item.id === project_id)
   if (project?.worktree) return project.worktree
+  /** 中文注释：项目列表尚未可用时，直接回退到产品接口返回的路径摘要或解决方案 roots，避免产品选择页误判“没有可用解决方案”。 */
+  const paths = [...new Set((input.product?.paths ?? []).map((item) => item.trim()).filter(Boolean))]
+  if (paths.length > 0) return paths[0]
+  const roots = (input.product?.solutions ?? [])
+    .flatMap((solution) =>
+      (solution.roots ?? [])
+        .filter((root) => root.enabled !== false)
+        .flatMap((root) => [root.directory, ...(root.meta?.directories ?? [])])
+        .map((item) => item.trim())
+        .filter(Boolean),
+    )
+  if (roots.length > 0) return roots[0]
   return input.product?.worktree
 }
 
@@ -258,10 +280,14 @@ export function repairProjectID(input: {
 
 /** 中文注释：主动切换项目上下文后，跳过同一 project_id 触发的那次 effect 补拉，避免 account/context/state 重复请求。 */
 export function shouldSkipAccountProjectReload(input: {
-  skip_for?: string
+  skip_for_project?: string
+  skip_for_product?: string
   context_project_id?: string
+  context_product_id?: string
 }) {
-  return !!input.skip_for && input.skip_for === input.context_project_id
+  if (input.skip_for_project && input.skip_for_project === input.context_project_id) return true
+  if (input.skip_for_product && input.skip_for_product === input.context_product_id) return true
+  return false
 }
 
 /** 中文注释：产品上下文没有锚点项目时，不能继续沿用上一个产品残留的 current_project_id。 */
@@ -342,6 +368,7 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
     const current = createMemo(() => projects().find((project) => project.id === currentID()))
     let reloading: Promise<AccountProjectState> | undefined
     let skipReloadForContext: string | undefined
+    let skipReloadForProduct: string | undefined
 
     const replace = (next?: AccountProjectState) => {
       setStore("data", next ?? empty(auth.user()?.context_project_id))
@@ -540,6 +567,7 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
         const result = await auth.selectContext(project_id)
         if (!result.ok) return { ok: false as const }
         skipReloadForContext = project_id
+        skipReloadForProduct = undefined
       }
       const state = apply(
         optimisticState({
@@ -574,7 +602,8 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       const result = await auth.selectProductContext(product_id)
       if (!result.ok) return result
       const project_id = auth.user()?.context_project_id
-      if (project_id) skipReloadForContext = project_id
+      skipReloadForContext = project_id
+      skipReloadForProduct = product_id
       return {
         ok: true as const,
       }
@@ -587,11 +616,14 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       const context_project_id = auth.user()?.context_project_id
       if (
         shouldSkipAccountProjectReload({
-          skip_for: skipReloadForContext,
+          skip_for_project: skipReloadForContext,
+          skip_for_product: skipReloadForProduct,
           context_project_id,
+          context_product_id: auth.user()?.context_product_id,
         })
       ) {
         skipReloadForContext = undefined
+        skipReloadForProduct = undefined
         return
       }
       void reload()

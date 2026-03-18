@@ -1,6 +1,6 @@
 import path from "path"
 import { ulid } from "ulid"
-import { Database, eq, inArray } from "@/storage/db"
+import { Database, and, eq, inArray, isNull } from "@/storage/db"
 import { ProjectTable } from "@/project/project.sql"
 import { TpProjectRoleAccessTable } from "./project-role-access.sql"
 import { TpProductTable } from "./product.sql"
@@ -25,6 +25,11 @@ export type ProductItem = {
 }
 
 type ProductViewMode = "runtime" | "light"
+
+/** 中文注释：统一约束产品只读取未逻辑删除的记录，避免各个列表重复漏加条件。 */
+function activeProduct() {
+  return isNull(TpProductTable.time_deleted)
+}
 
 /** 中文注释：对产品标识去重，避免后续数据库查询与映射出现重复记录。 */
 function unique(input: string[]) {
@@ -169,7 +174,13 @@ async function productsByRows(rows: (typeof TpProductTable.$inferSelect)[], mode
 async function productProjectIDs(product_ids: string[]) {
   const ids = unique(product_ids.filter(Boolean))
   if (ids.length === 0) return [] as string[]
-  const rows = await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.id, ids)).all())
+  const rows = await Database.use((db) =>
+    db
+      .select()
+      .from(TpProductTable)
+      .where(and(inArray(TpProductTable.id, ids), activeProduct()))
+      .all(),
+  )
   const products = await productsByRows(rows)
   const legacy = new Map(rows.map((item) => [item.id, item.project_id ?? undefined]))
   const derived = await Promise.all(
@@ -203,13 +214,19 @@ async function syncRoleProjects(role_id: string, product_ids: string[]) {
 export namespace AccountProductService {
   /** 中文注释：列出所有产品，并自动附带从解决方案推导出来的上下文锚点。 */
   export async function list(mode: ProductViewMode = "runtime") {
-    const rows = await Database.use((db) => db.select().from(TpProductTable).all())
+    const rows = await Database.use((db) => db.select().from(TpProductTable).where(activeProduct()).all())
     return productsByRows(rows, mode)
   }
 
   /** 中文注释：按产品标识读取单个产品，避免登录恢复上次产品时再把全量产品全部做一轮锚点推导。 */
   export async function get(product_id: string, mode: ProductViewMode = "runtime") {
-    const row = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, product_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, product_id), activeProduct()))
+        .get(),
+    )
     if (!row) return
     return (await productsByRows([row], mode))[0]
   }
@@ -218,7 +235,7 @@ export namespace AccountProductService {
   export async function listByProjectIDs(project_ids: string[], mode: ProductViewMode = "runtime") {
     const ids = new Set(unique(project_ids.filter(Boolean)))
     if (ids.size === 0) return [] as ProductItem[]
-    const rows = await Database.use((db) => db.select().from(TpProductTable).all())
+    const rows = await Database.use((db) => db.select().from(TpProductTable).where(activeProduct()).all())
     const items = await productsByRows(rows, mode)
     const legacy = new Map(rows.map((item) => [item.id, item.project_id ?? undefined]))
     const derived = await Promise.all(
@@ -249,7 +266,13 @@ export namespace AccountProductService {
     )
     const product_ids = unique(links.map((item) => item.product_id))
     if (product_ids.length === 0) return [] as ProductItem[]
-    const rows = await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.id, product_ids)).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(inArray(TpProductTable.id, product_ids), activeProduct()))
+        .all(),
+    )
     return productsByRows(rows, mode)
   }
 
@@ -260,10 +283,22 @@ export namespace AccountProductService {
     const directory = input.directory?.trim()
     const project = directory ? await ensureProjectByDirectory(directory) : undefined
     if (directory && !project) return { ok: false as const, code: "directory_missing" as const }
-    const nameHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.name, name)).get())
+    const nameHit = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.name, name), activeProduct()))
+        .get(),
+    )
     if (nameHit) return { ok: false as const, code: "product_exists" as const }
     if (project) {
-      const projectHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.project_id, project.id)).get())
+      const projectHit = await Database.use((db) =>
+        db
+          .select()
+          .from(TpProductTable)
+          .where(and(eq(TpProductTable.project_id, project.id), activeProduct()))
+          .get(),
+      )
       if (projectHit) return { ok: false as const, code: "product_directory_exists" as const }
     }
     const now = Date.now()
@@ -280,7 +315,13 @@ export namespace AccountProductService {
         })
         .run(),
     )
-    const rows = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, id)).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, id), activeProduct()))
+        .all(),
+    )
     const item = (await productsByRows(rows))[0]
     if (!item) return { ok: false as const, code: "product_missing" as const }
     invalidateProductAnchorCache()
@@ -289,7 +330,13 @@ export namespace AccountProductService {
 
   /** 中文注释：更新产品时允许清空目录绑定，让产品退化为纯虚拟组合。 */
   export async function update(input: { product_id: string; name?: string; directory?: string }) {
-    const row = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, input.product_id), activeProduct()))
+        .get(),
+    )
     if (!row) return { ok: false as const, code: "product_missing" as const }
     const name = input.name === undefined ? row.name : input.name.trim()
     if (!name) return { ok: false as const, code: "product_name_invalid" as const }
@@ -299,10 +346,22 @@ export namespace AccountProductService {
       return { ok: false as const, code: "directory_missing" as const }
     }
     const project_id = input.directory === undefined ? row.project_id ?? undefined : project?.id
-    const nameHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.name, name)).get())
+    const nameHit = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.name, name), activeProduct()))
+        .get(),
+    )
     if (nameHit && nameHit.id !== input.product_id) return { ok: false as const, code: "product_exists" as const }
     if (project_id) {
-      const projectHit = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.project_id, project_id)).get())
+      const projectHit = await Database.use((db) =>
+        db
+          .select()
+          .from(TpProductTable)
+          .where(and(eq(TpProductTable.project_id, project_id), activeProduct()))
+          .get(),
+      )
       if (projectHit && projectHit.id !== input.product_id) return { ok: false as const, code: "product_directory_exists" as const }
     }
     await Database.use((db) =>
@@ -316,7 +375,13 @@ export namespace AccountProductService {
         .where(eq(TpProductTable.id, input.product_id))
         .run(),
     )
-    const rows = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, input.product_id), activeProduct()))
+        .all(),
+    )
     const item = (await productsByRows(rows))[0]
     if (!item) return { ok: false as const, code: "product_missing" as const }
     invalidateProductAnchorCache()
@@ -325,15 +390,27 @@ export namespace AccountProductService {
 
   /** 中文注释：删除产品时仅清理产品本体与角色产品绑定，避免再把共享解决方案误删。 */
   export async function remove(product_id: string) {
-    const row = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, product_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, product_id), activeProduct()))
+        .get(),
+    )
     if (!row) return { ok: false as const, code: "product_missing" as const }
     const role_links = await Database.use((db) =>
       db.select().from(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.product_id, product_id)).all(),
     )
-    await Database.use(async (db) => {
-      await db.delete(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.product_id, product_id)).run()
-      await db.delete(TpProductTable).where(eq(TpProductTable.id, product_id)).run()
-    })
+    await Database.use((db) =>
+      db
+        .update(TpProductTable)
+        .set({
+          time_deleted: Date.now(),
+          time_updated: Date.now(),
+        })
+        .where(eq(TpProductTable.id, product_id))
+        .run(),
+    )
     for (const link of role_links) {
       const links = await Database.use((db) =>
         db.select().from(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.role_id, link.role_id)).all(),
@@ -346,7 +423,13 @@ export namespace AccountProductService {
 
   /** 中文注释：读取角色关联产品时，返回的产品锚点同样基于解决方案动态推导。 */
   export async function roleProducts(role_code: string) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, role_code), isNull(TpRoleTable.time_deleted)))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" as const }
     const links = await Database.use((db) =>
       db.select().from(TpRoleProductAccessTable).where(eq(TpRoleProductAccessTable.role_id, role.id)).all(),
@@ -355,7 +438,13 @@ export namespace AccountProductService {
     const products =
       ids.length === 0
         ? []
-        : await Database.use((db) => db.select().from(TpProductTable).where(inArray(TpProductTable.id, ids)).all())
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpProductTable)
+              .where(and(inArray(TpProductTable.id, ids), activeProduct()))
+              .all(),
+          )
     return {
       ok: true as const,
       role_code,
@@ -366,13 +455,25 @@ export namespace AccountProductService {
 
   /** 中文注释：设置角色可访问产品时，同时重建衍生的项目授权镜像，保持旧链路兼容。 */
   export async function setRoleProducts(input: { role_code: string; product_ids: string[] }) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, input.role_code), isNull(TpRoleTable.time_deleted)))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" as const }
     const product_ids = unique(input.product_ids)
     const products =
       product_ids.length === 0
         ? []
-        : await Database.use((db) => db.select({ id: TpProductTable.id }).from(TpProductTable).where(inArray(TpProductTable.id, product_ids)).all())
+        : await Database.use((db) =>
+            db
+              .select({ id: TpProductTable.id })
+              .from(TpProductTable)
+              .where(and(inArray(TpProductTable.id, product_ids), activeProduct()))
+              .all(),
+          )
     if (products.length !== product_ids.length) return { ok: false as const, code: "product_missing" as const }
     const now = Date.now()
     await Database.use(async (db) => {

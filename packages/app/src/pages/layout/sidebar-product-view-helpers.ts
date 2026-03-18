@@ -1,6 +1,6 @@
 import { directoryKey, resolveProjectByDirectory } from "@/context/project-resolver"
 import { productProjectIDs, productSessionDirectoryMatches, productSharesProjects } from "@/context/account-project"
-import type { Session } from "@opencode-ai/sdk/v2/client"
+import type { GlobalSession, Session } from "@opencode-ai/sdk/v2/client"
 
 type ProductLike = {
   id: string
@@ -132,7 +132,7 @@ export type ProductSidebarSessionBase = {
   time?: Session["time"]
 }
 
-export type ProductSidebarSessionInfo = Session & {
+export type ProductSidebarSessionInfo = GlobalSession & {
   contextProductID?: string
 }
 

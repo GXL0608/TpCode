@@ -153,7 +153,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
   }
 
   /** 中文注释：直接调用后端 build job 闭环接口，并在完成后返回构建会话目录，供前端跳转到执行会话。 */
-  const runBuildPipeline = async (prompt_text: string) => {
+  const runBuildPipeline = async (prompt_text: string, session_id?: string) => {
     const current = server.current
     const user = auth.user()
     if (!current || !user) return
@@ -176,6 +176,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         product_id: product.id,
         source_type: "prompt",
         prompt_text,
+        session_id,
         run_mode: "sync",
       }),
     })
@@ -354,41 +355,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         : undefined
     const variant = local.model.variant.current()
 
-    if (
-      mode === "normal" &&
-      selectedAgent?.name === "build" &&
-      images.length === 0 &&
-      voices.length === 0 &&
-      input.commentCount() === 0
-    ) {
-      try {
-        const created = await runBuildPipeline(text)
-        if (!created) {
-          // 中文注释：非账号模式或上下文尚未准备好时，回退到原有会话式 build 流程。
-        } else {
-        input.addToHistory(currentPrompt, mode)
-        input.resetHistoryNavigation()
-        input.clearDraft?.()
-        prompt.reset()
-        input.setMode("normal")
-        input.setPopover(null)
-        if (created?.session_id && created.session_directory) {
-          navigate(`/${base64Encode(created.session_directory)}/session/${created.session_id}`)
-        }
-        showToast({
-          title: "构建闭环已完成",
-          description: buildToastDescription(created ?? {}),
-        })
-        return
-        }
-      } catch (error) {
-        showToast({
-          title: "构建闭环执行失败",
-          description: errorMessage(error),
-        })
-      }
-    }
-
     if (!model) {
       showToast({
         title: language.t("toast.model.unavailable.title"),
@@ -541,6 +507,50 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         description: language.t("prompt.toast.promptSendFailed.description"),
       })
       return
+    }
+
+    if (
+      mode === "normal" &&
+      selectedAgent?.name === "build" &&
+      images.length === 0 &&
+      voices.length === 0 &&
+      input.commentCount() === 0
+    ) {
+      try {
+        const created = await runBuildPipeline(text, sessionID)
+        if (!created) {
+          // 中文注释：非账号模式或上下文尚未准备好时，回退到原有会话式 build 流程。
+        } else {
+          input.clearDraft?.()
+          prompt.reset()
+          input.setMode("normal")
+          input.setPopover(null)
+          if (created.session_id && created.session_directory) {
+            if (created.session_id === sessionID && created.session_directory !== sessionDirectory) {
+              await switchDirectory(created.session_directory, created.session_id)
+            } else if (created.session_id === sessionID) {
+              /** 中文注释：同步构建直接复用当前会话且目录不变时，也要立即补拉消息和列表，避免用户看到“构建成功”但页面内容没有刷新。 */
+              await sync.session.syncAt({
+                directory: created.session_directory,
+                sessionID: created.session_id,
+              })
+              await globalSync.project.loadSessions(created.session_directory)
+            } else {
+              navigate(`/${base64Encode(created.session_directory)}/session/${created.session_id}`)
+            }
+          }
+          showToast({
+            title: "构建闭环已完成",
+            description: buildToastDescription(created ?? {}),
+          })
+          return
+        }
+      } catch (error) {
+        showToast({
+          title: "构建闭环执行失败",
+          description: errorMessage(error),
+        })
+      }
     }
 
     input.onSubmit?.()

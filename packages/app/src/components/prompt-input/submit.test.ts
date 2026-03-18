@@ -32,6 +32,8 @@ const workspaceModeCalls: Array<{ directory: string; value: boolean }> = []
 const workspaceExpandedCalls: Array<{ directory: string; value: boolean }> = []
 const workspaceSessionLoads: string[] = []
 const clearedWorkspaceHandoffs: string[] = []
+const fetchCalls: Array<{ url: string; init?: RequestInit }> = []
+let buildPipelineSessionDirectory = "/repo/main/build-session"
 
 let selected = "/repo/worktree-a"
 let route: { id?: string } = {}
@@ -269,7 +271,27 @@ beforeAll(async () => {
 
   mock.module("@/context/platform", () => ({
     usePlatform: () => ({
-      fetch,
+      fetch: async (url: string | URL, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init })
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            detail: {
+              job: {
+                session_id: JSON.parse(String(init?.body ?? "{}")).session_id ?? "session-build-job",
+                solution_scope: "product_all",
+              },
+              session_directory: buildPipelineSessionDirectory,
+              stages: [],
+              artifacts: [],
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        )
+      },
     }),
   }))
 
@@ -278,6 +300,12 @@ beforeAll(async () => {
       user: () => authUser,
       contextProducts: async () => contextProductsPayload,
     }),
+  }))
+
+  mock.module("@/utils/account-auth", () => ({
+    AccountToken: {
+      access: () => "token-build-test",
+    },
   }))
 
   mock.module("@/context/language", () => ({
@@ -336,6 +364,8 @@ beforeEach(() => {
   workspaceExpandedCalls.length = 0
   workspaceSessionLoads.length = 0
   clearedWorkspaceHandoffs.length = 0
+  fetchCalls.length = 0
+  buildPipelineSessionDirectory = "/repo/main/build-session"
 })
 
 function createSubmit(input?: {
@@ -744,9 +774,11 @@ describe("prompt submit session resolution", () => {
     ])
   })
 
-  test("prepares a build workspace lazily for an existing session before sending the first prompt", async () => {
+  test("falls back to prepareBuild for an existing build session when build pipeline is unavailable", async () => {
     route = { id: "session-route-build" }
     currentAgentName = "build"
+    authUser = undefined
+    contextProductsPayload = undefined
     const submit = createSubmit({ mode: "normal", info: () => undefined })
 
     await submit.handleSubmit(event)
@@ -786,6 +818,60 @@ describe("prompt submit session resolution", () => {
       "/repo/main/prepared/session-route-build",
     ])
     expect(navigations).toContain("//repo/main/prepared/session-route-build/session/session-route-build")
+  })
+
+  test("submits build pipeline with the current session id instead of sending promptAsync", async () => {
+    route = { id: "session-route-build-pipeline" }
+    currentAgentName = "build"
+    promptValue = [{ type: "text", content: "请修改并编译", start: 0, end: 6 }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(promptAsyncCalls).toEqual([])
+    expect(fetchCalls).toHaveLength(1)
+    expect(fetchCalls[0]?.url).toContain("/build/job")
+    expect(JSON.parse(String(fetchCalls[0]?.init?.body ?? "{}"))).toMatchObject({
+      session_id: "session-route-build-pipeline",
+      source_type: "prompt",
+      prompt_text: "请修改并编译",
+    })
+  })
+
+  test("creates a new session before the first build pipeline submit and reuses that session id", async () => {
+    currentAgentName = "build"
+    promptValue = [{ type: "text", content: "首次 build", start: 0, end: 8 }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual(["/repo/main"])
+    expect(promptAsyncCalls).toEqual([])
+    expect(fetchCalls).toHaveLength(1)
+    expect(JSON.parse(String(fetchCalls[0]?.init?.body ?? "{}"))).toMatchObject({
+      session_id: "session-1",
+      source_type: "prompt",
+      prompt_text: "首次 build",
+    })
+  })
+
+  test("refreshes current session messages after build pipeline completes in the same directory", async () => {
+    route = { id: "session-route-build-refresh" }
+    currentAgentName = "build"
+    buildPipelineSessionDirectory = "/repo/main"
+    promptValue = [{ type: "text", content: "继续编译当前会话", start: 0, end: 8 }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(promptAsyncCalls).toEqual([])
+    expect(syncCalls).toContainEqual({
+      directory: "/repo/main",
+      sessionID: "session-route-build-refresh",
+    })
   })
 
   test("does not prepare a workspace for non-build prompts", async () => {

@@ -1,7 +1,7 @@
 import z from "zod"
 import { ulid } from "ulid"
 import { BuildProfile, normalizeBuildProfile, type BuildProfile as BuildProfileType } from "@/build/profile"
-import { Database, asc, desc, eq, inArray } from "@/storage/db"
+import { Database, and, asc, desc, eq, inArray, isNull } from "@/storage/db"
 import { Filesystem } from "@/util/filesystem"
 import { TpProductTable } from "./product.sql"
 import { invalidateProductAnchorCache } from "./product-anchor"
@@ -52,6 +52,21 @@ export type ProductSolutionItem = {
   roots: ProductSolutionRootItem[]
   time_created: number
   time_updated: number
+}
+
+/** 中文注释：统一过滤未逻辑删除的产品，避免解决方案绑定落到已删除产品上。 */
+function activeProduct() {
+  return isNull(TpProductTable.time_deleted)
+}
+
+/** 中文注释：统一过滤未逻辑删除的解决方案，供方案库与产品方案列表复用。 */
+function activeSolution() {
+  return isNull(TpProductSolutionTable.time_deleted)
+}
+
+/** 中文注释：统一过滤未逻辑删除的绑定关系，避免解绑历史继续出现在产品方案列表中。 */
+function activeBinding() {
+  return isNull(TpProductSolutionBindingTable.time_deleted)
 }
 
 /** 中文注释：把目录统一规整为绝对路径，保证解决方案根目录比较和去重稳定。 */
@@ -174,7 +189,7 @@ async function hydrateBindings(rows: (typeof TpProductSolutionBindingTable.$infe
           db
             .select()
             .from(TpProductSolutionTable)
-            .where(inArray(TpProductSolutionTable.id, ids))
+            .where(and(inArray(TpProductSolutionTable.id, ids), activeSolution()))
             .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
             .all(),
         )
@@ -200,6 +215,7 @@ export namespace ProductSolutionService {
       db
         .select()
         .from(TpProductSolutionTable)
+        .where(activeSolution())
         .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
         .all(),
     )
@@ -211,7 +227,7 @@ export namespace ProductSolutionService {
       db
         .select()
         .from(TpProductSolutionBindingTable)
-        .where(eq(TpProductSolutionBindingTable.product_id, product_id))
+        .where(and(eq(TpProductSolutionBindingTable.product_id, product_id), activeBinding()))
         .orderBy(asc(TpProductSolutionBindingTable.sort_order), asc(TpProductSolutionBindingTable.id))
         .all(),
     )
@@ -224,7 +240,7 @@ export namespace ProductSolutionService {
       db
         .select()
         .from(TpProductSolutionBindingTable)
-        .where(inArray(TpProductSolutionBindingTable.product_id, product_ids))
+        .where(and(inArray(TpProductSolutionBindingTable.product_id, product_ids), activeBinding()))
         .orderBy(
           asc(TpProductSolutionBindingTable.product_id),
           asc(TpProductSolutionBindingTable.sort_order),
@@ -236,7 +252,13 @@ export namespace ProductSolutionService {
   }
 
   export async function get(solution_id: string) {
-    const row = await Database.use((db) => db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.id, solution_id), activeSolution()))
+        .get(),
+    )
     if (!row) return
     const list = await hydrate([row])
     return list[0]
@@ -252,7 +274,13 @@ export namespace ProductSolutionService {
   }) {
     const product_id = input.product_id?.trim()
     if (product_id) {
-      const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, product_id)).get())
+      const product = await Database.use((db) =>
+        db
+          .select()
+          .from(TpProductTable)
+          .where(and(eq(TpProductTable.id, product_id), activeProduct()))
+          .get(),
+      )
       if (!product) return { ok: false as const, code: "product_missing" as const }
     }
     const name = input.name.trim()
@@ -270,10 +298,10 @@ export namespace ProductSolutionService {
     }
     const duplicate = await Database.use((db) =>
       db
-        .select()
-        .from(TpProductSolutionTable)
-        .where(eq(TpProductSolutionTable.code, code))
-        .get(),
+          .select()
+          .from(TpProductSolutionTable)
+          .where(and(eq(TpProductSolutionTable.code, code), activeSolution()))
+          .get(),
     )
     if (duplicate) return { ok: false as const, code: "solution_exists" as const }
     const now = Date.now()
@@ -338,7 +366,13 @@ export namespace ProductSolutionService {
     build_profile?: unknown
     roots?: ProductSolutionRootInput[]
   }) {
-    const row = await Database.use((db) => db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, input.solution_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.id, input.solution_id), activeSolution()))
+        .get(),
+    )
     if (!row) return { ok: false as const, code: "solution_missing" as const }
     const name = input.name === undefined ? row.name : input.name.trim()
     const code = input.code === undefined ? row.code : input.code.trim()
@@ -381,7 +415,11 @@ export namespace ProductSolutionService {
             meta: item.meta_json ? ProductSolutionRootMeta.parse(item.meta_json) : undefined,
           }))
     const duplicate = await Database.use((db) =>
-      db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.code, code)).get(),
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.code, code), activeSolution()))
+        .get(),
     )
     const hit = duplicate && duplicate.id !== input.solution_id ? duplicate : undefined
     if (hit) return { ok: false as const, code: "solution_exists" as const }
@@ -433,17 +471,27 @@ export namespace ProductSolutionService {
     enabled?: boolean
     sort_order?: number
   }) {
-    const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
+    const product = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, input.product_id), activeProduct()))
+        .get(),
+    )
     if (!product) return { ok: false as const, code: "product_missing" as const }
     const solution = await Database.use((db) =>
-      db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, input.solution_id)).get(),
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.id, input.solution_id), activeSolution()))
+        .get(),
     )
     if (!solution) return { ok: false as const, code: "solution_missing" as const }
     const current = await Database.use((db) =>
       db
         .select()
         .from(TpProductSolutionBindingTable)
-        .where(eq(TpProductSolutionBindingTable.product_id, input.product_id))
+        .where(and(eq(TpProductSolutionBindingTable.product_id, input.product_id), activeBinding()))
         .orderBy(desc(TpProductSolutionBindingTable.sort_order), desc(TpProductSolutionBindingTable.id))
         .all(),
     )
@@ -483,20 +531,44 @@ export namespace ProductSolutionService {
       db
         .select()
         .from(TpProductSolutionBindingTable)
-        .where(eq(TpProductSolutionBindingTable.product_id, input.product_id))
+        .where(and(eq(TpProductSolutionBindingTable.product_id, input.product_id), activeBinding()))
         .all(),
     )
     const row = binding.find((item) => item.solution_id === input.solution_id)
     if (!row) return { ok: false as const, code: "solution_binding_missing" as const }
-    await Database.use((db) => db.delete(TpProductSolutionBindingTable).where(eq(TpProductSolutionBindingTable.id, row.id)).run())
+    await Database.use((db) =>
+      db
+        .update(TpProductSolutionBindingTable)
+        .set({
+          time_deleted: Date.now(),
+          time_updated: Date.now(),
+        })
+        .where(eq(TpProductSolutionBindingTable.id, row.id))
+        .run(),
+    )
     invalidateProductAnchorCache()
     return { ok: true as const }
   }
 
   export async function remove(solution_id: string) {
-    const row = await Database.use((db) => db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.id, solution_id), activeSolution()))
+        .get(),
+    )
     if (!row) return { ok: false as const, code: "solution_missing" as const }
-    await Database.use((db) => db.delete(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).run())
+    await Database.use((db) =>
+      db
+        .update(TpProductSolutionTable)
+        .set({
+          time_deleted: Date.now(),
+          time_updated: Date.now(),
+        })
+        .where(eq(TpProductSolutionTable.id, solution_id))
+        .run(),
+    )
     invalidateProductAnchorCache()
     return { ok: true as const }
   }

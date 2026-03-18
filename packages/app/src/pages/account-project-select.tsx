@@ -93,17 +93,6 @@ export default function AccountProjectSelect() {
       setError("当前产品尚未配置可用解决方案，请先在管理端完成解决方案绑定")
       return
     }
-    const current = accountProject.data()
-    const same =
-      next.open_project_ids.length === current.open_project_ids.length &&
-      next.open_project_ids.every((item, index) => item === current.open_project_ids[index]) &&
-      next.last_project_id === current.last_project_id
-    if (!same) {
-      await accountProject.patch({
-        last_project_id: next.last_project_id,
-        open_project_ids: next.open_project_ids,
-      })
-    }
     setPending(false)
     navigate(next.href, { replace: true })
   }
