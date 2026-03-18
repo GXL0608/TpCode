@@ -1,5 +1,5 @@
 import { createHash } from "crypto"
-import { Database, eq, inArray } from "@/storage/db"
+import { Database, eq, inArray, or } from "@/storage/db"
 import { Filesystem } from "@/util/filesystem"
 import { Project } from "@/project/project"
 import { ProjectTable } from "@/project/project.sql"
@@ -96,7 +96,17 @@ export async function ensureProjectByDirectory(directory?: string) {
   /** 中文注释：共享目录解析经常会被并发触发，必须复用同一个 Promise，避免同一路径同时重复执行 Project.fromDirectory。 */
   const task = (async () => {
     const worktree = Filesystem.accessPath(stable)
-    if (!(await Filesystem.isDir(stable))) return remember(projectCache, stable, undefined)
+    if (!(await Filesystem.isDir(stable))) {
+      /** 中文注释：共享盘短暂离线时仍要复用已落库的 folder 项目记录，避免产品锚点和会话上下文瞬间全部丢失。 */
+      const fallback = await Database.use((db) =>
+        db
+          .select()
+          .from(ProjectTable)
+          .where(or(eq(ProjectTable.worktree, worktree), eq(ProjectTable.id, folderID(stable))))
+          .get(),
+      )
+      return remember(projectCache, stable, fallback ? Project.fromRow(fallback) : undefined)
+    }
     const result = await Project.fromDirectory(worktree)
       .then((item) => item.project)
       .catch(() => undefined)

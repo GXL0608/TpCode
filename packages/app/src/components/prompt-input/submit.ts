@@ -101,13 +101,46 @@ type CommentItem = {
 
 type BuildStageDetail = {
   stage?: string
+  status?: string
   detail_json?: Record<string, unknown>
+  error_message?: string
 }
 
 type BuildArtifactDetail = {
   id: string
   file_name: string
 }
+
+type BuildJobStatus = "pending" | "running" | "completed" | "failed"
+
+type BuildJobSnapshot = {
+  id: string
+  status: BuildJobStatus
+  current_stage?: string
+  error_code?: string
+  error_message?: string
+  session_id?: string
+  solution_scope?: string
+}
+
+type BuildJobDetail = {
+  job?: BuildJobSnapshot
+  session_directory?: string
+  stages?: BuildStageDetail[]
+  artifacts?: BuildArtifactDetail[]
+}
+
+type BuildJobCreateInput =
+  | {
+      session_id?: string
+      source_type: "prompt"
+      prompt_text: string
+    }
+  | {
+      session_id?: string
+      source_type: "saved_plan"
+      saved_plan_id: string
+    }
 
 export function createPromptSubmit(input: PromptSubmitInput) {
   const navigate = useNavigate()
@@ -152,8 +185,48 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     return language.t("common.requestFailed")
   }
 
-  /** 中文注释：直接调用后端 build job 闭环接口，并在完成后返回构建会话目录，供前端跳转到执行会话。 */
-  const runBuildPipeline = async (prompt_text: string, session_id?: string) => {
+  /** 中文注释：统一解析 build job 详情响应，便于会话页和后续构建态展示复用同一结构。 */
+  const parseBuildDetail = (input: unknown) => {
+    const body = input as BuildJobDetail | undefined
+    return {
+      job_id: body?.job?.id,
+      job: body?.job,
+      session_id: body?.job?.session_id,
+      session_directory: body?.session_directory,
+      solution_scope: body?.job?.solution_scope,
+      stages: body?.stages ?? [],
+      artifacts: body?.artifacts ?? [],
+    }
+  }
+
+  /** 中文注释：把构建轮询得到的最新详情写回会话级 handoff，供会话页持续展示阶段和产物。 */
+  const syncBuildJobHandoff = (sessionID: string | undefined, detail: ReturnType<typeof parseBuildDetail>) => {
+    const target = detail.session_id ?? sessionID
+    if (!target || !detail.job_id || !detail.job) return
+    layout.handoff.setBuildJob(target, {
+      job_id: detail.job_id,
+      status: detail.job.status,
+      current_stage: detail.job.current_stage,
+      error_code: detail.job.error_code,
+      error_message: detail.job.error_message,
+      session_id: detail.session_id,
+      session_directory: detail.session_directory,
+      solution_scope: detail.solution_scope,
+      stages: detail.stages.map((item) => ({
+        stage: item.stage,
+        status: item.status,
+        detail_json: item.detail_json,
+        error_message: item.error_message,
+      })),
+      artifacts: detail.artifacts.map((item) => ({
+        id: item.id,
+        file_name: item.file_name,
+      })),
+    })
+  }
+
+  /** 中文注释：直接向后端创建异步 build job，只负责建单，不在当前请求里同步等待完整编译闭环。 */
+  const createBuildJob = async (input: BuildJobCreateInput, runtime_model?: { providerID: string; modelID: string }) => {
     const current = server.current
     const user = auth.user()
     if (!current || !user) return
@@ -174,10 +247,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       },
       body: JSON.stringify({
         product_id: product.id,
-        source_type: "prompt",
-        prompt_text,
-        session_id,
-        run_mode: "sync",
+        run_mode: "async",
+        ...input,
+        ...(runtime_model ? { providerID: runtime_model.providerID, modelID: runtime_model.modelID } : {}),
       }),
     })
     const body = (await response.json().catch(() => undefined)) as
@@ -185,14 +257,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           ok?: boolean
           code?: string
           error?: string
-          detail?: {
-            job?: {
-              session_id?: string
-              solution_scope?: string
-            }
-            session_directory?: string
-            stages?: BuildStageDetail[]
-            artifacts?: BuildArtifactDetail[]
+          job?: {
+            id?: string
+            session_id?: string
+            solution_scope?: string
           }
         }
       | undefined
@@ -200,12 +268,49 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       throw new Error(body?.code ?? body?.error ?? "build_pipeline_failed")
     }
     return {
-      session_id: body.detail?.job?.session_id,
-      session_directory: body.detail?.session_directory,
-      solution_scope: body.detail?.job?.solution_scope,
-      stages: body.detail?.stages ?? [],
-      artifacts: body.detail?.artifacts ?? [],
+      job_id: body.job?.id,
+      session_id: body.job?.session_id,
+      solution_scope: body.job?.solution_scope,
     }
+  }
+
+  /** 中文注释：按 job_id 读取最新构建详情，供会话页后台轮询阶段状态与产物结果。 */
+  const loadBuildJobDetail = async (job_id: string) => {
+    const current = server.current
+    const token = AccountToken.access()
+    if (!current || !token) throw new Error("build_job_detail_unavailable")
+    const response = await fetcher(new URL(`/build/job/${encodeURIComponent(job_id)}`, current.http.url).toString(), {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+    })
+    const body = await response.json().catch(() => undefined)
+    if (!response.ok) {
+      const error = body as { code?: string; error?: string } | undefined
+      throw new Error(error?.code ?? error?.error ?? "build_job_detail_failed")
+    }
+    return parseBuildDetail(body)
+  }
+
+  /** 中文注释：后台轮询 build job，直到完成或失败，再把结果回写到当前会话与提示信息中。 */
+  const waitBuildJob = async (job_id: string) => {
+    const schedule = [0, 800, 1500, 2500, 4000, 6000, 10000, 15000, 20000]
+    const deadline = Date.now() + 15 * 60 * 1000
+    let index = 0
+    while (Date.now() < deadline) {
+      const delay = schedule[Math.min(index, schedule.length - 1)] ?? 20000
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay))
+      }
+      index += 1
+      const detail = await loadBuildJobDetail(job_id)
+      syncBuildJobHandoff(undefined, detail)
+      const status = detail.job?.status
+      if (status === "completed" || status === "failed") return detail
+    }
+    throw new Error("build_job_timeout")
   }
 
   /** 中文注释：在本地 child store 里预写入新会话，避免首次 build 切目录时迁移不到 session 条目。 */
@@ -318,7 +423,24 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const voices = currentPrompt.filter((part): part is VoiceAttachmentPart => part.type === "voice")
     const mode = input.mode()
 
-    if (text.trim().length === 0 && images.length === 0 && voices.length === 0 && input.commentCount() === 0) {
+    const currentAgent = local.agent.current()
+    const selectedAgent = local.agent.selected?.()
+    /** 中文注释：未显式选择模式时回到 plan，只有手动切到 build 才触发构建闭环。 */
+    const agent = currentAgent?.name ?? "plan"
+    const rememberedPlan = (() => {
+      const knownSessionID = params.id ?? input.info()?.id
+      if (!knownSessionID) return
+      return layout.handoff.savedPlan(knownSessionID)
+    })()
+    const useSavedPlanBuild =
+      selectedAgent?.name === "build" &&
+      text.trim().length === 0 &&
+      images.length === 0 &&
+      voices.length === 0 &&
+      input.commentCount() === 0 &&
+      !!rememberedPlan?.id
+
+    if (text.trim().length === 0 && images.length === 0 && voices.length === 0 && input.commentCount() === 0 && !useSavedPlanBuild) {
       if (input.working()) abort()
       return
     }
@@ -338,10 +460,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return
     }
 
-    const currentAgent = local.agent.current()
-    const selectedAgent = local.agent.selected?.()
-    /** 中文注释：未显式选择模式时回到 plan，只有手动切到 build 才触发构建闭环。 */
-    const agent = currentAgent?.name ?? "plan"
     const currentModel = local.model.current()
     const model =
       currentModel &&
@@ -517,32 +635,97 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       input.commentCount() === 0
     ) {
       try {
-        const created = await runBuildPipeline(text, sessionID)
+        const created = await createBuildJob(
+          useSavedPlanBuild && rememberedPlan?.id
+            ? {
+                session_id: sessionID,
+                source_type: "saved_plan",
+                saved_plan_id: rememberedPlan.id,
+              }
+            : {
+                session_id: sessionID,
+                source_type: "prompt",
+                prompt_text: text,
+              },
+          model,
+        )
         if (!created) {
           // 中文注释：非账号模式或上下文尚未准备好时，回退到原有会话式 build 流程。
         } else {
+          if (created.job_id) {
+            layout.handoff.setBuildJob(sessionID, {
+              job_id: created.job_id,
+              status: "pending",
+              current_stage: undefined,
+              error_code: undefined,
+              error_message: undefined,
+              session_id: sessionID,
+              session_directory: sessionDirectory,
+              solution_scope: created.solution_scope,
+              stages: [],
+              artifacts: [],
+            })
+          }
           input.clearDraft?.()
           prompt.reset()
           input.setMode("normal")
           input.setPopover(null)
-          if (created.session_id && created.session_directory) {
-            if (created.session_id === sessionID && created.session_directory !== sessionDirectory) {
-              await switchDirectory(created.session_directory, created.session_id)
-            } else if (created.session_id === sessionID) {
-              /** 中文注释：同步构建直接复用当前会话且目录不变时，也要立即补拉消息和列表，避免用户看到“构建成功”但页面内容没有刷新。 */
-              await sync.session.syncAt({
-                directory: created.session_directory,
-                sessionID: created.session_id,
-              })
-              await globalSync.project.loadSessions(created.session_directory)
-            } else {
-              navigate(`/${base64Encode(created.session_directory)}/session/${created.session_id}`)
-            }
-          }
           showToast({
-            title: "构建闭环已完成",
-            description: buildToastDescription(created ?? {}),
+            title: "构建任务已提交",
+            description: useSavedPlanBuild ? "系统正在后台按最近一次已保存计划执行构建。" : "系统正在后台执行改码、编译与打包，完成后会自动刷新当前会话。",
           })
+          if (!created.job_id) return
+          void waitBuildJob(created.job_id)
+            .then(async (detail) => {
+              syncBuildJobHandoff(sessionID, detail)
+              const target_session_id = detail.session_id ?? created.session_id
+              const target_directory = detail.session_directory
+              if (detail.job?.status !== "completed") {
+                throw new Error(detail.job?.error_message ?? detail.job?.error_code ?? detail.job?.current_stage ?? "build_job_failed")
+              }
+              if (target_session_id && target_directory) {
+                if (target_session_id === sessionID && target_directory !== sessionDirectory) {
+                  await switchDirectory(target_directory, target_session_id)
+                } else if (target_session_id === sessionID) {
+                  /** 中文注释：异步构建在当前会话完成后，也要主动补拉消息与列表，避免用户停留在旧快照。 */
+                  await sync.session.syncAt({
+                    directory: target_directory,
+                    sessionID: target_session_id,
+                  })
+                  await globalSync.project.loadSessions(target_directory)
+                } else {
+                  navigate(`/${base64Encode(target_directory)}/session/${target_session_id}`)
+                }
+              }
+              showToast({
+                title: "构建闭环已完成",
+                description: buildToastDescription(detail),
+              })
+            })
+            .catch((error) => {
+              if (sessionID) {
+                const currentBuild = layout.handoff.buildJob(sessionID)
+                const job_id = currentBuild?.job_id ?? created.job_id
+                if (job_id) {
+                  layout.handoff.setBuildJob(sessionID, {
+                    job_id,
+                    current_stage: currentBuild?.current_stage,
+                    error_code: currentBuild?.error_code,
+                    session_id: currentBuild?.session_id ?? sessionID,
+                    session_directory: currentBuild?.session_directory ?? sessionDirectory,
+                    solution_scope: currentBuild?.solution_scope ?? created.solution_scope,
+                    stages: currentBuild?.stages ?? [],
+                    artifacts: currentBuild?.artifacts ?? [],
+                    status: "failed",
+                    error_message: errorMessage(error),
+                  })
+                }
+              }
+              showToast({
+                title: "构建任务执行失败",
+                description: errorMessage(error),
+              })
+            })
           return
         }
       } catch (error) {
@@ -550,6 +733,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           title: "构建闭环执行失败",
           description: errorMessage(error),
         })
+        return
       }
     }
 

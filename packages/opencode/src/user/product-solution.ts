@@ -4,7 +4,7 @@ import { BuildProfile, normalizeBuildProfile, type BuildProfile as BuildProfileT
 import { Database, and, asc, desc, eq, inArray, isNull } from "@/storage/db"
 import { Filesystem } from "@/util/filesystem"
 import { TpProductTable } from "./product.sql"
-import { invalidateProductAnchorCache } from "./product-anchor"
+import { invalidateProductAnchorCache, solutionProjectID } from "./product-anchor"
 import { TpProductSolutionBindingTable } from "./product-solution-binding.sql"
 import { TpProductSolutionRootTable } from "./product-solution-root.sql"
 import { TpProductSolutionTable } from "./product-solution.sql"
@@ -45,6 +45,7 @@ export type ProductSolutionRootItem = {
 export type ProductSolutionItem = {
   id: string
   product_id?: string
+  primary_project_id?: string
   name: string
   code: string
   enabled: boolean
@@ -141,11 +142,13 @@ function rootItem(row: typeof TpProductSolutionRootTable.$inferSelect): ProductS
 function solutionItem(
   row: typeof TpProductSolutionTable.$inferSelect,
   roots: ProductSolutionRootItem[],
+  primary_project_id?: string,
   product_id?: string,
 ): ProductSolutionItem {
   return {
     id: row.id,
     product_id,
+    primary_project_id,
     name: row.name,
     code: row.code,
     enabled: row.enabled,
@@ -176,7 +179,18 @@ async function hydrate(rows: (typeof TpProductSolutionTable.$inferSelect)[]) {
     list.push(rootItem(row))
     map.set(row.solution_id, list)
   }
-  return rows.map((row) => solutionItem(row, map.get(row.id) ?? []))
+  return Promise.all(
+    rows.map(async (row) => {
+      const items = map.get(row.id) ?? []
+      return solutionItem(
+        row,
+        items,
+        await solutionProjectID({
+          roots: items,
+        }),
+      )
+    }),
+  )
 }
 
 /** 中文注释：把绑定关系映射成指定产品视角下的解决方案列表，确保同一方案可被多个产品复用。 */

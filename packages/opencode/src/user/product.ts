@@ -238,18 +238,15 @@ export namespace AccountProductService {
     const rows = await Database.use((db) => db.select().from(TpProductTable).where(activeProduct()).all())
     const items = await productsByRows(rows, mode)
     const legacy = new Map(rows.map((item) => [item.id, item.project_id ?? undefined]))
-    const derived = await Promise.all(
-      items.map(async (item) => ({
-        item,
-        project_ids: new Set(
-          [
-            ...(legacy.get(item.id) ? [legacy.get(item.id)!] : []),
-            ...(item.project_id ? [item.project_id] : []),
-            ...(mode === "light" ? [] : await projectIDsBySolutions(item.solutions ?? [])),
-          ],
-        ),
-      })),
-    )
+    const derived = await Promise.all(items.map(async (item) => ({
+      item,
+      project_ids: new Set([
+        ...(legacy.get(item.id) ? [legacy.get(item.id)!] : []),
+        ...(item.project_id ? [item.project_id] : []),
+        ...(item.related_project_ids ?? []),
+        ...(mode === "light" ? [] : await projectIDsBySolutions(item.solutions ?? [])),
+      ]),
+    })))
     return derived.filter((item) => [...item.project_ids].some((project_id) => ids.has(project_id))).map((item) => item.item)
   }
 

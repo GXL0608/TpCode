@@ -11,6 +11,8 @@ type ProductLike = {
   last_selected?: boolean
 }
 
+const PRODUCT_SIDEBAR_VISIBLE_LIMIT = 5
+
 type ProjectLike = {
   id: string
   worktree: string
@@ -108,7 +110,7 @@ export function productSidebarAvatar(product?: ProductLike) {
 }
 
 /** 中文注释：产品接口短暂失败时，侧栏至少要保留当前产品占位，避免用户看到整列空白。 */
-export function productSidebarProducts(input: {
+function productSidebarFallback(input: {
   products: readonly ProductLike[]
   current_product_id?: string
 }) {
@@ -122,6 +124,59 @@ export function productSidebarProducts(input: {
       last_selected: true,
     },
   ]
+}
+
+/** 中文注释：按“最近使用优先，其余保持原始顺序”的规则生成稳定的产品导航顺序。 */
+function orderedProducts(input: {
+  products: readonly ProductLike[]
+  recent_product_ids?: readonly string[]
+}) {
+  const products = [...input.products]
+  if (!input.recent_product_ids?.length) return products
+  const map = new Map(products.map((item) => [item.id, item]))
+  const recent = input.recent_product_ids.map((id) => map.get(id)).filter((item): item is ProductLike => !!item)
+  const visible = new Set(recent.map((item) => item.id))
+  return [...recent, ...products.filter((item) => !visible.has(item.id))]
+}
+
+/** 中文注释：产品侧栏默认只展示最近使用的产品，并确保当前产品即使不在最近列表里也始终可见。 */
+export function productSidebarProducts(input: {
+  products: readonly ProductLike[]
+  current_product_id?: string
+  recent_product_ids?: readonly string[]
+}) {
+  const products = productSidebarFallback(input)
+  if (products.length <= PRODUCT_SIDEBAR_VISIBLE_LIMIT) return products
+  const ordered = orderedProducts({
+    products,
+    recent_product_ids: input.recent_product_ids,
+  })
+  const visible = ordered.slice(0, PRODUCT_SIDEBAR_VISIBLE_LIMIT)
+  if (!input.current_product_id) return visible
+  if (visible.some((item) => item.id === input.current_product_id)) return visible
+  const current = ordered.find((item) => item.id === input.current_product_id)
+  if (!current) return visible
+  return [...visible, current]
+}
+
+/** 中文注释：把未进入最近产品栏的剩余产品收进“更多”列表，避免左侧导航被全部产品占满。 */
+export function productSidebarOverflowProducts(input: {
+  products: readonly ProductLike[]
+  current_product_id?: string
+  recent_product_ids?: readonly string[]
+}) {
+  const products = productSidebarFallback(input)
+  const visible = new Set(
+    productSidebarProducts({
+      products,
+      current_product_id: input.current_product_id,
+      recent_product_ids: input.recent_product_ids,
+    }).map((item) => item.id),
+  )
+  return orderedProducts({
+    products,
+    recent_product_ids: input.recent_product_ids,
+  }).filter((item) => !visible.has(item.id))
 }
 
 export type ProductSidebarSessionBase = {

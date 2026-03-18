@@ -109,6 +109,7 @@ import {
 } from "./layout/sidebar-product-view"
 import {
   productSidebarName,
+  productSidebarOverflowProducts,
   productSidebarProducts,
   type ProductSidebarSessionInfo,
   productSidebarSessions,
@@ -172,6 +173,7 @@ export default function Layout(props: ParentProps) {
   /** 中文注释：侧栏会话排序依赖当前时间窗口，必须先初始化时钟信号，避免后面的 memo 在模块首次执行时访问未初始化变量。 */
   const [sortNow, setSortNow] = createSignal(Date.now())
   const [contextProducts, setContextProducts] = createSignal<ContextProduct[]>([])
+  const [recentProductIDs, setRecentProductIDs] = createSignal<string[]>([])
   const [productSessionsReady, setProductSessionsReady] = createSignal(false)
   /** 中文注释：用户存在产品上下文时，左侧导航必须切成产品视图，避免把内部解决方案项目暴露出来。 */
   const productSidebarEnabled = createMemo(() => useProductSidebar(auth.user()?.context_product_id))
@@ -183,6 +185,7 @@ export default function Layout(props: ParentProps) {
     const product_id = auth.user()?.context_product_id ?? ""
     if (!ready || !authenticated) {
       setContextProducts([])
+      setRecentProductIDs([])
       return
     }
     let cancelled = false
@@ -191,6 +194,7 @@ export default function Layout(props: ParentProps) {
       if (product_id !== (auth.user()?.context_product_id ?? "")) return
       if (!payload?.products) return
       setContextProducts(payload.products)
+      setRecentProductIDs(payload.recent_product_ids ?? [])
     })
     onCleanup(() => {
       cancelled = true
@@ -201,6 +205,15 @@ export default function Layout(props: ParentProps) {
     productSidebarProducts({
       products: contextProducts(),
       current_product_id: auth.user()?.context_product_id,
+      recent_product_ids: recentProductIDs(),
+    }),
+  )
+  /** 中文注释：未进入最近产品栏的其它产品统一收进“更多”列表，避免超级管理员左侧被全部产品占满。 */
+  const overflowSidebarProducts = createMemo(() =>
+    productSidebarOverflowProducts({
+      products: contextProducts(),
+      current_product_id: auth.user()?.context_product_id,
+      recent_product_ids: recentProductIDs(),
     }),
   )
   const currentContextProduct = createMemo(() => sidebarProducts().find((item) => item.id === auth.user()?.context_product_id))
@@ -2497,11 +2510,13 @@ export default function Layout(props: ParentProps) {
             >
               <SidebarProductContent
                 products={sidebarProducts}
+                overflowProducts={overflowSidebarProducts}
                 current_product_id={() => auth.user()?.context_product_id}
                 onSelectProduct={(product) => void switchProduct(product)}
                 onOpenProductPicker={chooseProject}
                 openProductLabel={() => language.t("command.project.open")}
                 openProductKeybind={() => command.keybind("project.open")}
+                moreProductsLabel={() => language.t("common.moreOptions")}
                 settingsLabel={() => language.t("sidebar.settings")}
                 settingsKeybind={() => command.keybind("settings.open")}
                 onOpenSettings={openSettings}
@@ -2580,11 +2595,13 @@ export default function Layout(props: ParentProps) {
               <SidebarProductContent
                 mobile
                 products={sidebarProducts}
+                overflowProducts={overflowSidebarProducts}
                 current_product_id={() => auth.user()?.context_product_id}
                 onSelectProduct={(product) => void switchProduct(product)}
                 onOpenProductPicker={chooseProject}
                 openProductLabel={() => language.t("command.project.open")}
                 openProductKeybind={() => command.keybind("project.open")}
+                moreProductsLabel={() => language.t("common.moreOptions")}
                 settingsLabel={() => language.t("sidebar.settings")}
                 settingsKeybind={() => command.keybind("settings.open")}
                 onOpenSettings={openSettings}

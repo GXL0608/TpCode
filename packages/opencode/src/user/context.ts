@@ -31,11 +31,6 @@ function visibleProduct<T extends { project_id?: string; related_project_ids?: s
   }
 }
 
-/** 中文注释：产品选择页不应把名称前缀为“删-”的软删除产品继续暴露给用户。 */
-function selectableProduct<T extends { name: string }>(item: T) {
-  return !item.name.trim().startsWith("删-")
-}
-
 /** 中文注释：产品选中态需要兼容关联项目命中，不能只用主项目判断。 */
 function matchesProductProject(input: {
   item: {
@@ -50,6 +45,22 @@ function matchesProductProject(input: {
 
 function unique(input: string[]) {
   return [...new Set(input)]
+}
+
+/** 中文注释：最近产品列表按 MRU 规则更新，并限制长度，避免账号状态无限膨胀。 */
+function recentProducts(input: { product_id?: string; current?: string[] }) {
+  if (!input.product_id) return unique(input.current ?? [])
+  return [input.product_id, ...(input.current ?? []).filter((item) => item !== input.product_id)].slice(0, 20)
+}
+
+/** 中文注释：仅保留当前仍可见的最近产品，防止已删除或已失权产品继续出现在左侧导航。 */
+function visibleRecentProducts(input: {
+  recent_product_ids?: string[]
+  products: Array<{ id: string }>
+}) {
+  if (!input.recent_product_ids?.length) return [] as string[]
+  const ids = new Set(input.products.map((item) => item.id))
+  return input.recent_product_ids.filter((item, index, list) => ids.has(item) && list.indexOf(item) === index)
 }
 
 /** 中文注释：统一过滤未逻辑删除的角色，避免软删除角色继续参与项目授权推导。 */
@@ -252,12 +263,16 @@ export namespace AccountContextService {
         ]
     const rows = [...new Map(source.map((item) => [item.id, item])).values()]
       .map((item) => visibleProduct(item, allowed))
-      .filter(selectableProduct)
+    const recent_product_ids = visibleRecentProducts({
+      recent_product_ids: state?.recent_product_ids ?? (state?.last_product_id ? [state.last_product_id] : []),
+      products: rows,
+    })
     return {
       current_product_id: input.context_product_id,
       current_project_id: input.context_project_id,
       last_product_id: state?.last_product_id ?? undefined,
       last_project_id: state?.last_project_id ?? undefined,
+      recent_product_ids,
       /** 中文注释：产品选择页只展示真实产品，避免把前端/后端等锚点项目误渲染成可选产品。 */
       products: rows
         .sort((a, b) => a.name.localeCompare(b.name))
@@ -282,12 +297,20 @@ export namespace AccountContextService {
 
   /** 中文注释：同时记住当前用户最近一次选择的产品与项目，兼容新旧上下文切换链路。 */
   export async function remember(input: { user_id: string; project_id?: string; product_id?: string }) {
+    const row = await Database.use((db) =>
+      db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
+    )
+    const recent_product_ids = recentProducts({
+      product_id: input.product_id,
+      current: row?.recent_product_ids,
+    })
     await Database.use(async (db) => {
       await db.insert(TpUserProjectStateTable)
         .values({
           user_id: input.user_id,
           last_project_id: input.project_id ?? null,
           last_product_id: input.product_id ?? null,
+          recent_product_ids,
           time_updated: Date.now(),
         })
         .onConflictDoUpdate({
@@ -295,6 +318,7 @@ export namespace AccountContextService {
           set: {
             last_project_id: input.project_id ?? null,
             last_product_id: input.product_id ?? null,
+            recent_product_ids,
             time_updated: Date.now(),
           },
         })

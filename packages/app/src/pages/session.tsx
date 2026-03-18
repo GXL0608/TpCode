@@ -23,6 +23,7 @@ import { useComments } from "@/context/comments"
 import { useAccountAuth } from "@/context/account-auth"
 import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { SessionHeader, NewSessionView } from "@/components/session"
+import { SessionBuildStatus } from "@/components/session/session-build-status"
 import { same } from "@/utils/same"
 import { decode64 } from "@/utils/base64"
 import { createOpenReviewFile } from "@/pages/session/helpers"
@@ -1133,6 +1134,7 @@ export default function Page() {
   return (
     <div class="relative bg-background-base size-full overflow-hidden flex flex-col">
       <SessionHeader />
+      <SessionBuildStatus sessionID={params.id} />
       <div class="flex-1 min-h-0 flex flex-col md:flex-row">
         {/* Session panel */}
         <div

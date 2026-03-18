@@ -1,8 +1,9 @@
-import { For, Show, type Accessor, type JSX } from "solid-js"
+import { For, Show, createSignal, type Accessor, type JSX } from "solid-js"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { type Session } from "@opencode-ai/sdk/v2/client"
 import { Avatar } from "@opencode-ai/ui/avatar"
 import { Button } from "@opencode-ai/ui/button"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { SessionItem, type SessionItemProps } from "./sidebar-items"
@@ -24,17 +25,20 @@ export type ProductSidebarSession = {
 export function SidebarProductContent(props: {
   mobile?: boolean
   products: Accessor<readonly ProductLike[]>
+  overflowProducts: Accessor<readonly ProductLike[]>
   current_product_id: Accessor<string | undefined>
   onSelectProduct: (product: ProductLike) => void
   onOpenProductPicker: () => void
   openProductLabel: Accessor<string>
   openProductKeybind: Accessor<string | undefined>
+  moreProductsLabel: Accessor<string>
   settingsLabel: Accessor<string>
   settingsKeybind: Accessor<string | undefined>
   onOpenSettings: () => void
   renderPanel: () => JSX.Element
 }) {
   const placement = () => (props.mobile ? "bottom" : "right")
+  const [menuOpen, setMenuOpen] = createSignal(false)
   return (
     <div class="flex h-full w-full overflow-hidden">
       <div class="w-16 shrink-0 bg-background-base flex flex-col items-center overflow-hidden">
@@ -59,6 +63,35 @@ export function SidebarProductContent(props: {
                 </Tooltip>
               )}
             </For>
+            <Show when={props.overflowProducts().length > 0}>
+              <DropdownMenu open={menuOpen()} onOpenChange={setMenuOpen} placement={props.mobile ? "top" : "right-start"} gutter={8}>
+                <Tooltip placement={placement()} value={props.moreProductsLabel()}>
+                  <DropdownMenu.Trigger
+                    as={IconButton}
+                    icon="dot-grid"
+                    variant="ghost"
+                    size="large"
+                    aria-label={props.moreProductsLabel()}
+                  />
+                </Tooltip>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content class="min-w-40">
+                    <For each={props.overflowProducts()}>
+                      {(product) => (
+                        <DropdownMenu.Item
+                          onSelect={() => {
+                            setMenuOpen(false)
+                            props.onSelectProduct(product)
+                          }}
+                        >
+                          <DropdownMenu.ItemLabel>{productSidebarName(product)}</DropdownMenu.ItemLabel>
+                        </DropdownMenu.Item>
+                      )}
+                    </For>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu>
+            </Show>
             <TooltipKeybind
               placement={placement()}
               title={props.openProductLabel()}

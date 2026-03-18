@@ -5,6 +5,7 @@ import {
   productSidebarDirectories,
   productSidebarItemClass,
   productSidebarName,
+  productSidebarOverflowProducts,
   productSidebarProducts,
   productSidebarSessions,
   useProductSidebar,
@@ -191,6 +192,42 @@ describe("sidebar-product-view", () => {
         last_selected: true,
       },
     ])
+  })
+
+  test("产品侧栏默认只展示最近使用产品，并确保当前产品始终可见", () => {
+    expect(
+      productSidebarProducts({
+        products: [
+          { id: "p1", name: "产品1" },
+          { id: "p2", name: "产品2" },
+          { id: "p3", name: "产品3" },
+          { id: "p4", name: "产品4" },
+          { id: "p5", name: "产品5" },
+          { id: "p6", name: "产品6" },
+          { id: "p7", name: "产品7" },
+        ],
+        current_product_id: "p7",
+        recent_product_ids: ["p5", "p4", "p3", "p2", "p1"],
+      }).map((item) => item.id),
+    ).toEqual(["p5", "p4", "p3", "p2", "p1", "p7"])
+  })
+
+  test("产品侧栏更多列表会收起非最近产品，并保持稳定排序", () => {
+    expect(
+      productSidebarOverflowProducts({
+        products: [
+          { id: "p1", name: "产品1" },
+          { id: "p2", name: "产品2" },
+          { id: "p3", name: "产品3" },
+          { id: "p4", name: "产品4" },
+          { id: "p5", name: "产品5" },
+          { id: "p6", name: "产品6" },
+          { id: "p7", name: "产品7" },
+        ],
+        current_product_id: "p7",
+        recent_product_ids: ["p5", "p4", "p3", "p2", "p1"],
+      }).map((item) => item.id),
+    ).toEqual(["p6"])
   })
 
   test("产品导航项对选中产品返回高亮样式", () => {

@@ -294,8 +294,16 @@ describe("account context products", () => {
     if (!visible.ok) return
     product_ids.push(visible.item.id)
 
+    const prefixed = await AccountProductService.create({
+      name: "删-仍然可见的产品",
+      directory: "",
+    })
+    expect(prefixed.ok).toBe(true)
+    if (!prefixed.ok) return
+    product_ids.push(prefixed.item.id)
+
     const hidden = await AccountProductService.create({
-      name: "删-慢病管理系统",
+      name: "真正逻辑删除的产品",
       directory: "",
     })
     expect(hidden.ok).toBe(true)
@@ -332,6 +340,13 @@ describe("account context products", () => {
     )
 
     await Database.use(async (db) => {
+      await db
+        .update(TpProductTable)
+        .set({
+          time_deleted: Date.now(),
+        })
+        .where(eq(TpProductTable.id, hidden.item.id))
+        .run()
       await db.insert(TpProjectUserAccessTable)
         .values(
           project_ids.filter(Boolean).map((project_id) => ({
@@ -361,7 +376,87 @@ describe("account context products", () => {
     }
 
     expect(body.products.some((item) => item.name === "慢病管理系统")).toBe(true)
-    expect(body.products.some((item) => item.name === "删-慢病管理系统")).toBe(false)
+    expect(body.products.some((item) => item.name === "删-仍然可见的产品")).toBe(true)
+    expect(body.products.some((item) => item.name === "真正逻辑删除的产品")).toBe(false)
+  }, 20_000)
+
+  test.skipIf(!on)("returns account-level recent products in most-recent-first order", async () => {
+    const login = await req({
+      path: "/account/login",
+      method: "POST",
+      body: {
+        username: "admin",
+        password: process.env.TPCODE_ADMIN_PASSWORD ?? "TpCode@2026",
+      },
+    })
+
+    expect(login.status).toBe(200)
+    const session = (await login.json()) as {
+      access_token: string
+      refresh_token: string
+      user: { id: string }
+    }
+    user_ids.add(session.user.id)
+
+    const alpha = await AccountProductService.create({
+      name: "最近产品-A",
+      directory: "",
+    })
+    expect(alpha.ok).toBe(true)
+    if (!alpha.ok) return
+    product_ids.push(alpha.item.id)
+
+    const beta = await AccountProductService.create({
+      name: "最近产品-B",
+      directory: "",
+    })
+    expect(beta.ok).toBe(true)
+    if (!beta.ok) return
+    product_ids.push(beta.item.id)
+
+    const gamma = await AccountProductService.create({
+      name: "最近产品-C",
+      directory: "",
+    })
+    expect(gamma.ok).toBe(true)
+    if (!gamma.ok) return
+    product_ids.push(gamma.item.id)
+
+    token_hashes.push(
+      session.access_token ? (await import("../../src/user/service")).UserService.tokenHash(session.access_token) : "",
+      session.refresh_token ? (await import("../../src/user/service")).UserService.tokenHash(session.refresh_token) : "",
+    )
+
+    await AccountContextService.remember({
+      user_id: session.user.id,
+      product_id: alpha.item.id,
+    })
+    await AccountContextService.remember({
+      user_id: session.user.id,
+      product_id: beta.item.id,
+    })
+    await AccountContextService.remember({
+      user_id: session.user.id,
+      product_id: gamma.item.id,
+    })
+    await AccountContextService.remember({
+      user_id: session.user.id,
+      product_id: beta.item.id,
+    })
+
+    const response = await req({
+      path: "/account/context/products",
+      token: session.access_token,
+    })
+
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      recent_product_ids?: string[]
+      last_product_id?: string
+    }
+
+    expect(body.last_product_id).toBe(beta.item.id)
+    expect(body.recent_product_ids).toEqual([beta.item.id, gamma.item.id, alpha.item.id])
   }, 20_000)
 
   test.skipIf(!on)("keeps solution project ids in product payload even when only the anchor project is directly allowed", async () => {
