@@ -73,7 +73,6 @@ import { canUseRuntimeModelSelector } from "./prompt-input/runtime-model-access"
 import { buildPromptDockFlags } from "./prompt-input/dock-actions"
 import { canUseBuildCapability } from "@/utils/account-build-access"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
-import { createSpeechRecognition } from "@/utils/speech"
 import { DialogVhoFeedback } from "./dialog-vho-feedback"
 import {
   buildVhoFeedbackPrompt,
@@ -195,15 +194,35 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const inset = 44
   const [speechFailure, setSpeechFailure] = createSignal("")
   const [transcribeFailure, setTranscribeFailure] = createSignal("")
-  const speech = createSpeechRecognition({
-    localFirst: true,
-    onError: (error) => setSpeechFailure(error),
-    onInterim: (text) => {
-      const next = text.trim()
-      if (!next) return
-      speechSnapshot = next
-    },
-  })
+  /** 中文注释：交付环境统一走后端 STT，前端不再启动浏览器语音转写。 */
+  const speech = {
+    isSupported: () => false,
+    isRecording: () => false,
+    committed: () => "",
+    interim: () => "",
+    waitUntilRecording: async (_timeout = 2200) => false,
+    settle: async (_timeout = 800) => {},
+    setLang: (_next: string) => {},
+    start: () => {},
+    stop: () => {},
+    reset: () => {},
+    debug: () => ({
+      starts: 0,
+      results: 0,
+      errors: 0,
+      ends: 0,
+      should_continue: false,
+      starting: false,
+      stopping: false,
+      is_recording: false,
+      committed: 0,
+      interim: 0,
+      local_preferred: false,
+      local_supported: false,
+      local_active: false,
+      last_error: "",
+    }),
+  }
 
   const scrollCursorIntoView = () => {
     const container = scrollRef
@@ -665,14 +684,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const transcribeVoice = async (input: { mime: string; dataUrl: string }): Promise<VoiceTranscript> => {
     setTranscribeFailure("")
-    const selected = runtimeValue() !== "__auto__" ? parseRuntimeValue(runtimeValue()) : undefined
-    const model = selected ?? info()?.runtime_model
     const result = await sdk.client.session
       .voiceTranscribe({
         mime: input.mime,
         data_url: input.dataUrl,
-        providerID: model?.providerID,
-        modelID: model?.modelID,
       })
       .catch((error) => {
         setTranscribeFailure(errorMessage(error, language.t("prompt.toast.voiceTranscribeFailed.description")))
@@ -1608,41 +1623,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       dataUrl,
       duration_ms: duration,
     }
-    await speech.settle(1800)
-    if (run !== voiceRun) {
-      speechSnapshot = ""
-      finalizing = false
-      return
-    }
     const cursorPosition = prompt.cursor() ?? getCursorPosition(editorRef)
     prompt.set([...prompt.current(), attachment], cursorPosition)
 
     setTranscribeFailure("")
-    let browserTranscript = (readSpeechTranscript() || speechSnapshot).trim()
-    if (!browserTranscript) {
-      await new Promise((resolve) => window.setTimeout(resolve, 320))
-      await speech.settle(600)
-      browserTranscript = (readSpeechTranscript() || speechSnapshot).trim()
-    }
-    if (!browserTranscript) {
-      browserTranscript = await waitForSpeechTranscript(4200)
-    }
-    let transcript = browserTranscript
-    if (transcript) {
-      editorRef.focus()
-      addPart({
-        type: "text",
-        content: transcript,
-        start: 0,
-        end: 0,
-      })
-    }
-    let fallbackUsed = false
-    let fallback: VoiceTranscript = { text: "" }
-    if (!transcript && shouldUseServerFallback()) {
-      fallbackUsed = true
-      fallback = await transcribeVoice({ mime, dataUrl })
-    }
+    let transcript = ""
+    const fallbackUsed = shouldUseServerFallback()
+    const fallback = fallbackUsed ? await transcribeVoice({ mime, dataUrl }) : { text: "" }
     if (fallback.segments?.length) {
       prompt.set(
         prompt.current().map((part) => {
@@ -1654,7 +1641,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         }),
       )
     }
-    if (!transcript && fallback.text) {
+    if (fallback.text) {
       transcript = fallback.text
       editorRef.focus()
       addPart({

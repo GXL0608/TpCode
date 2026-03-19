@@ -1,12 +1,12 @@
-import { generateText } from "ai"
+import { unlink } from "fs/promises"
 import { tmpdir } from "os"
 import path from "path"
-import { unlink } from "fs/promises"
 import { fileURLToPath } from "url"
-import { MessageV2 } from "./message-v2"
+import { generateText } from "ai"
 import { Provider } from "@/provider/provider"
 import { Log } from "@/util/log"
-import { SessionVoice, MAX_AUDIO_BYTES } from "./voice"
+import { MAX_AUDIO_BYTES } from "./voice"
+import { MessageV2 } from "./message-v2"
 
 const log = Log.create({ service: "session.voice-transcribe" })
 const MAX_TEXT_CHARS = 24_000
@@ -14,11 +14,51 @@ const MAX_SEGMENT_CHARS = 2_000
 const MAX_SEGMENTS = 512
 const SEGMENT_GAP_SECONDS = 1.5
 const DEFAULT_WHITELIST = ["HIS", "LIS", "PACS"]
+const WORKER_SCRIPT = fileURLToPath(new URL("./voice-transcribe-local.py", import.meta.url))
 
 type Segment = {
   start: number
   end: number
   text: string
+}
+
+type Transcript = {
+  text: string
+  engine: string
+  segments?: Segment[]
+}
+
+type SttMode = "local_pool" | "remote_dedicated"
+
+type LocalWorkerJob = {
+  id: string
+  audio: string
+  language?: string
+  resolve: (value: Transcript | undefined) => void
+  reject: (error: Error) => void
+  timer?: ReturnType<typeof setTimeout>
+}
+
+type LocalWorker = {
+  id: number
+  proc: ReturnType<typeof Bun.spawn>
+  buffer: string
+  stderr: string
+  ready: boolean
+  current?: LocalWorkerJob
+  startup?: {
+    resolve: (worker: LocalWorker) => void
+    reject: (error: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }
+}
+
+const pool = {
+  workers: [] as LocalWorker[],
+  queue: [] as LocalWorkerJob[],
+  starting: undefined as Promise<void> | undefined,
+  nextWorkerID: 0,
+  nextJobID: 0,
 }
 
 function parseDataUrl(url: string) {
@@ -52,10 +92,34 @@ function extension(mime: string) {
   return "webm"
 }
 
+function envFlag(keys: string[], fallback: boolean) {
+  for (const key of keys) {
+    const value = process.env[key]?.trim().toLowerCase()
+    if (!value) continue
+    if (value === "true" || value === "1") return true
+    if (value === "false" || value === "0") return false
+  }
+  return fallback
+}
+
+function envInt(keys: string[], fallback: number, min: number, max: number) {
+  for (const key of keys) {
+    const raw = process.env[key]?.trim()
+    if (!raw) continue
+    const value = Math.trunc(Number(raw))
+    if (!Number.isFinite(value)) continue
+    return Math.min(max, Math.max(min, value))
+  }
+  return fallback
+}
+
+function sttMode(): SttMode {
+  return process.env.TPCODE_STT_MODE?.trim().toLowerCase() === "remote_dedicated" ? "remote_dedicated" : "local_pool"
+}
+
 function localEnabled() {
-  const value = process.env.TPCODE_LOCAL_STT_ENABLED?.toLowerCase()
-  if (value === undefined) return true
-  return value === "true" || value === "1"
+  if (sttMode() === "remote_dedicated") return false
+  return envFlag(["TPCODE_LOCAL_STT_ENABLED"], true)
 }
 
 function localPython() {
@@ -74,10 +138,33 @@ function localPythonEnv() {
   }
 }
 
+function localModel() {
+  return process.env.TPCODE_LOCAL_STT_MODEL?.trim() || "small"
+}
+
+function localLanguage() {
+  const value = process.env.TPCODE_LOCAL_STT_LANGUAGE?.trim()
+  return value || undefined
+}
+
 function prewarmEnabled() {
-  const value = process.env.TPCODE_LOCAL_STT_PREWARM?.toLowerCase()
-  if (value === undefined) return true
-  return value === "true" || value === "1"
+  return envFlag(["TPCODE_LOCAL_STT_PREWARM"], true)
+}
+
+function localConcurrency() {
+  return envInt(["TPCODE_STT_CONCURRENCY", "TPCODE_LOCAL_STT_CONCURRENCY"], 1, 1, 4)
+}
+
+function localQueueMax() {
+  return envInt(["TPCODE_STT_QUEUE_MAX", "TPCODE_LOCAL_STT_QUEUE_MAX"], 16, 1, 128)
+}
+
+function localTimeoutMs() {
+  return envInt(["TPCODE_LOCAL_STT_TIMEOUT_MS"], 30_000, 1_000, 300_000)
+}
+
+function remoteTimeoutMs() {
+  return envInt(["TPCODE_STT_TIMEOUT_MS"], 20_000, 1_000, 300_000)
 }
 
 function trimText(input: string) {
@@ -196,15 +283,246 @@ function parseModel(model?: string) {
   return { providerID, modelID }
 }
 
-async function resolveCandidates(input: { providerID?: string; modelID?: string }) {
+function workerError(worker: LocalWorker, message: string) {
+  const detail = worker.stderr.trim()
+  return new Error(detail ? `${message}: ${detail}` : message)
+}
+
+function clearJobTimer(job?: LocalWorkerJob) {
+  if (!job?.timer) return
+  clearTimeout(job.timer)
+  job.timer = undefined
+}
+
+function removeWorker(worker: LocalWorker) {
+  const index = pool.workers.findIndex((item) => item.id === worker.id)
+  if (index >= 0) pool.workers.splice(index, 1)
+}
+
+function rejectStartup(worker: LocalWorker, error: Error) {
+  if (!worker.startup) return
+  clearTimeout(worker.startup.timer)
+  const reject = worker.startup.reject
+  worker.startup = undefined
+  reject(error)
+}
+
+function dispatchJobs() {
+  if (pool.queue.length === 0) return
+  if (pool.workers.length < localConcurrency()) {
+    void ensurePool()
+  }
+  for (const worker of pool.workers) {
+    if (!worker.ready || worker.current) continue
+    const job = pool.queue.shift()
+    if (!job) return
+    const stdin = worker.proc.stdin
+    if (!stdin || typeof stdin === "number") {
+      job.reject(workerError(worker, "Local STT worker stdin unavailable"))
+      continue
+    }
+    worker.current = job
+    job.timer = setTimeout(() => {
+      if (worker.current?.id !== job.id) return
+      worker.current = undefined
+      job.reject(workerError(worker, `Local STT timed out after ${localTimeoutMs()}ms`))
+      worker.proc.kill()
+    }, localTimeoutMs())
+    try {
+      stdin.write(`${JSON.stringify({ type: "transcribe", id: job.id, audio: job.audio, language: job.language ?? "" })}\n`)
+      stdin.flush()
+    } catch (error) {
+      clearJobTimer(job)
+      worker.current = undefined
+      job.reject(error instanceof Error ? error : new Error(String(error)))
+      worker.proc.kill()
+    }
+  }
+}
+
+function settleWorker(worker: LocalWorker, raw: string) {
+  const line = raw.trim()
+  if (!line) return
+  let payload: Record<string, unknown>
+  try {
+    payload = JSON.parse(line) as Record<string, unknown>
+  } catch {
+    worker.stderr = [worker.stderr, line].filter(Boolean).join("\n").slice(-4_000)
+    return
+  }
+  if (payload.ready === true) {
+    worker.ready = true
+    if (worker.startup) {
+      clearTimeout(worker.startup.timer)
+      const resolve = worker.startup.resolve
+      worker.startup = undefined
+      resolve(worker)
+    }
+    dispatchJobs()
+    return
+  }
+  const current = worker.current
+  if (!current) return
+  if (String(payload.id ?? "") !== current.id) return
+  clearJobTimer(current)
+  worker.current = undefined
+  if (typeof payload.error === "string" && payload.error.trim()) {
+    current.reject(workerError(worker, payload.error.trim()))
+    dispatchJobs()
+    return
+  }
+  const segments = applyWhitelistToSegments(normalizeSegments(payload.segments))
+  const text = applyWhitelist(String(payload.text ?? "") || textFromSegments(segments))
+  current.resolve(
+    text
+      ? {
+          text,
+          engine: String(payload.engine ?? "").trim() || `local_whisper:${localModel()}`,
+          segments: segments.length ? segments : undefined,
+        }
+      : undefined,
+  )
+  dispatchJobs()
+}
+
+async function readStdout(worker: LocalWorker) {
+  const stream = worker.proc.stdout
+  if (!stream || typeof stream === "number") return
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      worker.buffer += decoder.decode(value, { stream: true })
+      let index = worker.buffer.indexOf("\n")
+      while (index >= 0) {
+        const line = worker.buffer.slice(0, index)
+        worker.buffer = worker.buffer.slice(index + 1)
+        settleWorker(worker, line)
+        index = worker.buffer.indexOf("\n")
+      }
+    }
+    const tail = worker.buffer + decoder.decode()
+    worker.buffer = ""
+    if (tail.trim()) settleWorker(worker, tail)
+  } catch (error) {
+    worker.stderr = [worker.stderr, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n").slice(-4_000)
+  }
+}
+
+async function readStderr(worker: LocalWorker) {
+  const stream = worker.proc.stderr
+  if (!stream || typeof stream === "number") return
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      worker.stderr = [worker.stderr, decoder.decode(value, { stream: true })].filter(Boolean).join("").slice(-4_000)
+    }
+    worker.stderr = [worker.stderr, decoder.decode()].filter(Boolean).join("").slice(-4_000)
+  } catch (error) {
+    worker.stderr = [worker.stderr, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n").slice(-4_000)
+  }
+}
+
+function handleWorkerExit(worker: LocalWorker, code: number | null) {
+  worker.ready = false
+  removeWorker(worker)
+  rejectStartup(worker, workerError(worker, `Local STT worker exited with code ${code ?? "unknown"}`))
+  if (worker.current) {
+    const current = worker.current
+    clearJobTimer(current)
+    worker.current = undefined
+    current.reject(workerError(worker, `Local STT worker exited with code ${code ?? "unknown"}`))
+  }
+  if (pool.queue.length > 0 && localEnabled()) {
+    void ensurePool()
+  }
+}
+
+function spawnWorker() {
+  return new Promise<LocalWorker>((resolve, reject) => {
+    const proc = Bun.spawn({
+      cmd: [...localPython(), WORKER_SCRIPT, "--worker", localModel()],
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: localPythonEnv(),
+    })
+    const worker: LocalWorker = {
+      id: ++pool.nextWorkerID,
+      proc,
+      buffer: "",
+      stderr: "",
+      ready: false,
+      startup: {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          rejectStartup(worker, workerError(worker, `Local STT worker startup timed out after ${localTimeoutMs()}ms`))
+          proc.kill()
+        }, localTimeoutMs()),
+      },
+    }
+    pool.workers.push(worker)
+    void readStdout(worker)
+    void readStderr(worker)
+    void proc.exited.then((code) => handleWorkerExit(worker, code))
+  })
+}
+
+async function ensurePool() {
+  if (!localEnabled()) return
+  if (pool.starting) return pool.starting
+  const missing = localConcurrency() - pool.workers.length
+  if (missing <= 0) return
+  pool.starting = Promise.all(
+    Array.from({ length: missing }, async () => {
+      await spawnWorker().catch((error) => {
+        log.warn("local whisper worker failed to start", { error })
+        return undefined
+      })
+    }),
+  )
+    .then(() => undefined)
+    .finally(() => {
+      pool.starting = undefined
+      dispatchJobs()
+    })
+  return pool.starting
+}
+
+async function enqueueLocalJob(input: { audio: string; language?: string }) {
+  await ensurePool()
+  if (!pool.workers.some((worker) => worker.ready)) {
+    throw new Error("Local STT worker unavailable")
+  }
+  if (pool.queue.length >= localQueueMax()) {
+    throw new Error("Local STT queue is full")
+  }
+  return new Promise<Transcript | undefined>((resolve, reject) => {
+    pool.queue.push({
+      id: `local_stt_${++pool.nextJobID}`,
+      audio: input.audio,
+      language: input.language,
+      resolve,
+      reject,
+    })
+    dispatchJobs()
+  })
+}
+
+async function resolveCandidates() {
   const list: Array<{ providerID: string; modelID: string }> = []
   const push = (item?: { providerID: string; modelID: string }) => {
     if (!item) return
-    if (list.some((x) => x.providerID === item.providerID && x.modelID === item.modelID)) return
+    if (list.some((row) => row.providerID === item.providerID && row.modelID === item.modelID)) return
     list.push(item)
   }
 
-  push(input.providerID && input.modelID ? { providerID: input.providerID, modelID: input.modelID } : undefined)
   push(parseModel(process.env.TPCODE_STT_MODEL))
 
   const providers = (await Provider.list().catch(() => undefined)) ?? {}
@@ -227,67 +545,15 @@ async function transcribeWithLocalWhisper(input: { mime: string; data_url: strin
   const bytes = audioBytes(parsed)
   if (bytes.length === 0) return
   const file = path.join(tmpdir(), `opencode-stt-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension(input.mime)}`)
-  const script = fileURLToPath(new URL("./voice-transcribe-local.py", import.meta.url))
   await Bun.write(file, bytes)
-
-  const py = localPython()
-  const proc = Bun.spawn({
-    cmd: [
-      ...py,
-      script,
-      file,
-      process.env.TPCODE_LOCAL_STT_MODEL ?? "small",
-      process.env.TPCODE_LOCAL_STT_LANGUAGE ?? "",
-    ],
-    stdout: "pipe",
-    stderr: "pipe",
-    env: localPythonEnv(),
-  })
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
-  await unlink(file).catch(() => undefined)
-  if (code !== 0) {
-    log.warn("local whisper transcription failed", { code, error: err })
-    return
+  try {
+    return await enqueueLocalJob({
+      audio: file,
+      language: localLanguage(),
+    })
+  } finally {
+    await unlink(file).catch(() => undefined)
   }
-  const parsedResult = JSON.parse(out) as { text?: string; engine?: string; segments?: unknown }
-  const segments = applyWhitelistToSegments(normalizeSegments(parsedResult.segments))
-  const text = applyWhitelist(parsedResult.text ?? textFromSegments(segments))
-  if (!text) return
-  return {
-    text,
-    engine: parsedResult.engine?.trim() || `local_whisper:${process.env.TPCODE_LOCAL_STT_MODEL ?? "small"}`,
-    segments: segments.length ? segments : undefined,
-  }
-}
-
-async function prewarmLocalWhisper() {
-  if (!localEnabled() || !prewarmEnabled()) return false
-  const script = fileURLToPath(new URL("./voice-transcribe-local.py", import.meta.url))
-  const py = localPython()
-  const proc = Bun.spawn({
-    cmd: [...py, script, "--warmup", process.env.TPCODE_LOCAL_STT_MODEL ?? "small"],
-    stdout: "pipe",
-    stderr: "pipe",
-    env: localPythonEnv(),
-  })
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
-  if (code !== 0) {
-    log.warn("local whisper prewarm failed", { code, error: err })
-    return false
-  }
-  log.info("local whisper prewarmed", {
-    model: process.env.TPCODE_LOCAL_STT_MODEL ?? "small",
-    output: out.trim(),
-  })
-  return true
 }
 
 async function transcribeWithModel(input: {
@@ -298,6 +564,7 @@ async function transcribeWithModel(input: {
 }) {
   const model = await Provider.getModel(input.providerID, input.modelID).catch(() => undefined)
   if (!model) return
+  if (!model.capabilities.input.audio) return
   const language = await Provider.getLanguage(model).catch(() => undefined)
   if (!language) return
 
@@ -347,7 +614,7 @@ async function transcribeWithModel(input: {
     temperature: 0,
     maxOutputTokens: 1200,
     messages,
-    abortSignal: AbortSignal.timeout(Number(process.env.TPCODE_STT_TIMEOUT_MS ?? "20000")),
+    abortSignal: AbortSignal.timeout(remoteTimeoutMs()),
   }).catch((error) => {
     log.warn("voice transcription generation failed", {
       error,
@@ -363,7 +630,7 @@ async function transcribeWithModel(input: {
     text,
     engine: `llm_audio:${model.providerID}/${model.id}`,
     segments: undefined,
-  }
+  } satisfies Transcript
 }
 
 export namespace SessionVoiceTranscribe {
@@ -371,9 +638,18 @@ export namespace SessionVoiceTranscribe {
 
   export function prewarm() {
     if (!warming) {
-      warming = prewarmLocalWhisper().finally(() => {
-        warming = undefined
-      })
+      warming = (async () => {
+        if (!localEnabled() || !prewarmEnabled()) return false
+        await ensurePool()
+        return pool.workers.some((worker) => worker.ready)
+      })()
+        .catch((error) => {
+          log.warn("local whisper prewarm failed", { error })
+          return false
+        })
+        .finally(() => {
+          warming = undefined
+        })
     }
     return warming
   }
@@ -388,15 +664,15 @@ export namespace SessionVoiceTranscribe {
     const size = audioSize(input.data_url)
     if (size > MAX_AUDIO_BYTES) throw new Error(`Audio size exceeds max ${MAX_AUDIO_BYTES} bytes`)
 
-    const local = await transcribeWithLocalWhisper(input).catch((error) => {
-      log.warn("local whisper unavailable", { error })
-      return
-    })
-    if (local) return local
-    const candidates = await resolveCandidates({
-      providerID: input.providerID,
-      modelID: input.modelID,
-    })
+    if (localEnabled()) {
+      return (await transcribeWithLocalWhisper(input)) ?? {
+        text: "",
+        engine: "none",
+        segments: undefined,
+      }
+    }
+
+    const candidates = await resolveCandidates()
     for (const item of candidates) {
       const hit = await transcribeWithModel({
         mime: input.mime,
