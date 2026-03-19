@@ -9,6 +9,36 @@ const dir = path.join(import.meta.dirname, "..")
 process.chdir(dir)
 
 /**
+ * 生成出包使用的日期版本前缀，统一按亚洲上海时区取值。
+ */
+function day(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now)
+  const year = parts.find((item) => item.type === "year")?.value ?? "1970"
+  const month = parts.find((item) => item.type === "month")?.value ?? "01"
+  const date = parts.find((item) => item.type === "day")?.value ?? "01"
+  return `${year}${month}${date}`
+}
+
+/**
+ * 生成出包使用的数字版本片段，默认沿用源码版本里的数字序列。
+ */
+function digits(version: string) {
+  return version.replaceAll(/\D/g, "") || "0"
+}
+
+/**
+ * 生成最终打包版本号，格式固定为“年月日-v数字”。
+ */
+function version(version: string, now = new Date()) {
+  return `${day(now)}-v${digits(version)}`
+}
+
+/**
  * 删除目录中的旧 tgz 产物，避免打包时把历史包再次包含进去。
  */
 function purge(cwd: string) {
@@ -46,21 +76,16 @@ async function pack(cwd: string) {
 }
 
 /**
- * 生成适合包文件名的版本号，避免分支名中的特殊字符破坏路径。
- */
-function sanitize(version: string) {
-  return version.replaceAll("/", "-")
-}
-
-/**
  * 在打包前临时修正 package.json 的版本号，确保 bun pm pack 可以成功产包。
  */
 async function patch(cwd: string) {
+  const root = JSON.parse(await Bun.file(path.join(dir, "package.json")).text())
   const file = Bun.file(path.join(cwd, "package.json"))
   const text = await file.text()
   const pkg = JSON.parse(text)
-  const next = sanitize(pkg.version)
-  if (next === pkg.version) return
+  const next = version(root.version)
+  if (pkg.name === "opencode" && pkg.version === next) return
+  pkg.name = "opencode"
   pkg.version = next
   await Bun.write(file, JSON.stringify(pkg, null, 2) + "\n")
 }

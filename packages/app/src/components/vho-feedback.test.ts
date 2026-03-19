@@ -249,6 +249,26 @@ describe("findAssignedVhoProject", () => {
       }),
     ).toBeUndefined()
   })
+
+  test("prefers the current product when multiple products share the same project and worktree", () => {
+    expect(
+      findAssignedVhoProject({
+        project_id: "project_1",
+        project_worktree: "/tmp/project-1",
+        current_product_id: "p2",
+        products: [
+          { id: "p1", project_id: "project_1", worktree: "/tmp/project-1", selected: false, last_selected: false },
+          { id: "p2", project_id: "project_1", worktree: "/tmp/project-1", selected: true, last_selected: true },
+        ],
+      }),
+    ).toEqual({
+      id: "p2",
+      project_id: "project_1",
+      worktree: "/tmp/project-1",
+      selected: true,
+      last_selected: true,
+    })
+  })
 })
 
 describe("vhoFeedbackApplyFailure", () => {

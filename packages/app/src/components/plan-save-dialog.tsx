@@ -19,6 +19,11 @@ type Props = {
   onCancel: () => void
 }
 
+export const PLAN_SAVE_DIALOG_BODY_CLASS = "flex max-h-[min(70vh,640px)] min-h-0 flex-col gap-4 px-4 pb-4"
+export const PLAN_SAVE_DIALOG_LIST_CLASS = "min-h-0 flex-1 overflow-y-auto rounded-lg border border-border-weak-base"
+export const PLAN_SAVE_DIALOG_FOOTER_CLASS =
+  "sticky bottom-0 z-10 -mx-4 mt-auto flex shrink-0 items-center justify-end gap-2 border-t border-border-weak-base bg-surface-raised-stronger-non-alpha px-4 pt-3 pb-[calc(env(safe-area-inset-bottom,0px)+12px)]"
+
 /** 中文注释：为保存计划弹窗生成默认的 VHO 反馈查询条件，默认只拉当前手机号最近的待处理/未关闭项。 */
 export function buildPlanSaveFeedbackQuery(phone: string): PlanSaveFeedbackQuery {
   return {
@@ -97,7 +102,7 @@ export const DialogPlanSave: Component<Props> = (props) => {
 
   return (
     <Dialog title="保存计划" description={`当前保存账号手机号：${props.phone}`}>
-      <div class="flex flex-col gap-4 px-4 pb-4">
+      <div class={PLAN_SAVE_DIALOG_BODY_CLASS}>
         <div class="grid gap-2">
           <div class="text-12-medium text-text-strong">可选关联 VHO 反馈号</div>
           <input
@@ -123,7 +128,7 @@ export const DialogPlanSave: Component<Props> = (props) => {
           </div>
         </Show>
 
-        <div class="max-h-[320px] overflow-y-auto rounded-lg border border-border-weak-base">
+        <div class={PLAN_SAVE_DIALOG_LIST_CLASS}>
           <Show
             when={store.items.length > 0}
             fallback={<div class="px-3 py-6 text-center text-12-regular text-text-weak">{store.loading ? "正在加载反馈列表..." : "暂无可选反馈，可直接手工填写反馈号。"}</div>}
@@ -156,7 +161,7 @@ export const DialogPlanSave: Component<Props> = (props) => {
           </Show>
         </div>
 
-        <div class="flex items-center justify-end gap-2">
+        <div class={PLAN_SAVE_DIALOG_FOOTER_CLASS}>
           <Button type="button" variant="ghost" onClick={props.onCancel}>
             {language.t("common.cancel")}
           </Button>

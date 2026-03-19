@@ -46,6 +46,8 @@ type AssignedProject = {
   id: string
   project_id?: string
   worktree?: string
+  selected?: boolean
+  last_selected?: boolean
 }
 
 export type VhoFeedbackApplyResult =
@@ -103,12 +105,23 @@ export function buildVhoFeedbackFilters(today: string): Filters {
 export function findAssignedVhoProject(input: {
   project_id?: string
   project_worktree?: string
+  current_product_id?: string
   products: AssignedProject[]
 }) {
   const project_id = input.project_id?.trim()
   const project_worktree = input.project_worktree?.trim()
   if (!project_id || !project_worktree) return
-  return input.products.find((item) => item.project_id === project_id && item.worktree === project_worktree)
+  const matches = input.products.filter((item) => item.project_id === project_id && item.worktree === project_worktree)
+  if (matches.length <= 1) return matches[0]
+  if (input.current_product_id) {
+    const current = matches.find((item) => item.id === input.current_product_id)
+    if (current) return current
+  }
+  const selected = matches.find((item) => item.selected)
+  if (selected) return selected
+  const last_selected = matches.find((item) => item.last_selected)
+  if (last_selected) return last_selected
+  return matches[0]
 }
 
 /**
