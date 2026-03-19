@@ -68,6 +68,7 @@ import { createSSECleanup } from "./sse-cleanup"
 import { AccountProviderState } from "@/provider/account-provider-state"
 import { UserRbac } from "@/user/rbac"
 import { randomUUID } from "crypto"
+import { SessionVoiceTranscribe } from "@/session/voice-transcribe"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1396,6 +1397,9 @@ export namespace Server {
     }
   }) {
     _corsWhitelist = opts.cors ?? []
+    void SessionVoiceTranscribe.prewarm().catch((error) => {
+      log.warn("voice transcribe prewarm failed", { error })
+    })
     const web = resolveWebGateway({
       enabled: opts.gateway?.webEnabled,
       url: opts.gateway?.webUrl,

@@ -1,6 +1,7 @@
 import { $ } from "bun"
 import path from "path"
 import fs from "fs/promises"
+import { spawnSync } from "child_process"
 import { Log } from "../util/log"
 import { Flag } from "../flag/flag"
 import { Global } from "../global"
@@ -48,33 +49,106 @@ export namespace Snapshot {
     log.info("cleanup", { prune })
   }
 
+  function runGit(input: {
+    args: string[]
+    cwd: string
+    env?: Record<string, string>
+    timeout?: number
+  }) {
+    const result = spawnSync("git", input.args, {
+      cwd: input.cwd,
+      env: {
+        ...process.env,
+        ...input.env,
+      },
+      windowsHide: true,
+      encoding: "utf-8",
+      timeout: input.timeout ?? 3000,
+    })
+    return {
+      exitCode: result.status ?? (result.error ? 1 : 0),
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+      error: result.error,
+    }
+  }
+
   export async function track() {
     if (Instance.project.vcs !== "git" || Flag.OPENCODE_CLIENT === "acp") return
     const cfg = await Config.get()
     if (cfg.snapshot === false) return
     const git = gitdir()
-    if (await fs.mkdir(git, { recursive: true })) {
-      await $`git init`
-        .env({
-          ...process.env,
+    const initialized = await fs
+      .stat(path.join(git, "HEAD"))
+      .then(() => true)
+      .catch(() => false)
+    await fs.mkdir(git, { recursive: true })
+    if (!initialized) {
+      const init = runGit({
+        args: ["init"],
+        cwd: Instance.directory,
+        env: {
           GIT_DIR: git,
           GIT_WORK_TREE: Instance.worktree,
+        },
+        timeout: 5000,
+      })
+      if (init.exitCode !== 0) {
+        log.warn("failed to initialize snapshot repo", {
+          cwd: Instance.directory,
+          git,
+          stderr: init.stderr,
+          stdout: init.stdout,
+          exitCode: init.exitCode,
+          error: init.error,
         })
-        .quiet()
-        .nothrow()
+        return
+      }
       // Configure git to not convert line endings on Windows
-      await $`git --git-dir ${git} config core.autocrlf false`.quiet().nothrow()
-      await $`git --git-dir ${git} config core.longpaths true`.quiet().nothrow()
-      await $`git --git-dir ${git} config core.symlinks true`.quiet().nothrow()
-      await $`git --git-dir ${git} config core.fsmonitor false`.quiet().nothrow()
+      for (const [key, value] of [
+        ["core.autocrlf", "false"],
+        ["core.longpaths", "true"],
+        ["core.symlinks", "true"],
+        ["core.fsmonitor", "false"],
+      ] as const) {
+        const config = runGit({
+          args: ["--git-dir", git, "config", key, value],
+          cwd: Instance.directory,
+        })
+        if (config.exitCode !== 0) {
+          log.warn("failed to configure snapshot repo", {
+            cwd: Instance.directory,
+            git,
+            key,
+            value,
+            stderr: config.stderr,
+            stdout: config.stdout,
+            exitCode: config.exitCode,
+            error: config.error,
+          })
+          return
+        }
+      }
       log.info("initialized")
     }
-    await add(git)
-    const hash = await $`git --git-dir ${git} --work-tree ${Instance.worktree} write-tree`
-      .quiet()
-      .cwd(Instance.directory)
-      .nothrow()
-      .text()
+    const added = await add(git)
+    if (!added) return
+    const tree = runGit({
+      args: ["--git-dir", git, "--work-tree", Instance.worktree, "write-tree"],
+      cwd: Instance.directory,
+    })
+    if (tree.exitCode !== 0) {
+      log.warn("failed to write snapshot tree", {
+        cwd: Instance.directory,
+        git,
+        stderr: tree.stderr,
+        stdout: tree.stdout,
+        exitCode: tree.exitCode,
+        error: tree.error,
+      })
+      return
+    }
+    const hash = tree.stdout
     log.info("tracking", { hash, cwd: Instance.directory, git })
     return hash.trim()
   }
@@ -260,10 +334,35 @@ export namespace Snapshot {
 
   async function add(git: string) {
     await syncExclude(git)
-    await $`git -c core.autocrlf=false -c core.longpaths=true -c core.symlinks=true --git-dir ${git} --work-tree ${Instance.worktree} add .`
-      .quiet()
-      .cwd(Instance.directory)
-      .nothrow()
+    const result = runGit({
+      args: [
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.longpaths=true",
+        "-c",
+        "core.symlinks=true",
+        "--git-dir",
+        git,
+        "--work-tree",
+        Instance.worktree,
+        "add",
+        ".",
+      ],
+      cwd: Instance.directory,
+    })
+    if (result.exitCode !== 0) {
+      log.warn("failed to stage snapshot worktree", {
+        cwd: Instance.directory,
+        git,
+        stderr: result.stderr,
+        stdout: result.stdout,
+        exitCode: result.exitCode,
+        error: result.error,
+      })
+      return false
+    }
+    return true
   }
 
   async function syncExclude(git: string) {

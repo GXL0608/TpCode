@@ -270,24 +270,41 @@ async function maskSensitive(canvas: HTMLCanvasElement) {
 function addWatermark(canvas: HTMLCanvasElement, text: string) {
   const ctx = canvas.getContext("2d")
   if (!ctx) return
-  const size = Math.max(14, Math.round(Math.min(canvas.width, canvas.height) / 20))
+  const size = Math.max(16, Math.round(Math.min(canvas.width, canvas.height) / 16))
+  const badge = Math.max(20, Math.round(size * 0.9))
+  const padX = Math.max(16, Math.round(size * 0.9))
+  const padY = Math.max(10, Math.round(size * 0.55))
   ctx.save()
   ctx.translate(canvas.width / 2, canvas.height / 2)
   ctx.rotate((-20 * Math.PI) / 180)
-  ctx.font = `${size}px sans-serif`
+  ctx.font = `700 ${size}px sans-serif`
   ctx.textAlign = "center"
   ctx.textBaseline = "middle"
-  const stepX = Math.max(120, Math.round(size * 8))
-  const stepY = Math.max(80, Math.round(size * 4))
+  const stepX = Math.max(160, Math.round(size * 7))
+  const stepY = Math.max(110, Math.round(size * 3.8))
   for (let y = -canvas.height; y <= canvas.height; y += stepY) {
     for (let x = -canvas.width; x <= canvas.width; x += stepX) {
-      ctx.fillStyle = "rgba(255,255,255,0.28)"
+      ctx.fillStyle = "rgba(185, 0, 0, 0.2)"
       ctx.fillText(text, x, y)
-      ctx.strokeStyle = "rgba(0,0,0,0.18)"
-      ctx.lineWidth = 1
+      ctx.strokeStyle = "rgba(255,255,255,0.5)"
+      ctx.lineWidth = Math.max(1, Math.round(size / 14))
       ctx.strokeText(text, x, y)
     }
   }
+  ctx.restore()
+  ctx.save()
+  ctx.font = `700 ${badge}px sans-serif`
+  const width = Math.min(canvas.width - 12, Math.round(ctx.measureText(text).width + padX * 2))
+  const height = Math.min(canvas.height - 12, Math.round(badge + padY * 2))
+  ctx.fillStyle = "rgba(168, 10, 10, 0.9)"
+  ctx.fillRect(12, 12, width, height)
+  ctx.strokeStyle = "rgba(255,255,255,0.9)"
+  ctx.lineWidth = 2
+  ctx.strokeRect(12, 12, width, height)
+  ctx.fillStyle = "rgba(255,255,255,0.98)"
+  ctx.textAlign = "left"
+  ctx.textBaseline = "middle"
+  ctx.fillText(text, 12 + padX, 12 + height / 2)
   ctx.restore()
 }
 

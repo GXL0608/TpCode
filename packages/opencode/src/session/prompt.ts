@@ -347,6 +347,7 @@ export namespace SessionPrompt {
       teacherAgent: message.info.agent,
     })
 
+    const result = await loop({ sessionID: input.sessionID })
     void SessionMirror.schedule({
       recordID: record?.id,
       sessionID: input.sessionID,
@@ -360,7 +361,7 @@ export namespace SessionPrompt {
       })
     })
 
-    return loop({ sessionID: input.sessionID })
+    return result
   }
 
   export const prompt = fn(PromptInput, (input) =>
@@ -585,6 +586,13 @@ export namespace SessionPrompt {
     // Note: On session resumption, state is reset but outputFormat is preserved
     // on the user message and will be retrieved from lastUser below
     let structuredOutput: unknown | undefined
+    let title:
+      | {
+          history: MessageV2.WithParts[]
+          providerID: string
+          modelID: string
+        }
+      | undefined
 
     let step = 0
     const session = await Session.peek(sessionID)
@@ -592,6 +600,23 @@ export namespace SessionPrompt {
       "loop",
       { event: "session.prompt.loop", session_id: sessionID },
       async () => {
+        const scheduleTitle = () => {
+          if (!title) return
+          const next = title
+          title = undefined
+          void ensureTitle({
+            session,
+            modelID: next.modelID,
+            providerID: next.providerID,
+            history: next.history,
+          }).catch((error) => {
+            if (missing(error)) return
+            log.warn("failed to ensure title", {
+              sessionID,
+              error,
+            })
+          })
+        }
         while (true) {
           SessionStatus.set(sessionID, { type: "busy" })
           log.info("loop", { step, sessionID })
@@ -656,19 +681,13 @@ export namespace SessionPrompt {
             }
             throw e
           })
-          if (step === 1)
-            void ensureTitle({
-              session,
+          if (step === 1) {
+            title = {
+              history: structuredClone(msgs),
               modelID: model.id,
               providerID: model.providerID,
-              history: msgs,
-            }).catch((error) => {
-              if (missing(error)) return
-              log.warn("failed to ensure title", {
-                sessionID,
-                error,
-              })
-            })
+            }
+          }
           const task = tasks.pop()
 
           // pending subtask
@@ -968,12 +987,14 @@ export namespace SessionPrompt {
           }
 
           if (step === 1) {
-            void SessionSummary.summarize({
-              sessionID: sessionID,
-              messageID: lastUser.id,
-            }).catch((error) => {
-              if (missing(error)) return
-              throw error
+            queueMicrotask(() => {
+              void SessionSummary.summarize({
+                sessionID: sessionID,
+                messageID: lastUser.id,
+              }).catch((error) => {
+                if (missing(error)) return
+                throw error
+              })
             })
           }
 
@@ -1126,6 +1147,7 @@ export namespace SessionPrompt {
           SessionCompaction.prune({ sessionID })
           for await (const item of MessageV2.stream(sessionID)) {
             if (item.info.role === "user") continue
+            scheduleTitle()
             queueResolve(sessionID, item)
             return item
           }

@@ -30,6 +30,21 @@ type Transcript = {
 
 type SttMode = "local_pool" | "remote_dedicated"
 
+type SttState = {
+  mode: SttMode
+  local: boolean
+  prewarm: boolean
+  ready: boolean
+  warming: boolean
+  concurrency: number
+  queue: number
+  workers: {
+    total: number
+    ready: number
+    busy: number
+  }
+}
+
 type LocalWorkerJob = {
   id: string
   audio: string
@@ -635,6 +650,26 @@ async function transcribeWithModel(input: {
 
 export namespace SessionVoiceTranscribe {
   let warming: Promise<boolean> | undefined
+
+  export function state() {
+    const local = localEnabled()
+    const prewarm = prewarmEnabled()
+    const readyWorkers = pool.workers.filter((worker) => worker.ready).length
+    return {
+      mode: sttMode(),
+      local,
+      prewarm,
+      ready: !local || !prewarm || readyWorkers > 0,
+      warming: !!warming,
+      concurrency: local ? localConcurrency() : 0,
+      queue: pool.queue.length,
+      workers: {
+        total: pool.workers.length,
+        ready: readyWorkers,
+        busy: pool.workers.filter((worker) => !!worker.current).length,
+      },
+    } satisfies SttState
+  }
 
   export function prewarm() {
     if (!warming) {

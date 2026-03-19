@@ -29,6 +29,45 @@ async function headers(app: ReturnType<typeof Server.App>) {
 }
 
 describe("session voice transcribe route", () => {
+  test("state route does not get intercepted by sessionID middleware", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const app = Server.App()
+        const auth = await headers(app)
+        const response = await app.request(`/session/voice/transcribe/state?directory=${encodeURIComponent(projectRoot)}`, {
+          method: "GET",
+          headers: auth,
+        })
+
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as Record<string, unknown>
+        expect(typeof body.ready).toBe("boolean")
+        expect(typeof body.warming).toBe("boolean")
+      },
+    })
+  })
+
+  test("prewarm route does not get intercepted by sessionID middleware", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const app = Server.App()
+        const auth = await headers(app)
+        const response = await app.request(`/session/voice/transcribe/prewarm?directory=${encodeURIComponent(projectRoot)}`, {
+          method: "POST",
+          headers: auth,
+        })
+
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as Record<string, unknown>
+        expect(typeof body.queued).toBe("boolean")
+        expect(typeof body.ready).toBe("boolean")
+        expect(typeof body.warming).toBe("boolean")
+      },
+    })
+  })
+
   test("does not get intercepted by sessionID middleware", async () => {
     await Instance.provide({
       directory: projectRoot,

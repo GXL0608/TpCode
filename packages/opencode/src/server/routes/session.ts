@@ -28,8 +28,28 @@ import { UserRbac } from "@/user/rbac"
 import { NotFoundError } from "@/storage/db"
 import { SessionPrototypeRoutes } from "./session-prototype"
 import { Instance } from "@/project/instance"
+import { InstanceBootstrap } from "@/project/bootstrap"
 
 const log = Log.create({ service: "server" })
+
+const voiceTranscribeStateSchema = z.object({
+  mode: z.enum(["local_pool", "remote_dedicated"]),
+  local: z.boolean(),
+  prewarm: z.boolean(),
+  ready: z.boolean(),
+  warming: z.boolean(),
+  concurrency: z.number(),
+  queue: z.number(),
+  workers: z.object({
+    total: z.number(),
+    ready: z.number(),
+    busy: z.number(),
+  }),
+})
+
+const voiceTranscribePrewarmSchema = voiceTranscribeStateSchema.extend({
+  queued: z.boolean(),
+})
 
 function missingPrompt(error: unknown) {
   if (error instanceof NotFoundError) return true
@@ -43,10 +63,14 @@ function missingPrompt(error: unknown) {
 
 /** 中文注释：对已存在的会话操作统一切回会话自己的目录执行，避免目录切换竞态把回复和事件错误地发到父目录。 */
 async function inSessionDirectory<R>(sessionID: string, fn: () => Promise<R>) {
-  const info = await Session.get(sessionID)
-  if (path.resolve(Instance.directory) === path.resolve(info.directory)) return fn()
+  return inDirectory((await Session.get(sessionID)).directory, fn)
+}
+
+function inDirectory<R>(directory: string, fn: () => Promise<R>) {
+  if (path.resolve(Instance.directory) === path.resolve(directory)) return fn()
   return Instance.provide({
-    directory: info.directory,
+    directory,
+    init: InstanceBootstrap,
     fn,
   })
 }
@@ -241,6 +265,56 @@ export const SessionRoutes = lazy(() =>
           filtered[sessionID] = status
         }
         return c.json(filtered)
+      },
+    )
+    .get(
+      "/voice/transcribe/state",
+      describeRoute({
+        summary: "Get voice transcription state",
+        description: "Retrieve backend voice transcription warmup and readiness state.",
+        operationId: "session.voiceTranscribeState",
+        responses: {
+          200: {
+            description: "Voice transcription state",
+            content: {
+              "application/json": {
+                schema: resolver(voiceTranscribeStateSchema),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        return c.json(SessionVoiceTranscribe.state())
+      },
+    )
+    .post(
+      "/voice/transcribe/prewarm",
+      describeRoute({
+        summary: "Prewarm voice transcription",
+        description: "Start backend voice transcription warmup without blocking the caller.",
+        operationId: "session.voiceTranscribePrewarm",
+        responses: {
+          200: {
+            description: "Warmup queued",
+            content: {
+              "application/json": {
+                schema: resolver(voiceTranscribePrewarmSchema),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        const before = SessionVoiceTranscribe.state()
+        const queued = before.local && before.prewarm && !before.ready
+        if (queued) {
+          void SessionVoiceTranscribe.prewarm().catch(() => undefined)
+        }
+        return c.json({
+          queued,
+          ...SessionVoiceTranscribe.state(),
+        })
       },
     )
     .post(
@@ -1257,6 +1331,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
+        const directory = (await Session.get(sessionID)).directory
         const denied = rejectForbiddenPrompt(c, {
           action: "session.prompt",
           sessionID,
@@ -1269,7 +1344,7 @@ export const SessionRoutes = lazy(() =>
         c.status(200)
         c.header("Content-Type", "application/json")
         return stream(c, async (stream) => {
-          const msg = await inSessionDirectory(sessionID, () => SessionPrompt.prompt({ ...body, sessionID }))
+          const msg = await inDirectory(directory, () => SessionPrompt.prompt({ ...body, sessionID }))
           stream.write(JSON.stringify(msg))
         })
       },
@@ -1298,6 +1373,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
+        const directory = (await Session.get(sessionID)).directory
         const denied = rejectForbiddenPrompt(c, {
           action: "session.prompt_async",
           sessionID,
@@ -1310,7 +1386,7 @@ export const SessionRoutes = lazy(() =>
         c.status(204)
         c.header("Content-Type", "application/json")
         return stream(c, async () => {
-          void inSessionDirectory(sessionID, () => SessionPrompt.prompt({ ...body, sessionID })).catch((error) => {
+          void inDirectory(directory, () => SessionPrompt.prompt({ ...body, sessionID })).catch((error) => {
             const extra = {
               event: "session.prompt_async",
               session_id: sessionID,

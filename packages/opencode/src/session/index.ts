@@ -81,6 +81,18 @@ export namespace Session {
     return AccountCurrent.optional()
   }
 
+  function adminProjectFallback(project_id: string) {
+    const a = actor()
+    if (!a) return false
+    if (a.context_project_id) return false
+    if (!a.permissions.includes("role:manage")) return false
+    try {
+      return project_id === Instance.project.id
+    } catch {
+      return false
+    }
+  }
+
   function canRead(row: SessionRow) {
     const a = actor()
     if (!a) return true
@@ -89,11 +101,11 @@ export namespace Session {
     if (a.context_product_id) {
       if (row.context_product_id) return row.context_product_id === a.context_product_id
       const project_id = row.context_project_id ?? row.project_id
-      if (!a.context_project_id) return project_id === "global"
+      if (!a.context_project_id) return project_id === "global" || adminProjectFallback(project_id)
       return project_id === a.context_project_id
     }
     const project_id = row.context_project_id ?? row.project_id
-    if (!a.context_project_id) return project_id === "global"
+    if (!a.context_project_id) return project_id === "global" || adminProjectFallback(project_id)
     return project_id === a.context_project_id
   }
 
@@ -105,11 +117,11 @@ export namespace Session {
     if (a.context_product_id) {
       if (row.context_product_id) return row.context_product_id === a.context_product_id
       const project_id = row.context_project_id ?? row.project_id
-      if (!a.context_project_id) return project_id === "global"
+      if (!a.context_project_id) return project_id === "global" || adminProjectFallback(project_id)
       return project_id === a.context_project_id
     }
     const project_id = row.context_project_id ?? row.project_id
-    if (!a.context_project_id) return project_id === "global"
+    if (!a.context_project_id) return project_id === "global" || adminProjectFallback(project_id)
     return project_id === a.context_project_id
   }
 

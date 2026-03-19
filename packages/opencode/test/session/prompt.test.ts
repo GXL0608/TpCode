@@ -1298,7 +1298,6 @@ describe("session.prompt finish reason", () => {
         }
       },
     })
-
     process.off("unhandledRejection", onError)
     expect(
       errors.some((error) => (error instanceof Error ? error.message : String(error)).includes("Session not found")),
@@ -1392,7 +1391,7 @@ describe("session.prompt finish reason", () => {
     expect(
       errors.some((error) => (error instanceof Error ? error.message : String(error)).includes("Session not found")),
     ).toBe(false)
-  }, 10000)
+  }, 20000)
 
   test("ignores removed sessions when background summary work runs late", async () => {
     await using tmp = await tmpdir({

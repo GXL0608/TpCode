@@ -184,11 +184,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   let voiceAnalyser: AnalyserNode | undefined
   let voiceSource: MediaStreamAudioSourceNode | undefined
   let voiceFrame: number | undefined
+  let voiceWarmTimer: number | undefined
   let voiceHintTimer: number | undefined
   let voiceHintAt = 0
   let speechSnapshot = ""
   let speechKick: number | undefined
   let speechKickDone = false
+  let voicePrewarmRequested = false
 
   const mirror = { input: false }
   const inset = 44
@@ -405,6 +407,100 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const [voiceError, setVoiceError] = createSignal("")
   const [voiceWave, setVoiceWave] = createSignal(Array.from({ length: 16 }, () => 0.08))
   const [voiceHint, setVoiceHint] = createSignal("")
+  const [voiceWarmState, setVoiceWarmState] = createSignal<"unknown" | "warming" | "ready" | "failed">("unknown")
+  const [voiceWarmKnown, setVoiceWarmKnown] = createSignal(false)
+  const [voiceWarmRequired, setVoiceWarmRequired] = createSignal(false)
+  const voiceWarmInfo = () => ({
+    known: voiceWarmKnown(),
+    required: voiceWarmRequired(),
+    ready: voiceWarmKnown() && (!voiceWarmRequired() || voiceWarmState() === "ready"),
+    warming: voiceWarmState() === "warming",
+  })
+  const clearVoiceWarmPoll = () => {
+    if (voiceWarmTimer === undefined) return
+    clearTimeout(voiceWarmTimer)
+    voiceWarmTimer = undefined
+  }
+  const scheduleVoiceWarmPoll = (delay = 1200) => {
+    if (voiceWarmTimer !== undefined) return
+    voiceWarmTimer = window.setTimeout(() => {
+      voiceWarmTimer = undefined
+      void refreshVoiceWarmState()
+    }, delay)
+  }
+  const voiceWarmText = () =>
+    language.locale().startsWith("zh") ? "语音转写引擎预热中" : "Voice transcription warming"
+  const voiceWarmHint = () =>
+    language.locale().startsWith("zh")
+      ? "本地语音转写引擎正在启动，请稍候几秒后再开始录音"
+      : "Local voice transcription is starting. Wait a few seconds before recording."
+  const voiceWarmFailHint = () =>
+    language.locale().startsWith("zh")
+      ? "语音转写引擎状态暂不可用，已继续尝试预热，请稍后重试"
+      : "Voice transcription status is unavailable. Warmup is still being retried. Try again shortly."
+  const applyVoiceWarmState = (input: unknown) => {
+    if (!input || typeof input !== "object") return voiceWarmInfo()
+    const body = input as {
+      local?: unknown
+      prewarm?: unknown
+      ready?: unknown
+      warming?: unknown
+    }
+    const required = body.local === true && body.prewarm === true
+    const ready = body.ready === true || !required
+    const warming = body.warming === true && !ready
+    setVoiceWarmKnown(true)
+    setVoiceWarmRequired(required)
+    if (ready) {
+      setVoiceWarmState("ready")
+      clearVoiceWarmPoll()
+      return { known: true, required, ready: true, warming: false }
+    }
+    if (warming) {
+      setVoiceWarmState("warming")
+      return { known: true, required, ready: false, warming: true }
+    }
+    setVoiceWarmState("unknown")
+    return { known: true, required, ready: false, warming: false }
+  }
+  const refreshVoiceWarmState = async () => {
+    const response = await accountRequest({
+      path: `/session/voice/transcribe/state?directory=${encodeURIComponent(sdk.directory)}`,
+    }).catch(() => undefined)
+    if (!response?.ok) {
+      const current = voiceWarmInfo()
+      if (current.known && current.required && current.warming) scheduleVoiceWarmPoll(1500)
+      return current
+    }
+    const next = applyVoiceWarmState(await response.json().catch(() => undefined))
+    if (next.known && next.required && next.warming) scheduleVoiceWarmPoll()
+    return next
+  }
+  const prewarmVoiceTranscribe = async () => {
+    if (voicePrewarmRequested) return voiceWarmInfo()
+    voicePrewarmRequested = true
+    const response = await accountRequest({
+      method: "POST",
+      path: `/session/voice/transcribe/prewarm?directory=${encodeURIComponent(sdk.directory)}`,
+    }).catch(() => undefined)
+    voicePrewarmRequested = false
+    if (!response?.ok) {
+      if (!voiceWarmInfo().ready) setVoiceWarmState("failed")
+      return voiceWarmInfo()
+    }
+    const next = applyVoiceWarmState(await response.json().catch(() => undefined))
+    if (next.known && next.required && next.warming) scheduleVoiceWarmPoll()
+    return next
+  }
+  const ensureVoiceWarmReady = async () => {
+    if (voiceWarmInfo().ready) return true
+    const state = await refreshVoiceWarmState()
+    if (state.ready) return true
+    const warmed = await prewarmVoiceTranscribe()
+    if (warmed.ready) return true
+    pushVoiceHint(voiceWarmState() === "failed" ? voiceWarmFailHint() : voiceWarmHint())
+    return false
+  }
   const supportsVoiceCapture = () =>
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices &&
@@ -469,6 +565,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     setVoiceHint("")
     voiceHintAt = 0
   }
+  onCleanup(() => {
+    clearVoiceWarmPoll()
+  })
   const pushVoiceHint = (text: string) => {
     const now = Date.now()
     if (now - voiceHintAt < 12_000) return
@@ -785,6 +884,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         )
       })
   })
+  createEffect(() => {
+    if (!auth.ready()) return
+    if (!auth.authenticated()) return
+    if (!supportsVoiceCapture()) return
+    prewarmVoiceTranscribe()
+  })
   const voiceFilename = (mime: string, now = Date.now()) => {
     const clean = (value: string | undefined, fallback: string) =>
       value?.trim().replace(/[^a-zA-Z0-9_-]/g, "_") || fallback
@@ -797,6 +902,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (voicePhase() === "paused") return language.locale().startsWith("zh") ? "录音已暂停" : "Recording paused"
     if (voicePhase() === "transcribing") return language.t("prompt.voice.status.transcribing")
     if (voicePhase() === "failed") return voiceError() || language.t("prompt.voice.status.failed")
+    if (voiceWarmKnown() && voiceWarmRequired() && voiceWarmState() === "warming") return voiceWarmText()
     return ""
   })
   const speechLocale = () => SPEECH_LOCALE[language.locale()] ?? (typeof navigator !== "undefined" ? navigator.language : "en-US")
@@ -1770,6 +1876,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       voicePhase() === "paused" ||
       voicePhase() === "transcribing"
     ) return
+    if (!(await ensureVoiceWarmReady())) return
     setVoiceError("")
     setVoicePhase("requesting")
     speechSnapshot = ""
@@ -2372,7 +2479,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       ? language.locale().startsWith("zh")
                         ? "继续录音"
                         : "Resume recording"
-                    : language.t("prompt.action.voiceInput")
+                    : voiceWarmKnown() && voiceWarmRequired() && !voiceWarmInfo().ready
+                      ? voiceWarmState() === "failed"
+                        ? voiceWarmFailHint()
+                        : voiceWarmHint()
+                      : language.t("prompt.action.voiceInput")
                 }
               >
                 <Button
@@ -2382,7 +2493,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                   class="size-8 p-0"
                   classList={{
                     "text-icon-info-active": voicePhase() === "recording" || voicePhase() === "paused",
-                    "animate-pulse": voicePhase() === "recording",
+                    "animate-pulse":
+                      voicePhase() === "recording" ||
+                      (voiceWarmKnown() && voiceWarmRequired() && voiceWarmState() === "warming"),
                   }}
                   onClick={() => {
                     if (voicePhase() === "recording") {
