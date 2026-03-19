@@ -88,6 +88,16 @@ describe("default server url", () => {
     ).toBe("http://127.0.0.1:4108")
   })
 
+  test("uses the default backend port when frontend runs on 3000", () => {
+    expect(
+      resolveDefaultServerUrl({
+        hostname: "127.0.0.1",
+        origin: "http://127.0.0.1:3000",
+        dev: true,
+      }),
+    ).toBe("http://localhost:4096")
+  })
+
   test("falls back to origin in production", () => {
     expect(
       resolveDefaultServerUrl({

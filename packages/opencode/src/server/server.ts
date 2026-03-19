@@ -76,6 +76,7 @@ export namespace Server {
   const log = Log.create({ service: "server" })
   const webCsp =
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; media-src 'self' data:; connect-src 'self' data:"
+  const lan = /^https?:\/\/(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?::\d+)?$/
 
   let _url: URL | undefined
   let _corsWhitelist: string[] = []
@@ -190,6 +191,11 @@ export namespace Server {
     return roots.filter((item): item is string => !!item)
   }
 
+  function localOrigin(input: string) {
+    if (!Installation.isLocal()) return false
+    return lan.test(input)
+  }
+
   function webRoot() {
     if (_webResolved) return _webRoot
     _webResolved = true
@@ -302,6 +308,7 @@ export namespace Server {
 
               if (input.startsWith("http://localhost:")) return input
               if (input.startsWith("http://127.0.0.1:")) return input
+              if (localOrigin(input)) return input
               if (
                 input === "tauri://localhost" ||
                 input === "http://tauri.localhost" ||

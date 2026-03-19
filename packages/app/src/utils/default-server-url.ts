@@ -12,6 +12,12 @@ function loop(input: string) {
   return input === "localhost" || input === "127.0.0.1" || input === "::1" || input === "[::1]"
 }
 
+function host(input: string, page: string) {
+  if (!loop(input)) return input
+  if (loop(page)) return input
+  return page
+}
+
 export function normalizeServerUrl(input?: string | null) {
   if (!input) return
   const value = input.trim()
@@ -27,7 +33,7 @@ function resolveDerivedLocalDevServerUrl(input: Pick<Input, "dev" | "hostname" |
   if (!URL.canParse(input.origin)) return
   const port = Number(new URL(input.origin).port)
   if (!Number.isInteger(port)) return
-  if (port < 3000 || port > 3099) return
+  if (port < 3001 || port > 3099) return
   return `http://${input.hostname}:${port + 1100}`
 }
 
@@ -37,7 +43,7 @@ export function resolveDefaultServerUrl(input: Input) {
   // 网关注入的运行时地址优先级最高，确保打包后的 Web 默认走统一入口。
   if (runtime) return runtime
   if (input.dev && input.devHost && input.devPort) {
-    return `http://${input.devHost}:${input.devPort}`
+    return `http://${host(input.devHost, input.hostname)}:${input.devPort}`
   }
   const derived = resolveDerivedLocalDevServerUrl(input)
   if (derived) return derived
@@ -45,11 +51,8 @@ export function resolveDefaultServerUrl(input: Input) {
   if (stored) return stored
   if (input.hostname.includes("opencode.ai")) return "http://localhost:4096"
   if (input.dev) {
-    const host = input.devHost ?? "localhost"
-    const local = loop(host)
-    const page = input.hostname
-    const target = local && !loop(page) ? page : host
-    return `http://${target}:${input.devPort ?? "4096"}`
+    const value = input.devHost ?? "localhost"
+    return `http://${host(value, input.hostname)}:${input.devPort ?? "4096"}`
   }
   return input.origin
 }
