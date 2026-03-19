@@ -5,8 +5,11 @@ import { useAccountAuth } from "@/context/account-auth"
 import { parseAccountError, useAccountRequest } from "./settings-account-api"
 import {
   createSolutionDraft,
+  filterNamedSolutions,
   solutionLibraryItemClass,
   solutionLibraryLayoutClass,
+  solutionLibrarySubmitDisabled,
+  sortNamedSolutions,
   syncSolutionLibrarySelection,
   validateSolutionDraft,
 } from "./settings-solution-library-view"
@@ -14,8 +17,8 @@ import {
 type ProductItem = {
   id: string
   name: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
 }
 
 type SolutionRootItem = {
@@ -33,11 +36,9 @@ type SolutionRootItem = {
 
 type SolutionItem = {
   id: string
-  product_id: string
   name: string
   code: string
   enabled: boolean
-  primary_project_id?: string
   build_profile: Record<string, unknown>
   roots: SolutionRootItem[]
   time_created: number
@@ -86,17 +87,15 @@ export const SettingsSolutionLibrary = () => {
     pending: false,
     error: "",
     message: "",
-    products: [] as ProductItem[],
     solutions: [] as SolutionItem[],
+    solutionSearch: "",
     selectedSolutionID: "",
     formOpen: false,
     formEdit: false,
     formID: "",
-    formProductID: "",
     formName: "",
     formCode: "",
     formEnabled: true,
-    formProjectID: "",
     formBuildProfileText: pretty({
       workdirs: ["."],
       compile_command: "",
@@ -115,16 +114,12 @@ export const SettingsSolutionLibrary = () => {
       },
     ]),
   })
+  /** 中文注释：按名称升序并结合关键字过滤方案导航，方便管理员在大量方案中快速定位。 */
+  const visibleSolutions = createMemo(() => filterNamedSolutions(state.solutions, state.solutionSearch))
 
   const currentSolution = createMemo(() => state.solutions.find((item) => item.id === state.selectedSolutionID))
 
   const canManage = () => auth.has("role:manage")
-
-  /** 中文注释：把产品 ID 映射成产品名称，供方案详情和列表摘要复用。 */
-  const productName = (product_id: string) => {
-    const item = state.products.find((entry) => entry.id === product_id)
-    return item?.name || product_id || "-"
-  }
 
   /** 中文注释：统一解析接口错误，兼容旧版本后端或网关误配场景。 */
   const resolveError = async (response?: Response) => {
@@ -135,49 +130,35 @@ export const SettingsSolutionLibrary = () => {
     return "当前后端不可用，请检查服务器地址并确认服务已启动"
   }
 
-  /** 中文注释：同时加载产品列表和方案库，保证创建表单与列表详情始终基于最新数据。 */
+  /** 中文注释：统一加载全局方案库，解决方案与产品绑定已经解耦，这里不再依赖产品列表。 */
   const load = async () => {
     if (!canManage()) return
     setState("loading", true)
     setState("error", "")
-    const [productsResponse, solutionsResponse] = await Promise.all([
-      request({ path: "/account/admin/products" }).catch(() => undefined),
-      request({ path: "/account/admin/solutions" }).catch(() => undefined),
-    ])
+    const solutionsResponse = await request({ path: "/account/admin/solutions" }).catch(() => undefined)
     setState("loading", false)
-    if (!productsResponse?.ok) {
-      setState("error", await resolveError(productsResponse))
-      return
-    }
     if (!solutionsResponse?.ok) {
       setState("error", await resolveError(solutionsResponse))
       return
     }
-    const productsBody = await productsResponse.json().catch(() => undefined)
     const solutionsBody = await solutionsResponse.json().catch(() => undefined)
-    const products = list<ProductItem>(productsBody)
-    const solutions = list<SolutionItem>(solutionsBody)
-    setState("products", products)
+    const solutions = sortNamedSolutions(list<SolutionItem>(solutionsBody))
     setState("solutions", solutions)
     setState("selectedSolutionID", syncSolutionLibrarySelection(solutions, state.selectedSolutionID))
   }
 
-  /** 中文注释：打开新建方案表单，并为兼容字段预置一个初始归属产品。 */
+  /** 中文注释：打开新建方案表单，解决方案库新增时不再强制指定归属产品。 */
   const openCreate = () => {
-    if (state.products.length === 0) {
-      setState("error", "请先在项目管理中创建产品，再新增解决方案")
-      return
-    }
-    const product = state.products[0]!
-    const draft = createSolutionDraft(product)
+    const draft = createSolutionDraft({
+      id: "workspace",
+      name: "workspace",
+    })
     setState("formOpen", true)
     setState("formEdit", false)
     setState("formID", "")
-    setState("formProductID", draft.product_id)
     setState("formName", "")
     setState("formCode", "")
     setState("formEnabled", true)
-    setState("formProjectID", draft.project_id)
     setState("formBuildProfileText", draft.build_profile_text)
     setState("formRootsText", draft.roots_text)
   }
@@ -188,11 +169,9 @@ export const SettingsSolutionLibrary = () => {
     setState("formEdit", true)
     setState("formID", item.id)
     setState("selectedSolutionID", item.id)
-    setState("formProductID", item.product_id)
     setState("formName", item.name)
     setState("formCode", item.code)
     setState("formEnabled", item.enabled)
-    setState("formProjectID", item.primary_project_id || "")
     setState("formBuildProfileText", pretty(item.build_profile))
     setState(
       "formRootsText",
@@ -228,11 +207,9 @@ export const SettingsSolutionLibrary = () => {
       return {
         ok: true as const,
         body: {
-          product_id: state.formProductID.trim(),
           name: state.formName.trim(),
           code: state.formCode.trim(),
           enabled: state.formEnabled,
-          primary_project_id: state.formProjectID.trim() || undefined,
           build_profile,
           roots,
         },
@@ -253,7 +230,7 @@ export const SettingsSolutionLibrary = () => {
       setState("error", parsed.message)
       return
     }
-    if (!parsed.body.product_id || !parsed.body.name || !parsed.body.code) return
+    if (!parsed.body.name || !parsed.body.code) return
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -277,9 +254,9 @@ export const SettingsSolutionLibrary = () => {
     if (typeof item?.id === "string") setState("selectedSolutionID", item.id)
   }
 
-  /** 中文注释：从全局方案库中彻底删除方案，供冗余历史方案清理场景使用。 */
+  /** 中文注释：从全局方案库中逻辑删除方案，并保留删除标记供后续追踪与恢复。 */
   const remove = async (item: SolutionItem) => {
-    if (!globalThis.confirm(`确认彻底删除解决方案「${item.name}」？这会同时解除所有产品绑定。`)) return
+    if (!globalThis.confirm(`确认删除解决方案「${item.name}」？\n\n删除后方案会从默认列表中隐藏，并同步解除所有产品绑定。`)) return
     setState("pending", true)
     setState("error", "")
     setState("message", "")
@@ -292,7 +269,7 @@ export const SettingsSolutionLibrary = () => {
       setState("error", await resolveError(response))
       return
     }
-    setState("message", "解决方案已删除")
+    setState("message", "解决方案已逻辑删除")
     if (state.selectedSolutionID === item.id) setState("selectedSolutionID", "")
     await load()
   }
@@ -313,7 +290,7 @@ export const SettingsSolutionLibrary = () => {
   })
 
   createEffect(() => {
-    const current = syncSolutionLibrarySelection(state.solutions, state.selectedSolutionID)
+    const current = syncSolutionLibrarySelection(visibleSolutions(), state.selectedSolutionID)
     if (current !== state.selectedSolutionID) setState("selectedSolutionID", current)
   })
 
@@ -337,7 +314,7 @@ export const SettingsSolutionLibrary = () => {
               <Button type="button" variant="secondary" onClick={() => void load()} disabled={state.loading}>
                 刷新
               </Button>
-              <Button type="button" onClick={openCreate} disabled={state.pending || state.products.length === 0}>
+              <Button type="button" onClick={openCreate} disabled={state.pending}>
                 新增解决方案
               </Button>
             </div>
@@ -358,8 +335,16 @@ export const SettingsSolutionLibrary = () => {
                   <span class="text-12-regular text-text-weak">加载中...</span>
                 </Show>
               </div>
+              <div class="border-b border-border-weak-base px-3 py-3">
+                <input
+                  class="h-10 w-full rounded-md border border-border-weak-base bg-surface-panel/45 px-3 text-13-regular text-text-strong"
+                  placeholder="检索方案名称"
+                  value={state.solutionSearch}
+                  onInput={(event) => setState("solutionSearch", event.currentTarget.value)}
+                />
+              </div>
               <div class="max-h-[720px] overflow-auto p-3 flex flex-col gap-2">
-                <For each={state.solutions}>
+                <For each={visibleSolutions()}>
                   {(item) => (
                     <button
                       type="button"
@@ -376,7 +361,6 @@ export const SettingsSolutionLibrary = () => {
                         </div>
                       </div>
                       <div class="mt-3 flex flex-col gap-1 text-11-regular text-text-weak">
-                        <span>初始产品：{productName(item.product_id)}</span>
                         <span>目录数：{item.roots.length} · 更新于 {timeText(item.time_updated)}</span>
                       </div>
                     </button>
@@ -385,6 +369,11 @@ export const SettingsSolutionLibrary = () => {
                 <Show when={state.solutions.length === 0}>
                   <div class="rounded-xl border border-dashed border-border-weak-base px-4 py-8 text-center text-12-regular text-text-weak">
                     还没有解决方案，请先新增。
+                  </div>
+                </Show>
+                <Show when={state.solutions.length > 0 && visibleSolutions().length === 0}>
+                  <div class="rounded-xl border border-dashed border-border-weak-base px-4 py-8 text-center text-12-regular text-text-weak">
+                    没有匹配的解决方案
                   </div>
                 </Show>
               </div>
@@ -397,7 +386,7 @@ export const SettingsSolutionLibrary = () => {
                   <div class="mt-1 text-11-regular text-text-weak">
                     {state.formOpen
                       ? "在这里统一维护方案配置，保存后会自动刷新整个方案库。"
-                      : "查看当前方案的兼容归属产品、默认项目、源码目录和编译打包规则。"}
+                      : "查看当前方案的默认项目、源码目录和编译打包规则。"}
                   </div>
                 </div>
                 <Show when={!state.formOpen && currentSolution()}>
@@ -419,8 +408,8 @@ export const SettingsSolutionLibrary = () => {
                       when={currentSolution()}
                       fallback={<div class="rounded-xl border border-dashed border-border-weak-base px-4 py-10 text-center text-12-regular text-text-weak">请选择一个解决方案，或者先新增解决方案。</div>}
                     >
-                      <div class="flex flex-col gap-4">
-                        <div class="grid gap-3 md:grid-cols-2">
+                    <div class="flex flex-col gap-4">
+                      <div class="grid gap-3 md:grid-cols-2">
                           <div class="rounded-xl bg-surface-panel/45 p-3">
                             <div class="text-11-medium text-text-weak">解决方案名称</div>
                             <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.name}</div>
@@ -428,14 +417,6 @@ export const SettingsSolutionLibrary = () => {
                           <div class="rounded-xl bg-surface-panel/45 p-3">
                             <div class="text-11-medium text-text-weak">解决方案编码</div>
                             <div class="mt-2 text-13-medium text-text-strong break-all">{currentSolution()?.code}</div>
-                          </div>
-                          <div class="rounded-xl bg-surface-panel/45 p-3">
-                            <div class="text-11-medium text-text-weak">兼容归属产品</div>
-                            <div class="mt-2 text-12-regular text-text-strong break-all">{productName(currentSolution()?.product_id || "")}</div>
-                          </div>
-                          <div class="rounded-xl bg-surface-panel/45 p-3">
-                            <div class="text-11-medium text-text-weak">默认项目 ID</div>
-                            <div class="mt-2 text-12-regular text-text-strong break-all">{currentSolution()?.primary_project_id || "-"}</div>
                           </div>
                           <div class="rounded-xl bg-surface-panel/45 p-3">
                             <div class="text-11-medium text-text-weak">状态</div>
@@ -460,27 +441,6 @@ export const SettingsSolutionLibrary = () => {
                 >
                   <form class="flex flex-col gap-3" onSubmit={save}>
                     <div class="grid gap-3 md:grid-cols-2">
-                      <label class="flex flex-col gap-1 text-12-medium text-text-weak">
-                        <span>兼容归属产品</span>
-                        <select
-                          class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular text-text-strong"
-                          value={state.formProductID}
-                          onChange={(event) => {
-                            const value = event.currentTarget.value
-                            setState("formProductID", value)
-                            const product = state.products.find((item) => item.id === value)
-                            if (!state.formProjectID.trim() && product) setState("formProjectID", product.project_id)
-                          }}
-                        >
-                          <For each={state.products}>
-                            {(item) => (
-                              <option value={item.id}>
-                                {item.name}
-                              </option>
-                            )}
-                          </For>
-                        </select>
-                      </label>
                       <input
                         class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
                         placeholder="解决方案名称"
@@ -492,12 +452,6 @@ export const SettingsSolutionLibrary = () => {
                         placeholder="解决方案编码"
                         value={state.formCode}
                         onInput={(event) => setState("formCode", event.currentTarget.value)}
-                      />
-                      <input
-                        class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular"
-                        placeholder="默认项目 ID（可选）"
-                        value={state.formProjectID}
-                        onInput={(event) => setState("formProjectID", event.currentTarget.value)}
                       />
                       <label class="h-10 rounded-md border border-border-weak-base bg-surface-base px-3 text-14-regular flex items-center gap-2 md:col-span-2">
                         <input type="checkbox" checked={state.formEnabled} onChange={(event) => setState("formEnabled", event.currentTarget.checked)} />
@@ -532,7 +486,11 @@ export const SettingsSolutionLibrary = () => {
                       </Button>
                       <Button
                         type="submit"
-                        disabled={state.pending || !state.formProductID.trim() || !state.formName.trim() || !state.formCode.trim()}
+                        disabled={solutionLibrarySubmitDisabled({
+                          pending: state.pending,
+                          name: state.formName,
+                          code: state.formCode,
+                        })}
                       >
                         {state.pending ? "保存中..." : "保存"}
                       </Button>

@@ -2,7 +2,7 @@ import z from "zod"
 import { Filesystem } from "../util/filesystem"
 import path from "path"
 import fs from "fs/promises"
-import { Database, eq } from "../storage/db"
+import { Database, eq, inArray } from "../storage/db"
 import { ProjectTable } from "./project.sql"
 import { SessionTable } from "../session/session.sql"
 import { Log } from "../util/log"
@@ -35,20 +35,30 @@ export namespace Project {
   }
 
   function scoped(base: string, worktree: string) {
-    const normalized = Filesystem.windowsPath(path.resolve(worktree)).toLowerCase()
+    const normalized = canonical(worktree)
     const digest = createHash("sha1").update(normalized).digest("hex").slice(0, 12)
     return `${base}_${digest}`
   }
 
   /** 中文注释：为批量父目录生成稳定的伪项目标识，避免所有非 git 目录都坍缩到 global。 */
   function batchProjectID(directory: string) {
-    const normalized = Filesystem.windowsPath(path.resolve(directory)).toLowerCase()
+    const normalized = canonical(directory)
     const digest = createHash("sha1").update(normalized).digest("hex").slice(0, 12)
     return `batch_${digest}`
   }
 
   function sandboxKey(directory: string) {
-    return Filesystem.windowsPath(path.resolve(directory)).toLowerCase()
+    return canonical(directory)
+  }
+
+  /** 中文注释：统一把目录规整成当前机器真实可访问的稳定路径，避免 UNC、盘符和挂载目录生成不同项目标识。 */
+  function canonical(directory: string) {
+    return Filesystem.normalizePath(Filesystem.accessPath(directory)).toLowerCase()
+  }
+
+  /** 中文注释：build overlay 属于临时产品/构建会话目录，不应沉淀为项目长期沙盒。 */
+  function hiddenSandbox(directory: string) {
+    return /(?:^|[\\/])build-overlay(?:[\\/]|$)/i.test(directory)
   }
 
   /** 中文注释：项目沙盒目录除了“存在”之外，还必须是可识别的 worktree/工作区目录；空壳残留目录需要在这里剔除。 */
@@ -154,14 +164,51 @@ export namespace Project {
     }
   }
 
-  /** 中文注释：批量父项目只保留已注册的 batch_worktree 目录，顺手剔除不存在的旧沙盒，避免把遗留 single-worktree 显示成“沙盒main”。 */
-  async function sanitizeSandboxes(info: Info) {
-    const rows = await Database.use((db) =>
-      db.select({ directory: WorkspaceTable.directory, kind: WorkspaceTable.kind }).from(WorkspaceTable).where(eq(WorkspaceTable.project_id, info.id)).all(),
+  /** 中文注释：把工作区行按项目分组，供项目列表批量清洗沙盒时复用，避免每个项目单独查一次数据库。 */
+  function workspaceMap(rows: { project_id: string; directory: string; kind: string }[]) {
+    return rows.reduce(
+      (map, row) => {
+        const list = map.get(row.project_id) ?? []
+        list.push(row)
+        map.set(row.project_id, list)
+        return map
+      },
+      new Map<string, { project_id: string; directory: string; kind: string }[]>(),
     )
-    const registered = new Set(rows.map((row) => sandboxKey(row.directory)))
+  }
+
+  /** 中文注释：批量读取指定项目关联的工作区元数据，供项目列表一次性归一化沙盒目录。 */
+  async function workspaces(project_ids: string[]) {
+    const ids = [...new Set(project_ids.filter(Boolean))]
+    if (ids.length === 0) return new Map<string, { project_id: string; directory: string; kind: string }[]>()
+    const rows = await Database.use((db) =>
+      db
+        .select({ project_id: WorkspaceTable.project_id, directory: WorkspaceTable.directory, kind: WorkspaceTable.kind })
+        .from(WorkspaceTable)
+        .where(inArray(WorkspaceTable.project_id, ids))
+        .all(),
+    )
+    return workspaceMap(rows)
+  }
+
+  /** 中文注释：批量父项目只保留已注册的 batch_worktree 目录，顺手剔除不存在的旧沙盒，避免把遗留 single-worktree 显示成“沙盒main”。 */
+  async function sanitizeSandboxes(
+    info: Info,
+    rows?: {
+      project_id: string
+      directory: string
+      kind: string
+    }[],
+  ) {
+    const current =
+      rows ??
+      (await Database.use((db) =>
+        db.select({ project_id: WorkspaceTable.project_id, directory: WorkspaceTable.directory, kind: WorkspaceTable.kind }).from(WorkspaceTable).where(eq(WorkspaceTable.project_id, info.id)).all(),
+      ))
+    const registered = new Set(current.map((row) => sandboxKey(row.directory)))
     const seen = new Set<string>()
     const existing = info.sandboxes.filter((item) => {
+      if (hiddenSandbox(item)) return false
       if (!sandboxReady(item, registered)) return false
       const key = sandboxKey(item)
       if (seen.has(key)) return false
@@ -171,7 +218,7 @@ export namespace Project {
     if (info.vcs === "git") return existing
     if ((await workspaceMode(info.worktree)) !== "batch") return existing
     const allowed = new Set(
-      rows
+      current
         .filter((row) => row.kind === "batch_worktree")
         .map((row) => sandboxKey(row.directory)),
     )
@@ -179,8 +226,15 @@ export namespace Project {
   }
 
   /** 中文注释：读取项目后统一清洗沙盒列表，并把结果回写数据库，确保前端不会继续看到批量项目的遗留旧沙盒。 */
-  async function normalize(info: Info) {
-    const sandboxes = await sanitizeSandboxes(info)
+  async function normalize(
+    info: Info,
+    rows?: {
+      project_id: string
+      directory: string
+      kind: string
+    }[],
+  ) {
+    const sandboxes = await sanitizeSandboxes(info, rows)
     if (sandboxes.length === info.sandboxes.length && sandboxes.every((item, index) => item === info.sandboxes[index])) {
       return info
     }
@@ -205,9 +259,15 @@ export namespace Project {
     return next
   }
 
+  /** 中文注释：项目列表接口一次性归一化多条项目记录，避免 `/project` 为每个项目重复读取工作区元数据。 */
+  async function normalizeRows(rows: Row[]) {
+    const map = await workspaces(rows.map((row) => row.id))
+    return Promise.all(rows.map((row) => normalize(fromRow(row), map.get(row.id) ?? [])))
+  }
+
   export async function fromDirectory(directory: string) {
     log.info("fromDirectory", { directory })
-    directory = path.resolve(directory)
+    directory = Filesystem.accessPath(directory)
 
     const workspace = await Database.use((db) =>
       db.select().from(WorkspaceTable).where(eq(WorkspaceTable.directory, directory)).get(),
@@ -478,7 +538,7 @@ export namespace Project {
 
   /** 中文注释：识别目录是否支持工作区能力；非 git 父目录只要一级子目录存在 git 项目就进入 batch 模式。 */
   export async function workspaceMode(directory: string) {
-    const root = path.resolve(directory)
+    const root = Filesystem.accessPath(directory)
     if (await Filesystem.exists(path.join(root, ".git"))) return "single" as const
 
     const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
@@ -527,7 +587,15 @@ export namespace Project {
 
   export async function list() {
     const rows = await Database.use((db) => db.select().from(ProjectTable).all())
-    return Promise.all(rows.map((row) => normalize(fromRow(row))))
+    return normalizeRows(rows)
+  }
+
+  /** 中文注释：按指定项目集合返回项目列表，供账号模式下只加载当前用户可见项目，避免先扫全表再过滤。 */
+  export async function listByIDs(ids: string[]) {
+    const project_ids = [...new Set(ids.filter(Boolean))]
+    if (project_ids.length === 0) return [] as Info[]
+    const rows = await Database.use((db) => db.select().from(ProjectTable).where(inArray(ProjectTable.id, project_ids)).all())
+    return normalizeRows(rows)
   }
 
   export async function get(id: string): Promise<Info | undefined> {
@@ -579,6 +647,11 @@ export namespace Project {
   }
 
   export async function addSandbox(id: string, directory: string) {
+    if (hiddenSandbox(directory)) {
+      const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+      if (!row) throw new Error(`Project not found: ${id}`)
+      return normalize(fromRow(row))
+    }
     const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
     if (!row) throw new Error(`Project not found: ${id}`)
     const sandboxes = [...row.sandboxes]

@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun"
-import { existsSync, readdirSync, rmSync } from "fs"
+import { existsSync, mkdtempSync, readdirSync, renameSync, rmSync } from "fs"
 import path from "path"
+import os from "os"
 
 const dir = path.join(import.meta.dirname, "..")
 process.chdir(dir)
@@ -24,6 +25,24 @@ function latest(cwd: string) {
     .filter((item) => item.endsWith(".tgz"))
     .sort()
     .at(-1)
+}
+
+/**
+ * 使用临时输出目录执行 bun pack，避免 Bun 把当前正在生成的 tgz 再次打进包里。
+ */
+async function pack(cwd: string) {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "opencode-pack-"))
+  try {
+    await $`bun pm pack --destination ${tmp} --quiet`.cwd(cwd)
+    const file = latest(tmp)
+    if (!file) return
+    const src = path.join(tmp, file)
+    const dst = path.join(cwd, file)
+    rmSync(dst, { force: true })
+    renameSync(src, dst)
+  } finally {
+    rmSync(tmp, { force: true, recursive: true })
+  }
 }
 
 /**
@@ -64,7 +83,7 @@ for (const name of list) {
   console.log(`packing ${name}`)
   purge(cwd)
   await patch(cwd)
-  await $`bun pm pack`.cwd(cwd)
+  await pack(cwd)
   const file = latest(cwd)
   if (file) out.push(path.join(cwd, file))
 }

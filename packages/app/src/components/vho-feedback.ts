@@ -44,8 +44,8 @@ type Filters = {
 
 type AssignedProject = {
   id: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
 }
 
 export type VhoFeedbackApplyResult =
@@ -55,7 +55,7 @@ export type VhoFeedbackApplyResult =
   | {
       ok: false
       message: string
-    }
+  }
 
 /**
  * 中文注释：把解决状态枚举值映射为国际化文案 key。
@@ -142,6 +142,57 @@ export function vhoFeedbackApplyFailure(input: {
  */
 export function buildVhoFeedbackPrompt(input: { feedback_des?: string; plan_content: string }) {
   return `反馈问题：${input.feedback_des?.trim() ?? ""}\n\n计划内容：${input.plan_content}`
+}
+
+/**
+ * 中文注释：判断当前 build 提交是否仍是“反馈回填后的原始计划文本”，从而可直接复用 saved_plan 构建。
+ */
+export function shouldUseVhoFeedbackSavedPlan(input: {
+  current: string
+  prompt?: string
+  has_saved_plan: boolean
+  image_count: number
+  voice_count: number
+  comment_count: number
+}) {
+  if (!input.has_saved_plan) return false
+  if (input.image_count > 0 || input.voice_count > 0 || input.comment_count > 0) return false
+  if (!input.prompt?.trim()) return input.current.trim().length === 0
+  return input.current.trim() === input.prompt.trim()
+}
+
+/**
+ * 中文注释：统一判断目录级反馈计划交接是否仍有效，供新会话页预览和首次提交复用同一套时效规则。
+ */
+export function shouldConsumeVhoPlanHandoff(input: {
+  handoff?: {
+    plan_content?: string
+    at?: number
+  }
+  session_id?: string
+  now: number
+}) {
+  return shouldShowVhoPlanPreview({
+    session_id: input.session_id,
+    plan_content: input.handoff?.plan_content,
+    at: input.handoff?.at,
+    now: input.now,
+  })
+}
+
+/**
+ * 中文注释：仅在新会话页且计划内容仍有效时展示回填得到的 Markdown 计划预览。
+ */
+export function shouldShowVhoPlanPreview(input: {
+  session_id?: string
+  plan_content?: string
+  at?: number
+  now: number
+}) {
+  if (input.session_id) return false
+  if (!input.plan_content?.trim()) return false
+  if (!input.at) return false
+  return input.now - input.at <= 60_000
 }
 
 /**

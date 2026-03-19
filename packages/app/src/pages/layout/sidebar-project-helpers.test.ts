@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { projectSelected, projectTileActive } from "./sidebar-project-helpers"
+import { projectSelected, projectTileActive, selectedProjectSidebarAction } from "./sidebar-project-helpers"
 
 describe("projectSelected", () => {
   test("matches direct worktree", () => {
@@ -59,5 +59,15 @@ describe("projectTileActive", () => {
         worktree: "/tmp/root",
       }),
     ).toBe(false)
+  })
+})
+
+describe("selectedProjectSidebarAction", () => {
+  test("returns close when sidebar is already open", () => {
+    expect(selectedProjectSidebarAction(true)).toBe("close")
+  })
+
+  test("returns open when sidebar is collapsed", () => {
+    expect(selectedProjectSidebarAction(false)).toBe("open")
   })
 })

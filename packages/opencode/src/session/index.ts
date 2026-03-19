@@ -33,6 +33,8 @@ import { Global } from "@/global"
 import type { LanguageModelV2Usage } from "@ai-sdk/provider"
 import { iife } from "@/util/iife"
 import { AccountCurrent } from "@/user/current"
+import { ProductSolutionService } from "@/user/product-solution"
+import { uniqueSolutionMembers } from "@/user/product-solution-member"
 import { TokenUsageService } from "@/usage/service"
 import { AccountSystemSettingService } from "@/user/system-setting"
 import { Lock } from "@/util/lock"
@@ -84,6 +86,12 @@ export namespace Session {
     if (!a) return true
     if (!row.user_id) return false
     if (row.user_id !== a.user_id) return false
+    if (a.context_product_id) {
+      if (row.context_product_id) return row.context_product_id === a.context_product_id
+      const project_id = row.context_project_id ?? row.project_id
+      if (!a.context_project_id) return project_id === "global"
+      return project_id === a.context_project_id
+    }
     const project_id = row.context_project_id ?? row.project_id
     if (!a.context_project_id) return project_id === "global"
     return project_id === a.context_project_id
@@ -94,13 +102,30 @@ export namespace Session {
     if (!a) return true
     if (!row.user_id) return false
     if (row.user_id !== a.user_id) return false
+    if (a.context_product_id) {
+      if (row.context_product_id) return row.context_product_id === a.context_product_id
+      const project_id = row.context_project_id ?? row.project_id
+      if (!a.context_project_id) return project_id === "global"
+      return project_id === a.context_project_id
+    }
     const project_id = row.context_project_id ?? row.project_id
     if (!a.context_project_id) return project_id === "global"
     return project_id === a.context_project_id
   }
 
+  /** 中文注释：统一过滤未逻辑删除的会话，避免删除后的会话继续参与读取、列表和权限校验。 */
+  function activeSession() {
+    return isNull(SessionTable.time_deleted)
+  }
+
   async function assertWritable(sessionID: string) {
-    const row = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(SessionTable)
+        .where(and(eq(SessionTable.id, sessionID), activeSession()))
+        .get(),
+    )
     if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
     if (!canWrite(row)) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
     return row
@@ -156,6 +181,107 @@ export namespace Session {
     }
   }
 
+  /** 中文注释：把单个解决方案根目录展开成 overlay 成员，供普通产品会话自动进入“解决方案聚合目录”。 */
+  async function solutionMembers(solution: Awaited<ReturnType<typeof ProductSolutionService.list>>[number]) {
+    const rows = [] as Array<{
+      directory: string
+      name: string
+      relative_path: string
+      solution_id: string
+      solution_code: string
+    }>
+    /** 中文注释：只把当前机器可访问的真实目录放进产品会话 overlay，避免共享盘暂时不可用时直接把普通会话创建打炸。 */
+    const readableDirectory = (directory?: string) => {
+      const current = directory?.trim()
+      if (!current) return
+      const resolved = Filesystem.accessPath(current)
+      if (!existsSync(resolved)) return
+      return resolved
+    }
+    for (const root of solution.roots.filter((item) => item.enabled)) {
+      if (root.root_type === "single_repo") {
+        const directory = readableDirectory(root.directory)
+        if (!directory) continue
+        const name = root.mount_name?.trim() || root.display_name?.trim() || Filesystem.baseName(root.directory)
+        rows.push({
+          directory,
+          name,
+          relative_path: name,
+          solution_id: solution.id,
+          solution_code: solution.code,
+        })
+        continue
+      }
+      if (root.root_type === "parent_batch") {
+        const sourceRoot = readableDirectory(root.directory)
+        if (!sourceRoot) continue
+        const entries = readdirSync(sourceRoot, { withFileTypes: true })
+        rows.push(
+          ...entries
+            .filter((entry) => entry.isDirectory() && existsSync(path.join(sourceRoot, entry.name)))
+            .map((entry) => ({
+              directory: path.join(sourceRoot, entry.name),
+              name: entry.name,
+              relative_path: entry.name,
+              solution_id: solution.id,
+              solution_code: solution.code,
+            })),
+        )
+        continue
+      }
+      const directories = (root.meta?.directories ?? []).map((directory) => readableDirectory(directory)).filter((item): item is string => !!item)
+      rows.push(
+        ...directories.map((directory, index) => {
+          const name =
+            root.mount_name?.trim() && directories.length === 1
+              ? root.mount_name.trim()
+              : Filesystem.baseName(directory) || `${root.display_name?.trim() || "member"}-${index + 1}`
+          return {
+            directory: Filesystem.accessPath(directory),
+            name,
+            relative_path: name,
+            solution_id: solution.id,
+            solution_code: solution.code,
+          }
+        }),
+      )
+    }
+    return uniqueSolutionMembers(rows)
+  }
+
+  /** 中文注释：在普通产品会话里按已绑定解决方案自动创建 overlay 工作区，避免继续落回产品锚点目录。 */
+  async function productWorkspace() {
+    const current = actor()
+    const product_id = current?.context_product_id?.trim()
+    if (!product_id) return
+    const solutions = (await ProductSolutionService.list(product_id)).filter((item) => item.enabled)
+    if (solutions.length === 0) return
+    const members = uniqueSolutionMembers(
+      (
+        await Promise.all(
+          solutions.map((item) =>
+            solutionMembers(item).catch(() => []),
+          ),
+        )
+      ).flat(),
+    )
+    if (members.length === 0) return
+    const workspace = await Workspace.createOverlay({
+      projectID: Instance.project.id,
+      sourceRoots: [...new Set(members.map((item) => item.directory))],
+      members,
+      name: [product_id, Date.now().toString(36)].join("-"),
+    })
+    return {
+      directory: workspace.directory,
+      workspaceID: workspace.id,
+      workspaceDirectory: workspace.directory,
+      workspaceKind: workspace.kind,
+      workspaceStatus: "ready" as const,
+      workspaceCleanupStatus: "none" as const,
+    }
+  }
+
   /** 中文注释：当 session 已经创建在某个现成沙盒目录里时，优先认领当前沙盒，避免 build 首次发送消息时再套娃创建一层新工作区。 */
   async function currentWorkspace(input: SessionRow) {
     const registered = await Workspace.getByDirectory(input.directory)
@@ -172,9 +298,9 @@ export namespace Session {
     }
 
     const located = await Project.fromDirectory(input.directory)
-    const sandbox = path.resolve(located.sandbox)
-    const worktree = path.resolve(located.project.worktree)
-    if (sandbox !== path.resolve(input.directory)) return
+    const sandbox = Filesystem.accessPath(located.sandbox)
+    const worktree = Filesystem.accessPath(located.project.worktree)
+    if (sandbox !== Filesystem.accessPath(input.directory)) return
     if (sandbox === worktree) return
 
     const branch = await $`git branch --show-current`
@@ -190,6 +316,22 @@ export namespace Session {
       kind: "single_worktree" as const,
       status: "ready" as const,
       cleanup: "none" as const,
+    }
+  }
+
+  /** 中文注释：子会话应复用父会话的工作区，避免在产品 overlay 场景里为 task/explore 再套一层新的空 overlay。 */
+  async function parentWorkspace(parentID?: string) {
+    if (!parentID) return
+    const parent = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, parentID)).get())
+    if (!parent) return
+    return {
+      directory: workspaceDirectory(parent) ?? parent.directory,
+      workspaceID: parent.workspace_id ?? undefined,
+      workspaceDirectory: parent.workspace_directory ?? undefined,
+      workspaceBranch: parent.workspace_branch ?? undefined,
+      workspaceKind: WorkspaceKind.safeParse(parent.workspace_kind).data,
+      workspaceStatus: WorkspaceStatus.safeParse(parent.workspace_status).data,
+      workspaceCleanupStatus: WorkspaceCleanupStatus.safeParse(parent.workspace_cleanup_status).data,
     }
   }
 
@@ -426,6 +568,7 @@ export namespace Session {
       id: row.id,
       slug: row.slug,
       projectID: row.project_id,
+      contextProductID: row.context_product_id ?? undefined,
       directory: row.directory,
       workspaceID: row.workspace_id ?? undefined,
       workspaceDirectory: row.workspace_directory ?? undefined,
@@ -456,6 +599,7 @@ export namespace Session {
     return {
       id: info.id,
       project_id: info.projectID,
+      context_product_id: info.contextProductID ?? null,
       parent_id: info.parentID,
       slug: info.slug,
       directory: info.directory,
@@ -501,6 +645,7 @@ export namespace Session {
       slug: z.string(),
       projectID: z.string(),
       directory: z.string(),
+      contextProductID: z.string().optional(),
       workspaceID: Identifier.schema("workspace").optional(),
       workspaceDirectory: z.string().optional(),
       workspaceBranch: z.string().optional(),
@@ -623,11 +768,13 @@ export namespace Session {
       })
       .optional(),
     async (input) => {
-      const workspace = await ownedWorkspace(input?.workspace)
+      const owned = await ownedWorkspace(input?.workspace)
+      const inherited = owned.directory ? undefined : await parentWorkspace(input?.parentID)
+      const workspace = owned.directory ? owned : inherited ?? (await productWorkspace())
       return createNext({
         parentID: input?.parentID,
-        ...workspace,
-        directory: workspace.directory ?? Instance.directory,
+        ...(workspace ?? {}),
+        directory: workspace?.directory ?? Instance.directory,
         title: input?.title,
         permission: input?.permission,
         visibility: input?.visibility,
@@ -708,16 +855,17 @@ export namespace Session {
     visibility?: "private" | "department" | "org" | "public"
   }) {
     const a = actor()
-    if (a && !a.context_project_id) {
-      throw new Error("project_context_required")
-    }
+    /** 中文注释：管理员等显式按目录打开项目时，允许回落到当前实例项目作为 session 上下文，避免没有预选产品时普通会话直接 500。 */
+    const context_project_id = a?.context_project_id ?? Instance.project.id
+    const context_product_id = a?.context_product_id
+    const directory = Filesystem.accessPath(input.directory)
     const visibility = a ? "private" : (input.visibility ?? "public")
     const result: Info = {
       id: Identifier.descending("session", input.id),
       slug: Slug.create(),
       version: Installation.VERSION,
       projectID: Instance.project.id,
-      directory: input.directory,
+      directory,
       workspaceID: input.workspaceID,
       workspaceDirectory: input.workspaceDirectory,
       workspaceBranch: input.workspaceBranch,
@@ -739,7 +887,8 @@ export namespace Session {
         .insert(SessionTable)
         .values({
           ...toRow(result),
-          context_project_id: a?.context_project_id,
+          context_project_id,
+          context_product_id,
           user_id: a?.user_id,
           org_id: a?.org_id,
           department_id: a?.department_id,
@@ -771,7 +920,13 @@ export namespace Session {
   }
 
   async function read(id: string) {
-    const row = await Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(SessionTable)
+        .where(and(eq(SessionTable.id, id), activeSession()))
+        .get(),
+    )
     if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
     if (!canRead(row)) throw new NotFoundError({ message: `Session not found: ${id}` })
     return fromRow(row)
@@ -1284,7 +1439,9 @@ export namespace Session {
     if (input?.search) {
       conditions.push(like(SessionTable.title, `%${input.search}%`))
     }
-    if (a?.context_project_id) {
+    if (a?.context_product_id) {
+      conditions.push(eq(SessionTable.context_product_id, a.context_product_id))
+    } else if (a?.context_project_id) {
       const scope = or(
         eq(SessionTable.context_project_id, a.context_project_id),
         and(isNull(SessionTable.context_project_id), eq(SessionTable.project_id, a.context_project_id)),
@@ -1295,6 +1452,8 @@ export namespace Session {
     }
 
     const limit = input?.limit ?? 100
+
+    conditions.push(activeSession())
 
     const rows = await Database.use((db) =>
       db
@@ -1343,7 +1502,10 @@ export namespace Session {
     if (!input?.archived) {
       conditions.push(isNull(SessionTable.time_archived))
     }
-    if (a?.context_project_id) {
+    conditions.push(activeSession())
+    if (a?.context_product_id) {
+      conditions.push(eq(SessionTable.context_product_id, a.context_product_id))
+    } else if (a?.context_project_id) {
       const scope = or(
         eq(SessionTable.context_project_id, a.context_project_id),
         and(isNull(SessionTable.context_project_id), eq(SessionTable.project_id, a.context_project_id)),
@@ -1395,9 +1557,12 @@ export namespace Session {
   export const children = fn(Identifier.schema("session"), async (parentID) => {
     const project = Instance.project
     const a = actor()
-    const conditions: SQL[] = [eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID)]
+    const conditions: SQL[] = [eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID), activeSession()]
     if (a) {
       conditions.push(eq(SessionTable.user_id, a.user_id))
+      if (a.context_product_id) {
+        conditions.push(eq(SessionTable.context_product_id, a.context_product_id))
+      }
     }
     const rows = await Database.use((db) =>
       db
@@ -1426,8 +1591,16 @@ export namespace Session {
         workspaceID: row.workspace_id,
       })
     }
+    const now = Date.now()
     await Database.use(async (db) => {
-      await db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run()
+      await db
+        .update(SessionTable)
+        .set({
+          time_deleted: now,
+          time_updated: now,
+        })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
       Database.effect(() =>
         Bus.publish(Event.Deleted, {
           info: session,

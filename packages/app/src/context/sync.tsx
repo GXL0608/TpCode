@@ -287,7 +287,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     type Child = ReturnType<(typeof globalSync)["child"]>
     type Setter = Child[1]
 
-    const current = createMemo(() => globalSync.child(sdk.directory, { bootstrap: false }))
+    /** 中文注释：当前目录进入 SyncProvider 时必须立即 bootstrap，否则 provider 会被 ready 门闸卡成永久 loading。 */
+    const current = createMemo(() => globalSync.child(sdk.directory))
     const target = (directory?: string) => {
       if (!directory || directory === sdk.directory) return current()
       return globalSync.child(directory, { bootstrap: false })

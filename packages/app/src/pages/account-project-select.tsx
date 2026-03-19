@@ -1,21 +1,24 @@
 import { Button } from "@opencode-ai/ui/button"
-import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
-import { nextOpenProjectIDs } from "@/context/account-project"
+import { nextProductNavigation, useAccountProject } from "@/context/account-project"
+import { useGlobalSync } from "@/context/global-sync"
 
 type Row = {
   id: string
   name?: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
+  related_project_ids?: string[]
   selected: boolean
   last_selected: boolean
 }
 
 export default function AccountProjectSelect() {
   const auth = useAccountAuth()
+  const accountProject = useAccountProject()
+  const sync = useGlobalSync()
   const navigate = useNavigate()
   const [loading, setLoading] = createSignal(true)
   const [pending, setPending] = createSignal(false)
@@ -46,9 +49,9 @@ export default function AccountProjectSelect() {
     }
     const list = payload.products ?? []
     setRows(list)
-    const preferred = payload.last_project_id && list.some((item) => item.project_id === payload.last_project_id)
+    const preferred = payload.last_product_id && list.some((item) => item.id === payload.last_product_id)
     const selected = preferred
-      ? (list.find((item) => item.project_id === payload.last_project_id)?.id ?? "")
+      ? (list.find((item) => item.id === payload.last_product_id)?.id ?? "")
       : (list.find((item) => item.last_selected)?.id ?? list[0]?.id ?? "")
     setCurrent(selected)
     setLoading(false)
@@ -71,24 +74,27 @@ export default function AccountProjectSelect() {
     }
     setPending(true)
     setError("")
-    const result = await auth.selectContext(target.project_id)
+    const result = await accountProject.activateProduct(target.id)
     if (!result.ok) {
       setPending(false)
       setError("找不到文件夹，请联系管理员检查项目路径")
       return
     }
-    void auth.contextState().then((current) => {
-      const open_project_ids = nextOpenProjectIDs({
-        open_project_ids: current?.open_project_ids ?? [],
-        project_id: target.project_id,
-      })
-      void auth.updateContextState({
-        last_project_id: target.project_id,
-        open_project_ids,
-      })
+    const local = accountProject.ready() ? accountProject.data() : await accountProject.reload()
+    const next = nextProductNavigation({
+      product: target,
+      products: rows(),
+      projects: sync.data.project,
+      state: local,
+      current_project_id: auth.user()?.context_project_id,
     })
-    const href = `/${base64Encode(target.worktree)}/session`
-    navigate(href, { replace: true })
+    if (!next.href) {
+      setPending(false)
+      setError("当前产品尚未配置可用解决方案，请先在管理端完成解决方案绑定")
+      return
+    }
+    setPending(false)
+    navigate(next.href, { replace: true })
   }
 
   return (

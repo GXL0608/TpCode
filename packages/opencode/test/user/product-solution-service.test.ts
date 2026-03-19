@@ -2,8 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { $ } from "bun"
-import { ulid } from "ulid"
-import { Database } from "../../src/storage/db"
+import { Database, eq } from "../../src/storage/db"
 import { TpProductSolutionBindingTable } from "../../src/user/product-solution-binding.sql"
 import { TpProductTable } from "../../src/user/product.sql"
 import { TpProductSolutionRootTable } from "../../src/user/product-solution-root.sql"
@@ -23,8 +22,14 @@ async function createRepo(root: string, name: string) {
   return directory
 }
 
+/** 中文注释：按共享目录组件拼装稳定 UNC 路径，避免测试源码中的中文路径被反斜杠转义干扰。 */
+function unc(...parts: string[]) {
+  return ["", "", "192.168.1.202", ...parts].join("\\")
+}
+
 describe("product solution service", () => {
   afterEach(async () => {
+    delete process.env.TPCODE_SHARED_MOUNT_ROOT
     await Database.use(async (db) => {
       await db.delete(TpProductSolutionRootTable).run()
       await db.delete(TpProductSolutionBindingTable).run()
@@ -85,6 +90,48 @@ describe("product solution service", () => {
     expect(listed[0]?.build_profile.compile_command).toBe("echo build")
   })
 
+  test("allows products without bound directories and derives anchor project from solutions", async () => {
+    await using tmp = await tmpdir()
+    const frontend = await createRepo(tmp.path, "virtual-product-frontend")
+
+    const product = await AccountProductService.create({
+      name: "虚拟产品",
+      directory: "",
+    })
+
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+    expect(product.item.project_id).toBeUndefined()
+
+    const solution = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "虚拟产品前端",
+      code: "virtual-product-frontend",
+      build_profile: {
+        workdirs: ["frontend"],
+        compile_command: "echo build",
+        artifact_include: ["dist/**"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: frontend,
+          display_name: "前端",
+          mount_name: "frontend",
+          sort_order: 1,
+        },
+      ],
+    })
+
+    expect(solution.ok).toBe(true)
+    if (!solution.ok) return
+    const listed = await AccountProductService.list()
+    const item = listed.find((row) => row.id === product.item.id)
+
+    expect(item?.project_id).toBeTruthy()
+    expect(item?.worktree).toBe(frontend)
+  })
+
   test("supports virtual_group roots with explicit member directories", async () => {
     await using tmp = await tmpdir()
     const shared = await createRepo(tmp.path, "shared-backend")
@@ -123,6 +170,50 @@ describe("product solution service", () => {
     expect(created.ok).toBe(true)
     if (!created.ok) return
     expect(created.item.roots[0]?.meta?.directories).toEqual([shared, api])
+  })
+
+  test("accepts UNC solution roots for products without bound directories", async () => {
+    await using tmp = await tmpdir()
+    process.env.TPCODE_SHARED_MOUNT_ROOT = tmp.path
+    const share = path.join(tmp.path, "共享", "test_project", "aaa")
+    await fs.mkdir(share, { recursive: true })
+
+    const product = await AccountProductService.create({
+      name: "UNC虚拟产品",
+      directory: "",
+    })
+
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+
+    const created = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "UNC目录方案",
+      code: "unc-folder-solution",
+      build_profile: {
+        workdirs: ["aaa"],
+        compile_command: "true",
+        artifact_include: ["a.txt"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: unc("共享", "test_project", "aaa"),
+          display_name: "UNC共享目录",
+          mount_name: "aaa",
+          sort_order: 1,
+        },
+      ],
+    })
+
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+    expect(created.item.roots[0]?.directory).toBe(unc("共享", "test_project", "aaa"))
+
+    const listed = await AccountProductService.list()
+    const item = listed.find((row) => row.id === product.item.id)
+    expect(item?.project_id).toBeTruthy()
+    expect(item?.worktree).toBe(share)
   })
 
   test("allows one solution to be bound by multiple products", async () => {
@@ -188,6 +279,102 @@ describe("product solution service", () => {
 
     expect(itemA?.solutions?.map((item) => item.id)).toEqual([solution.item.id])
     expect(itemB?.solutions?.map((item) => item.id)).toEqual([solution.item.id])
+  })
+
+  test("soft deletes products, solutions and bindings while keeping them out of active lists", async () => {
+    await using tmp = await tmpdir()
+    const frontend = await createRepo(tmp.path, "soft-delete-frontend")
+    const backend = await createRepo(tmp.path, "soft-delete-backend")
+
+    const product = await AccountProductService.create({
+      name: "逻辑删除产品",
+      directory: frontend,
+    })
+    expect(product.ok).toBe(true)
+    if (!product.ok) return
+
+    const created = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "逻辑删除方案",
+      code: "soft-delete-solution",
+      build_profile: {
+        workdirs: ["."],
+        compile_command: "echo build",
+        artifact_include: ["dist/**"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: backend,
+          display_name: "后端",
+        },
+      ],
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+
+    const unbound = await ProductSolutionService.unbind({
+      product_id: product.item.id,
+      solution_id: created.item.id,
+    })
+    expect(unbound.ok).toBe(true)
+
+    const binding = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionBindingTable)
+        .where(eq(TpProductSolutionBindingTable.product_id, product.item.id))
+        .get(),
+    )
+    expect(binding?.time_deleted).toBeNumber()
+    expect(await ProductSolutionService.list(product.item.id)).toHaveLength(0)
+
+    const rebound = await ProductSolutionService.bind({
+      product_id: product.item.id,
+      solution_id: created.item.id,
+    })
+    expect(rebound.ok).toBe(true)
+
+    const removedSolution = await ProductSolutionService.remove(created.item.id)
+    expect(removedSolution.ok).toBe(true)
+    const storedSolution = await Database.use((db) =>
+      db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, created.item.id)).get(),
+    )
+    expect(storedSolution?.time_deleted).toBeNumber()
+    expect((await ProductSolutionService.listLibrary()).some((item) => item.id === created.item.id)).toBe(false)
+
+    const recreated = await ProductSolutionService.create({
+      product_id: product.item.id,
+      name: "逻辑删除方案重建",
+      code: "soft-delete-solution",
+      build_profile: {
+        workdirs: ["."],
+        compile_command: "echo build",
+        artifact_include: ["dist/**"],
+      },
+      roots: [
+        {
+          root_type: "single_repo",
+          directory: backend,
+          display_name: "后端",
+        },
+      ],
+    })
+    expect(recreated.ok).toBe(true)
+
+    const removedProduct = await AccountProductService.remove(product.item.id)
+    expect(removedProduct.ok).toBe(true)
+    const storedProduct = await Database.use((db) =>
+      db.select().from(TpProductTable).where(eq(TpProductTable.id, product.item.id)).get(),
+    )
+    expect(storedProduct?.time_deleted).toBeNumber()
+    expect((await AccountProductService.list()).some((item) => item.id === product.item.id)).toBe(false)
+
+    const recreatedProduct = await AccountProductService.create({
+      name: "逻辑删除产品",
+      directory: "",
+    })
+    expect(recreatedProduct.ok).toBe(true)
   })
 
   test("unbinds a shared solution from one product without removing the solution", async () => {
@@ -313,71 +500,13 @@ describe("product solution service", () => {
     expect(library[0]?.id).toBe(solution.item.id)
   })
 
-  test("backfills legacy product solution bindings without duplicating existing rows", async () => {
-    await using tmp = await tmpdir()
-    const repo = await createRepo(tmp.path, "legacy-product")
-
-    const product = await AccountProductService.create({
-      name: "历史产品",
-      directory: repo,
-    })
-
-    expect(product.ok).toBe(true)
-    if (!product.ok) return
-
-    const now = Date.now()
-    const solution_id = ulid()
-    await Database.use(async (db) => {
-      await db
-        .insert(TpProductSolutionTable)
-        .values({
-          id: solution_id,
-          product_id: product.item.id,
-          name: "历史方案",
-          code: "legacy-solution",
-          enabled: true,
-          primary_project_id: product.item.project_id,
-          build_profile_json: {
-            workdirs: ["legacy-product"],
-            compile_command: "echo build",
-            artifact_include: ["dist/**"],
-          },
-          time_created: now,
-          time_updated: now,
-        })
-        .run()
-      await db
-        .insert(TpProductSolutionRootTable)
-        .values({
-          id: ulid(),
-          solution_id,
-          root_type: "single_repo",
-          directory: repo,
-          display_name: "历史方案",
-          mount_name: "legacy-product",
-          sort_order: 0,
-          enabled: true,
-          time_created: now,
-          time_updated: now,
-        })
-        .run()
-    })
-
-    const before = await ProductSolutionService.list(product.item.id)
-    expect(before).toHaveLength(1)
-
+  test("backfill bindings becomes a no-op after legacy solution fields are removed", async () => {
     const first = await ProductSolutionService.backfillBindings()
     const second = await ProductSolutionService.backfillBindings()
-    const bindings = await Database.use((db) => db.select().from(TpProductSolutionBindingTable).all())
-    const listed = await ProductSolutionService.list(product.item.id)
 
-    expect(first.created).toBe(1)
-    expect(first.scanned).toBe(1)
+    expect(first.created).toBe(0)
+    expect(first.scanned).toBe(0)
     expect(second.created).toBe(0)
-    expect(bindings).toHaveLength(1)
-    expect(bindings[0]?.product_id).toBe(product.item.id)
-    expect(bindings[0]?.solution_id).toBe(solution_id)
-    expect(listed).toHaveLength(1)
-    expect(listed[0]?.id).toBe(solution_id)
+    expect(second.scanned).toBe(0)
   })
 })

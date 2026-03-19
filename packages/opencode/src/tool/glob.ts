@@ -21,6 +21,10 @@ export const GlobTool = Tool.define("glob", {
   }),
   async execute(params, ctx) {
     const overlay = await BuildOverlay.load(ctx.sessionID)
+    const timeout = Number(process.env.TPCODE_GLOB_TIMEOUT_MS ?? 15000)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error("glob search timeout")), timeout)
+    const signal = AbortSignal.any([ctx.abort, controller.signal])
     await ctx.ask({
       permission: "glob",
       patterns: [params.pattern],
@@ -33,45 +37,56 @@ export const GlobTool = Tool.define("glob", {
 
     let search = params.path ?? Instance.directory
     search = path.isAbsolute(search) ? search : path.resolve(Instance.directory, search)
+    if (overlay) search = BuildOverlay.remapSourcePath({ overlay, filePath: search })
     await assertExternalDirectory(ctx, search, { kind: "directory" })
 
     const limit = 100
     const files = []
     let truncated = false
-    if (overlay && (await BuildOverlay.stat({ overlay, filePath: search }))) {
-      for (const full of await BuildOverlay.scanFiles({
-        overlay,
-        directory: search,
-        pattern: params.pattern,
-        limit: limit + 1,
-      })) {
-        if (files.length >= limit) {
-          truncated = true
-          break
+    try {
+      if (overlay && (await BuildOverlay.stat({ overlay, filePath: search }))) {
+        for (const full of await BuildOverlay.scanFiles({
+          overlay,
+          directory: search,
+          pattern: params.pattern,
+          limit: limit + 1,
+          signal,
+        })) {
+          if (files.length >= limit) {
+            truncated = true
+            break
+          }
+          const stats = (await BuildOverlay.stat({ overlay, filePath: full }))?.mtime.getTime() ?? 0
+          files.push({
+            path: full,
+            mtime: stats,
+          })
         }
-        const stats = (await BuildOverlay.stat({ overlay, filePath: full }))?.mtime.getTime() ?? 0
-        files.push({
-          path: full,
-          mtime: stats,
-        })
-      }
-    } else {
-      for await (const file of Ripgrep.files({
-        cwd: search,
-        glob: [params.pattern],
-        signal: ctx.abort,
-      })) {
-        if (files.length >= limit) {
-          truncated = true
-          break
+      } else {
+        for await (const file of Ripgrep.files({
+          cwd: search,
+          glob: [params.pattern],
+          signal,
+        })) {
+          if (files.length >= limit) {
+            truncated = true
+            break
+          }
+          const full = path.resolve(search, file)
+          const stats = Filesystem.stat(full)?.mtime.getTime() ?? 0
+          files.push({
+            path: full,
+            mtime: stats,
+          })
         }
-        const full = path.resolve(search, file)
-        const stats = Filesystem.stat(full)?.mtime.getTime() ?? 0
-        files.push({
-          path: full,
-          mtime: stats,
-        })
       }
+    } catch (error) {
+      if (controller.signal.aborted && !ctx.abort.aborted) {
+        throw new Error(`Glob search timed out after ${Math.ceil(timeout / 1000)} seconds in ${search}`)
+      }
+      throw error
+    } finally {
+      clearTimeout(timer)
     }
     files.sort((a, b) => b.mtime - a.mtime)
 

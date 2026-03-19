@@ -1,5 +1,4 @@
-import { Ripgrep } from "../file/ripgrep"
-
+import fs from "fs/promises"
 import { Instance } from "../project/instance"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
@@ -11,8 +10,41 @@ import PROMPT_CODEX from "./prompt/codex_header.txt"
 import PROMPT_TRINITY from "./prompt/trinity.txt"
 import type { Provider } from "@/provider/provider"
 import { Shell } from "@/shell/shell"
+import { Workspace } from "@/control-plane/workspace"
 
 export namespace SystemPrompt {
+  /** 中文注释：为模型提供当前工作目录的轻量目录摘要，优先展示产品 overlay/batch 工作区挂载名，避免它在空上下文里盲搜。 */
+  async function directories() {
+    const workspace = await Workspace.getByDirectory(Instance.directory).catch(() => undefined)
+    if (workspace?.kind === "batch_worktree" && workspace.meta) {
+      const rows = workspace.meta.overlay?.mounts?.map((item) => item.mount_name) ?? workspace.meta.members.map((item) => item.relative_path)
+      const unique = [...new Set(rows)]
+      if (unique.length === 0) return ""
+      return [
+        `  Top-level workspace entries:`,
+        ...unique.slice(0, 12).map((item) => `  - ${item}/`),
+        unique.length > 12 ? `  - ... and ${unique.length - 12} more` : "",
+        `  Use these mounted entry names directly under the current working directory.`,
+        `  Do not use original source paths when calling tools.`,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    }
+
+    const entries = await fs.readdir(Instance.directory, { withFileTypes: true }).catch(() => [])
+    const visible = entries.filter((item) => !item.name.startsWith("."))
+    if (visible.length === 0) return ""
+    return [
+      `  Top-level entries:`,
+      ...visible
+        .slice(0, 12)
+        .map((item) => `  - ${item.name}${item.isDirectory() ? "/" : ""}`),
+      visible.length > 12 ? `  - ... and ${visible.length - 12} more` : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
+  }
+
   export function instructions() {
     return PROMPT_CODEX.trim()
   }
@@ -30,6 +62,7 @@ export namespace SystemPrompt {
   export async function environment(model: Provider.Model) {
     const project = Instance.project
     const shell = Shell.info()
+    const directorySummary = await directories()
     return [
       [
         `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
@@ -44,14 +77,7 @@ export namespace SystemPrompt {
         `  Today's date: ${new Date().toDateString()}`,
         `</env>`,
         `<directories>`,
-        `  ${
-          project.vcs === "git" && false
-            ? await Ripgrep.tree({
-                cwd: Instance.directory,
-                limit: 50,
-              })
-            : ""
-        }`,
+        directorySummary,
         `</directories>`,
       ].join("\n"),
     ]

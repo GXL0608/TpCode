@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import path from "path"
 import { Identifier } from "../../src/id/id"
+import { Instance } from "../../src/project/instance"
 import { Session } from "../../src/session"
 import { and, Database, eq } from "../../src/storage/db"
 import { TpSavedPlanTable } from "../../src/plan/saved-plan.sql"
@@ -90,41 +91,46 @@ async function createMessage(input: { sessionID: string; agent: string; text: st
   const messageID = Identifier.ascending("message")
   const partID = Identifier.ascending("part")
   const created = Date.now()
-  await Session.updateMessage({
-    id: messageID,
-    sessionID: input.sessionID,
-    role: "assistant",
-    time: {
-      created,
-      completed: created,
+  await Instance.provide({
+    directory: root,
+    fn: async () => {
+      await Session.updateMessage({
+        id: messageID,
+        sessionID: input.sessionID,
+        role: "assistant",
+        time: {
+          created,
+          completed: created,
+        },
+        parentID: Identifier.ascending("message"),
+        modelID: "gpt-4.1-mini",
+        providerID: "openai",
+        mode: "chat",
+        agent: input.agent,
+        path: {
+          cwd: root,
+          root,
+        },
+        cost: 0,
+        tokens: {
+          total: 0,
+          input: 0,
+          output: 0,
+          reasoning: 0,
+          cache: {
+            read: 0,
+            write: 0,
+          },
+        },
+      })
+      await Session.updatePart({
+        id: partID,
+        sessionID: input.sessionID,
+        messageID,
+        type: "text",
+        text: input.text,
+      })
     },
-    parentID: Identifier.ascending("message"),
-    modelID: "gpt-4.1-mini",
-    providerID: "openai",
-    mode: "chat",
-    agent: input.agent,
-    path: {
-      cwd: root,
-      root,
-    },
-    cost: 0,
-    tokens: {
-      total: 0,
-      input: 0,
-      output: 0,
-      reasoning: 0,
-      cache: {
-        read: 0,
-        write: 0,
-      },
-    },
-  })
-  await Session.updatePart({
-    id: partID,
-    sessionID: input.sessionID,
-    messageID,
-    type: "text",
-    text: input.text,
   })
   return {
     messageID,

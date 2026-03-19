@@ -28,12 +28,12 @@ export const ProjectRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        const projects = await Project.list()
-        if (!Flag.TPCODE_ACCOUNT_ENABLED) return c.json(projects)
+        if (!Flag.TPCODE_ACCOUNT_ENABLED) return c.json(await Project.list())
         const user_id = c.get("account_user_id" as never) as string | undefined
-        if (!user_id) return c.json(projects)
-        const ids = await AccountContextService.projectIDs(user_id)
-        return c.json(projects.filter((item) => ids.includes(item.id)))
+        if (!user_id) return c.json(await Project.list())
+        const context_product_id = c.get("account_context_product_id" as never) as string | undefined
+        const ids = await AccountContextService.scopedProjectIDs({ user_id, context_product_id })
+        return c.json(await Project.listByIDs(ids))
       },
     )
     .get(

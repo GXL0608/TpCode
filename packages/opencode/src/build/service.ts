@@ -5,7 +5,7 @@ import { $ } from "bun"
 import { ulid } from "ulid"
 import { Archive } from "@/util/archive"
 import { BuildProfile, normalizeBuildProfile } from "./profile"
-import { Database, and, asc, desc, eq, inArray, or } from "@/storage/db"
+import { Database, and, asc, desc, eq, inArray, isNull, or } from "@/storage/db"
 import { TpBuildArtifactTable } from "./artifact.sql"
 import { TpBuildJobTable } from "./job.sql"
 import { TpBuildJobStageTable } from "./job-stage.sql"
@@ -13,6 +13,8 @@ import { ProductSolutionService } from "@/user/product-solution"
 import { TpProductTable } from "@/user/product.sql"
 import { Session } from "@/session"
 import { SessionPrompt } from "@/session/prompt"
+import { MessageV2 } from "@/session/message-v2"
+import { SessionTable } from "@/session/session.sql"
 import { Workspace } from "@/control-plane/workspace"
 import { Instance } from "@/project/instance"
 import { Project } from "@/project/project"
@@ -21,8 +23,13 @@ import { Glob } from "@/util/glob"
 import { Global } from "@/global"
 import { TpSavedPlanTable } from "@/plan/saved-plan.sql"
 import { type ProductSolutionItem } from "@/user/product-solution"
+import { anchorBySolutions } from "@/user/product-anchor"
+import { uniqueSolutionMembers } from "@/user/product-solution-member"
 import { BuildOverlay } from "./overlay"
 import { BuildCompileSandbox } from "./compile-sandbox"
+import { AccountCurrent } from "@/user/current"
+import { withTimeout } from "@/util/timeout"
+import { codingTimeout, timeoutText } from "./timeout"
 
 const stages = ["plan", "coding", "compile", "package"] as const
 type BuildStage = (typeof stages)[number]
@@ -63,6 +70,8 @@ type BuildJobStageItem = {
   time_updated: number
 }
 
+type JobStageRow = typeof TpBuildJobStageTable.$inferSelect
+
 type BuildArtifactItem = {
   id: string
   job_id: string
@@ -79,6 +88,23 @@ type BuildJobDetail = {
   job: BuildJobItem
   stages: BuildJobStageItem[]
   artifacts: BuildArtifactItem[]
+}
+
+type CodingActivity = {
+  summary: string
+  time_created?: number
+}
+
+/** 中文注释：把会话消息按真实创建时间升序排列，避免倒序流在恢复改码和展示状态时覆盖掉最新结果。 */
+async function orderedMessages(session_id: string) {
+  const messages = [] as MessageV2.WithParts[]
+  for await (const message of MessageV2.stream(session_id)) {
+    messages.push(message)
+  }
+  return messages.sort(
+    (a, b) =>
+      (a.info.time.created ?? 0) - (b.info.time.created ?? 0) || a.info.id.localeCompare(b.info.id),
+  )
 }
 
 /** 中文注释：统一把数据库中的 build job 主记录转换为稳定返回结构。 */
@@ -136,12 +162,41 @@ function artifactItem(row: typeof TpBuildArtifactTable.$inferSelect): BuildArtif
   }
 }
 
-/** 中文注释：跨平台执行编译或安装命令，Windows 固定走 PowerShell，其它系统走 sh。 */
-async function shell(command: string, cwd: string) {
-  if (process.platform === "win32") {
-    return $`powershell -NoProfile -NonInteractive -Command ${command}`.quiet().nothrow().cwd(cwd)
+type ShellResult = {
+  exitCode: number
+  stdout: string
+  stderr: string
+  timed_out: boolean
+}
+
+/** 中文注释：跨平台执行编译或安装命令，并在超时后主动终止子进程，避免 build job 无限挂起。 */
+async function shell(command: string, cwd: string, timeout_ms: number): Promise<ShellResult> {
+  const cmd =
+    process.platform === "win32"
+      ? ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+      : ["sh", "-lc", command]
+  const proc = Bun.spawn(cmd, {
+    cwd,
+    env: process.env,
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const stdout = new Response(proc.stdout).text().catch(() => "")
+  const stderr = new Response(proc.stderr).text().catch(() => "")
+  let timed_out = false
+  const timer = setTimeout(() => {
+    timed_out = true
+    proc.kill()
+  }, timeout_ms)
+  const exitCode = await proc.exited.catch(() => 1)
+  clearTimeout(timer)
+  const [out, err] = await Promise.all([stdout, stderr])
+  return {
+    exitCode,
+    stdout: out.trim(),
+    stderr: err.trim(),
+    timed_out,
   }
-  return $`sh -lc ${command}`.quiet().nothrow().cwd(cwd)
 }
 
 /** 中文注释：从 AI 回复中抽取最后一段文本，作为 build job 的计划快照。 */
@@ -157,6 +212,219 @@ function outputName(template: string, input: { solution: string; job: string }) 
     .replaceAll("{{job}}", input.job)
 }
 
+/** 中文注释：读取编译沙盒准备阶段的超时时间，避免共享盘或 worktree 操作把任务长期卡死。 */
+function compilePrepareTimeout() {
+  const value = Number(process.env.TPCODE_BUILD_COMPILE_PREP_TIMEOUT_MS ?? "300000")
+  if (!Number.isFinite(value) || value <= 0) return 300000
+  return value
+}
+
+/** 中文注释：读取编译与安装命令的超时时间，超时后主动终止子进程并回写友好错误。 */
+function compileCommandTimeout() {
+  const value = Number(process.env.TPCODE_BUILD_COMPILE_COMMAND_TIMEOUT_MS ?? "900000")
+  if (!Number.isFinite(value) || value <= 0) return 900000
+  return value
+}
+
+/** 中文注释：读取打包阶段的超时时间，避免压缩或产物收集异常时任务无限挂起。 */
+function packageTimeout() {
+  const value = Number(process.env.TPCODE_BUILD_PACKAGE_TIMEOUT_MS ?? "300000")
+  if (!Number.isFinite(value) || value <= 0) return 300000
+  return value
+}
+
+/** 中文注释：把构建会话中的最近消息整理成用户可读的活动摘要，供构建中心实时展示。 */
+function activity(input: { message: MessageV2.WithParts }) {
+  const lines = [] as string[]
+  for (const part of input.message.parts) {
+    if (part.type === "tool") {
+      const status = part.state?.status === "completed" ? "完成" : part.state?.status === "error" ? "失败" : "执行中"
+      lines.push(`工具 ${part.tool} ${status}`)
+      continue
+    }
+    if (part.type === "patch") {
+      const files = part.files?.flatMap((item) => item.file ? [item.file] : [])
+      lines.push(files && files.length > 0 ? `已生成补丁：${files.join("、")}` : "已生成补丁")
+      continue
+    }
+    if (part.type === "reasoning" && part.text?.trim()) {
+      lines.push(`思考：${part.text.trim().split("\n")[0]}`)
+      continue
+    }
+    if (part.type === "text" && part.text?.trim()) {
+      lines.push(`回复：${part.text.trim().split("\n")[0]}`)
+      continue
+    }
+  }
+  if (lines.length === 0 && input.message.info.role === "assistant") {
+    lines.push("模型正在继续处理当前改码步骤")
+  }
+  return {
+    summary: lines.join("；"),
+    time_created: input.message.info.time.completed ?? input.message.info.time.created,
+  } satisfies CodingActivity
+}
+
+/** 中文注释：读取构建会话最近的活动摘要和当前 overlay 变更，避免前端依赖 session 接口跨产品读取。 */
+async function codingSnapshot(input: { session_id?: string; stage?: BuildJobStageItem }) {
+  const session_id = input.session_id?.trim()
+  if (!session_id) return
+  const overlay = await BuildOverlay.load(session_id).catch(() => undefined)
+  const changes = overlay ? await BuildOverlay.listChanges(overlay).catch(() => []) : []
+  const messages = (await orderedMessages(session_id)).slice(-8)
+  const recent_activity = messages
+    .filter((message) => message.info.role === "assistant")
+    .slice(-4)
+    .map((message) => ({
+      message_id: message.info.id,
+      ...activity({ message }),
+    }))
+    .filter((item) => item.summary.trim())
+  const current = messages[messages.length - 1]
+  const current_status =
+    current?.info.role === "assistant" && current.parts.length === 0
+      ? "模型正在生成下一步改码动作"
+      : recent_activity[recent_activity.length - 1]?.summary
+  return {
+    ...(input.stage?.detail_json ?? {}),
+    current_status,
+    recent_activity,
+    change_count: changes.length,
+    changes,
+  } satisfies Record<string, unknown>
+}
+
+/** 中文注释：当 overlay manifest 暂时未刷出时，从会话中的 patch/edit 记录补偿恢复真实改动文件。 */
+async function recoverCodingChanges(input: { overlay: BuildOverlay.Info; session_id: string }) {
+  const existing = await BuildOverlay.listChanges(input.overlay).catch(() => [] as BuildOverlay.Change[])
+  if (existing.length > 0) return existing
+  const files = [] as string[]
+  const replay = new Map<string, { kind: "write" | "delete"; content?: string }>()
+  for (const message of await orderedMessages(input.session_id)) {
+    if (message.info.role !== "assistant") continue
+    for (const part of message.parts) {
+      if (part.type === "patch") {
+        files.push(...part.files)
+        continue
+      }
+      if (part.type !== "tool") continue
+      if (part.state?.status !== "completed") continue
+      const filePath = typeof part.state?.input?.filePath === "string" ? part.state.input.filePath : undefined
+      if (part.tool === "edit") {
+        if (!filePath) continue
+        files.push(filePath)
+        const after = typeof part.state.metadata?.filediff?.after === "string" ? part.state.metadata.filediff.after : undefined
+        if (after === undefined) continue
+        replay.set(filePath, {
+          kind: "write",
+          content: after,
+        })
+        continue
+      }
+      if (part.tool === "write") {
+        if (!filePath) continue
+        files.push(filePath)
+        const content = typeof part.state.input?.content === "string" ? part.state.input.content : undefined
+        if (content === undefined) continue
+        replay.set(filePath, {
+          kind: "write",
+          content,
+        })
+        continue
+      }
+      if (part.tool !== "apply_patch") continue
+      const patched = Array.isArray(part.state.metadata?.files) ? part.state.metadata.files : []
+      for (const item of patched) {
+        const target =
+          typeof item?.movePath === "string"
+            ? item.movePath
+            : typeof item?.filePath === "string"
+              ? item.filePath
+              : undefined
+        if (!target) continue
+        files.push(target)
+        if (item?.type === "delete") {
+          replay.set(target, {
+            kind: "delete",
+          })
+          continue
+        }
+        const after = typeof item?.after === "string" ? item.after : undefined
+        if (after === undefined) continue
+        replay.set(target, {
+          kind: "write",
+          content: after,
+        })
+      }
+    }
+  }
+  for (const [filePath, item] of replay) {
+    const target = BuildOverlay.remapSourcePath({
+      overlay: input.overlay,
+      filePath,
+    })
+    if (item.kind === "delete") {
+      await BuildOverlay.deletePath({
+        overlay: input.overlay,
+        filePath: target,
+      }).catch(() => undefined)
+      continue
+    }
+    if (item.content === undefined) continue
+    await BuildOverlay.writeText({
+      overlay: input.overlay,
+      filePath: target,
+      content: item.content,
+    }).catch(() => undefined)
+  }
+  if (files.length === 0 && replay.size === 0) return existing
+  const restored = await BuildOverlay.recordPaths({
+    overlay: input.overlay,
+    files: [...files, ...replay.keys()],
+  }).catch(() => [] as BuildOverlay.Change[])
+  const recovered = await BuildOverlay.listChanges(input.overlay).catch(() => [] as BuildOverlay.Change[])
+  if (recovered.length > 0) return recovered
+  return restored
+}
+
+/** 中文注释：改码超时后做短暂重试，尽量把刚落盘但尚未被状态流感知的真实改动稳定恢复出来。 */
+async function recoverTimedOutCoding(input: {
+  overlay: BuildOverlay.Info
+  session_id: string
+  stage: BuildJobStageItem
+  attempts?: number
+  delay_ms?: number
+}) {
+  let snapshot = await codingSnapshot({
+    session_id: input.session_id,
+    stage: input.stage,
+  })
+  let changes = [] as BuildOverlay.Change[]
+  for (const attempt of Array.from({ length: input.attempts ?? 6 }, (_, index) => index)) {
+    if (attempt > 0) await Bun.sleep(input.delay_ms ?? 50)
+    const recovered = await recoverCodingChanges({
+      overlay: input.overlay,
+      session_id: input.session_id,
+    }).catch(() => [] as BuildOverlay.Change[])
+    snapshot = await codingSnapshot({
+      session_id: input.session_id,
+      stage: input.stage,
+    })
+    const snapshot_changes = Array.isArray(snapshot?.changes) ? (snapshot.changes as BuildOverlay.Change[]) : []
+    changes = recovered.length >= snapshot_changes.length ? recovered : snapshot_changes
+    if (changes.length > 0) {
+      return {
+        changes,
+        snapshot,
+      }
+    }
+  }
+  return {
+    changes,
+    snapshot,
+  }
+}
+
 /** 中文注释：为解决方案 roots 收集显式批量成员，兼容单仓、父目录扫描和虚拟目录组。 */
 async function members(solution: ProductSolutionItem) {
   const list = [] as Array<{
@@ -168,9 +436,9 @@ async function members(solution: ProductSolutionItem) {
   }>
   for (const root of solution.roots.filter((item) => item.enabled)) {
     if (root.root_type === "single_repo") {
-      const name = root.mount_name?.trim() || root.display_name?.trim() || path.basename(root.directory)
+      const name = root.mount_name?.trim() || root.display_name?.trim() || Filesystem.baseName(root.directory)
       list.push({
-        directory: root.directory,
+        directory: Filesystem.accessPath(root.directory),
         name,
         relative_path: name,
         solution_id: solution.id,
@@ -179,12 +447,13 @@ async function members(solution: ProductSolutionItem) {
       continue
     }
     if (root.root_type === "parent_batch") {
-      const entries = await fs.readdir(root.directory, { withFileTypes: true }).catch(() => [])
+      const sourceRoot = Filesystem.accessPath(root.directory)
+      const entries = await fs.readdir(sourceRoot, { withFileTypes: true }).catch(() => [])
       const children = await Promise.all(
         entries
           .filter((entry) => entry.isDirectory())
           .map(async (entry) => {
-            const directory = path.join(root.directory, entry.name)
+            const directory = path.join(sourceRoot, entry.name)
             if (!(await Filesystem.exists(path.join(directory, ".git")))) return
             return {
               directory,
@@ -200,12 +469,13 @@ async function members(solution: ProductSolutionItem) {
     }
     const directories = root.meta?.directories ?? []
     for (const [index, directory] of directories.entries()) {
+      const source = Filesystem.accessPath(directory)
       const name =
         root.mount_name?.trim() && directories.length === 1
           ? root.mount_name.trim()
-          : path.basename(directory) || `${root.display_name?.trim() || "member"}-${index + 1}`
+          : Filesystem.baseName(directory) || `${root.display_name?.trim() || "member"}-${index + 1}`
       list.push({
-        directory,
+        directory: source,
         name,
         relative_path: name,
         solution_id: solution.id,
@@ -213,25 +483,115 @@ async function members(solution: ProductSolutionItem) {
       })
     }
   }
+  return uniqueSolutionMembers(list)
+}
+
+/** 中文注释：把多个解决方案的成员目录合并去重，供产品级 build 在同一沙盒中统一改码。 */
+async function productMembers(solutions: ProductSolutionItem[]) {
+  const rows = uniqueSolutionMembers((await Promise.all(solutions.map((item) => members(item)))).flat())
   const seen = new Set<string>()
-  return list.filter((item) => {
-    const key = path.resolve(item.directory)
+  return rows.filter((item) => {
+    const key = Filesystem.windowsPath(Filesystem.accessPath(item.directory)).toLowerCase()
     if (seen.has(key)) return false
     seen.add(key)
     return true
   })
 }
 
-/** 中文注释：把多个解决方案的成员目录合并去重，供产品级 build 在同一沙盒中统一改码。 */
-async function productMembers(solutions: ProductSolutionItem[]) {
-  const rows = (await Promise.all(solutions.map((item) => members(item)))).flat()
-  const seen = new Set<string>()
-  return rows.filter((item) => {
-    const key = Filesystem.windowsPath(path.resolve(item.directory)).toLowerCase()
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+type CodingHint = {
+  solution_id: string
+  solution_code: string
+  mount_name: string
+  source_directory: string
+  stack: string
+  compile_targets: string[]
+  candidate_files: string[]
+}
+
+/** 中文注释：从编译命令中提取解决方案或项目文件路径，供编码提示和详情展示复用。 */
+function compileTargets(command: string) {
+  const values = [...command.matchAll(/['"]([^'"]+\.(?:sln|csproj|vbproj|fsproj|props|targets))['"]/gi)]
+    .map((item) => item[1]?.trim())
+    .filter((item): item is string => Boolean(item))
+    .map((item) =>
+      item
+        .replaceAll("\\", "/")
+        .replace(/\/+/g, "/")
+        .replace(/^[.]\//, "")
+        .replace(/^\/+/, ""),
+    )
+  return [...new Set(values)]
+}
+
+/** 中文注释：按编译命令的特征推断技术栈，帮助模型更快选择正确的搜索策略。 */
+function stack(profile: ReturnType<typeof normalizeBuildProfile>) {
+  const command = profile.compile_command.toLowerCase()
+  if (command.includes(".csproj") || command.includes(".sln") || command.includes("msbuild") || command.includes("dotnet")) {
+    return ".NET/C#"
+  }
+  if (command.includes("mvn") || command.includes("gradle") || command.includes("pom.xml")) return "Java"
+  if (command.includes("package.json") || command.includes("pnpm") || command.includes("npm ") || command.includes("vite")) {
+    return "Node/Web"
+  }
+  return "通用项目"
+}
+
+/** 中文注释：针对“登录页”等高频需求预扫候选文件，避免模型在大型代码库里长时间盲搜。 */
+async function candidates(input: {
+  text: string
+  members: Awaited<ReturnType<typeof productMembers>>
+}) {
+  const query = input.text.toLowerCase()
+  if (!/(登录|login)/i.test(query)) return [] as string[]
+  const patterns = [
+    "**/frmLogin*.cs",
+    "**/*Login*.cs",
+    "**/*login*.cs",
+    "**/*Login*.Designer.cs",
+    "**/*login*.Designer.cs",
+    "**/*Login*.aspx",
+    "**/*login*.aspx",
+  ]
+  const rows = [] as string[]
+  for (const member of input.members) {
+    for (const pattern of patterns) {
+      const matches = await Glob.scan(pattern, {
+        cwd: member.directory,
+        absolute: false,
+        include: "file",
+      })
+      for (const match of matches) {
+        rows.push(path.posix.join(member.relative_path, match.replaceAll(path.sep, "/")))
+        if (rows.length >= 8) return [...new Set(rows)]
+      }
+    }
+  }
+  return [...new Set(rows)]
+}
+
+/** 中文注释：把解决方案的技术栈、编译入口和候选文件整理成编码提示，降低真实项目中的盲搜开销。 */
+async function codingHints(input: {
+  text: string
+  solutions: ProductSolutionItem[]
+  members: Awaited<ReturnType<typeof productMembers>>
+}) {
+  return Promise.all(input.solutions.map(async (solution) => {
+    const profile = normalizeBuildProfile(solution.build_profile)
+    const mounts = input.members.filter((item) => item.solution_id === solution.id)
+    const mount_name = mounts[0]?.relative_path ?? solution.code
+    return {
+      solution_id: solution.id,
+      solution_code: solution.code,
+      mount_name,
+      source_directory: mounts[0]?.directory ?? "",
+      stack: stack(profile),
+      compile_targets: compileTargets(profile.compile_command),
+      candidate_files: await candidates({
+        text: input.text,
+        members: mounts,
+      }),
+    } satisfies CodingHint
+  }))
 }
 
 /** 中文注释：识别默认占位编译命令，防止管理员尚未配置真实编译命令时被误判为编译成功。 */
@@ -239,10 +599,59 @@ function placeholder(command: string) {
   return /^echo\s+(['"])?build\1$/i.test(command.trim())
 }
 
+/** 中文注释：识别只适用于 Windows PowerShell/MSBuild 的编译脚本，非 Windows 节点需要提前给出友好错误。 */
+function windowsOnly(command: string) {
+  if (/msbuild(?:\.exe)?/i.test(command)) return true
+  if (/(?:^|[;\s])(New-Item|Copy-Item|Remove-Item)\b/i.test(command)) return true
+  if (/\$[A-Za-z_][A-Za-z0-9_]*\s*=/.test(command)) return true
+  return /(?:^|[;\s])&\s*\$[A-Za-z_][A-Za-z0-9_]*/.test(command)
+}
+
+/** 中文注释：对已在执行中的 saved plan 构建任务做去重，避免同一计划在构建中心被重复创建。 */
+async function activeSavedPlanJob(input: {
+  product_id: string
+  source_id: string
+  solution_scope: string
+  solution_id: string
+}) {
+  return Database.use((db) =>
+    db
+      .select()
+      .from(TpBuildJobTable)
+      .where(
+        and(
+          eq(TpBuildJobTable.source_type, "saved_plan"),
+          eq(TpBuildJobTable.product_id, input.product_id),
+          eq(TpBuildJobTable.source_id, input.source_id),
+          eq(TpBuildJobTable.solution_scope, input.solution_scope),
+          eq(TpBuildJobTable.solution_id, input.solution_id),
+          inArray(TpBuildJobTable.status, ["pending", "running"]),
+        ),
+      )
+      .orderBy(desc(TpBuildJobTable.time_created))
+      .get(),
+  )
+}
+
+/** 中文注释：当当前账号只有产品上下文时，临时补齐锚点项目上下文，确保 build 期间创建 session 不会被权限链误拦截。 */
+function withAnchorProjectContext<R>(project_id: string, fn: () => Promise<R>) {
+  const actor = AccountCurrent.optional()
+  if (!actor) return fn()
+  if (actor.context_project_id) return fn()
+  return AccountCurrent.provide(
+    {
+      ...actor,
+      context_project_id: project_id,
+    },
+    fn,
+  )
+}
+
 /** 中文注释：把解决方案配置的 workdir 解析为沙盒内真实目录，不存在时直接返回明确错误。 */
 async function workdirs(input: {
   workspaceDirectory: string
   workdirs: string[]
+  mounts?: string[]
 }) {
   const items = [] as Array<{ workdir: string; cwd: string }>
   const missing = [] as string[]
@@ -254,6 +663,29 @@ async function workdirs(input: {
     }
     items.push({ workdir, cwd })
   }
+  if (missing.length === 0 && items.length > 0) {
+    return {
+      ok: true as const,
+      items,
+      warnings: [] as string[],
+      requested: input.workdirs,
+      resolved: items.map((item) => item.workdir),
+    }
+  }
+  const mounts = [...new Set((input.mounts ?? []).map((item) => item.trim()).filter(Boolean))]
+  if (items.length === 0 && mounts.length === 1) {
+    const fallback = mounts[0]!
+    const cwd = path.join(input.workspaceDirectory, fallback)
+    if (await Filesystem.isDir(cwd)) {
+      return {
+        ok: true as const,
+        items: [{ workdir: fallback, cwd }],
+        warnings: [`配置的 workdir 不存在，已自动回退到唯一挂载目录 ${fallback}`],
+        requested: input.workdirs,
+        resolved: [fallback],
+      }
+    }
+  }
   if (missing.length > 0 || items.length === 0) {
     return {
       ok: false as const,
@@ -264,6 +696,9 @@ async function workdirs(input: {
   return {
     ok: true as const,
     items,
+    warnings: [] as string[],
+    requested: input.workdirs,
+    resolved: items.map((item) => item.workdir),
   }
 }
 
@@ -277,6 +712,26 @@ async function runSolutions(job: JobRow) {
   return item ? [item] : []
 }
 
+/** 中文注释：根据本次改码实际变更，筛出真正需要进入编译和打包的解决方案，避免未改动方案无意义地耗时编译。 */
+function changedCompileTargets(input: { solutions: ProductSolutionItem[]; changes: BuildOverlay.Change[] }) {
+  const ids = new Set(input.changes.map((item) => item.solution_id).filter(Boolean))
+  if (ids.size === 0) return { items: input.solutions, skipped: [] as Array<Record<string, unknown>> }
+  const items = input.solutions.filter((item) => ids.has(item.id))
+  if (items.length === 0) return { items: input.solutions, skipped: [] as Array<Record<string, unknown>> }
+  return {
+    items,
+    skipped: input.solutions
+      .filter((item) => !ids.has(item.id))
+      .map((item) => ({
+        solution_id: item.id,
+        solution_code: item.code,
+        status: "skipped",
+        reason: "solution_unchanged",
+        message: "本次改码未涉及该解决方案，已跳过编译与打包。",
+      })),
+  }
+}
+
 /** 中文注释：把匹配到的编译产物复制到 staging 目录，便于后续统一压缩打包。 */
 async function stageArtifacts(input: {
   workspaceDirectory: string
@@ -285,9 +740,9 @@ async function stageArtifacts(input: {
   build_profile: ReturnType<typeof normalizeBuildProfile>
 }) {
   const files = new Set<string>()
+  const include = input.build_profile.artifact_include.length > 0 ? input.build_profile.artifact_include : ["**/*"]
   for (const workdir of input.workdirs) {
     const cwd = path.join(input.workspaceDirectory, workdir)
-    const include = input.build_profile.artifact_include.length > 0 ? input.build_profile.artifact_include : ["**/*"]
     for (const pattern of include) {
       const matches = await Glob.scan(pattern, {
         cwd,
@@ -296,6 +751,24 @@ async function stageArtifacts(input: {
         dot: true,
       })
       for (const item of matches) files.add(item)
+    }
+  }
+  const warnings = [] as string[]
+  const matched_patterns = [...include]
+  if (files.size === 0) {
+    for (const workdir of input.workdirs) {
+      const cwd = path.join(input.workspaceDirectory, workdir)
+      const matches = await Glob.scan(".ai__build/**/*", {
+        cwd,
+        absolute: true,
+        include: "file",
+        dot: true,
+      })
+      for (const item of matches) files.add(item)
+    }
+    if (files.size > 0) {
+      matched_patterns.splice(0, matched_patterns.length, ".ai__build/**/*")
+      warnings.push("配置的 artifact_include 未匹配到产物，已自动回退到 .ai__build 目录")
     }
   }
   const excluded = [...files].filter((item) => {
@@ -313,7 +786,7 @@ async function stageArtifacts(input: {
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.copyFile(item, target)
   }
-  return { ok: true as const, files: [...files] }
+  return { ok: true as const, files: [...files], warnings, matched_patterns }
 }
 
 /** 中文注释：创建或更新单个阶段记录，保证同一 job 每个阶段只有一条最新主记录。 */
@@ -367,6 +840,31 @@ async function markStage(input: {
   )
 }
 
+/** 中文注释：读取指定任务的单个阶段原始记录，供卡住任务的恢复判断复用。 */
+async function stageRow(input: { job_id: string; stage: BuildStage }) {
+  return Database.use((db) =>
+    db
+      .select()
+      .from(TpBuildJobStageTable)
+      .where(and(eq(TpBuildJobStageTable.job_id, input.job_id), eq(TpBuildJobStageTable.stage, input.stage)))
+      .get(),
+  )
+}
+
+/** 中文注释：判断 coding 阶段是否已经超过预期超时时间且长时间无心跳，避免构建中心出现永久 running。 */
+async function staleCoding(input: { job: JobRow; timeout_ms: number; grace_ms?: number }) {
+  if (input.job.status !== "running" || input.job.current_stage !== "coding" || !input.job.started) return
+  const stage = await stageRow({
+    job_id: input.job.id,
+    stage: "coding",
+  })
+  if (!stage) return
+  const stale_after = input.timeout_ms + (input.grace_ms ?? 5000)
+  const heartbeat = Math.max(stage.time_updated, input.job.time_updated)
+  if (Date.now() - heartbeat <= stale_after) return
+  return stage
+}
+
 /** 中文注释：统一回写 job 当前状态和当前阶段，供列表页轮询时直接读取。 */
 async function updateJob(input: {
   job_id: string
@@ -398,6 +896,48 @@ async function updateJob(input: {
   )
 }
 
+/** 中文注释：统一回写编译阶段运行中的详细状态，让构建中心在后台执行时也能看到当前卡在哪一步。 */
+async function markCompileRunning(input: {
+  job_id: string
+  solutions: Array<Record<string, unknown>>
+  active: Record<string, unknown>
+}) {
+  await markStage({
+    job_id: input.job_id,
+    stage: "compile",
+    status: "running",
+    detail_json: {
+      solutions: input.solutions,
+      active: input.active,
+    },
+  })
+  await updateJob({
+    job_id: input.job_id,
+    current_stage: "compile",
+  })
+}
+
+/** 中文注释：统一回写打包阶段运行中的详细状态，让前端明确知道当前正在收集哪个方案的产物。 */
+async function markPackageRunning(input: {
+  job_id: string
+  solutions: Array<Record<string, unknown>>
+  active: Record<string, unknown>
+}) {
+  await markStage({
+    job_id: input.job_id,
+    stage: "package",
+    status: "running",
+    detail_json: {
+      solutions: input.solutions,
+      active: input.active,
+    },
+  })
+  await updateJob({
+    job_id: input.job_id,
+    current_stage: "package",
+  })
+}
+
 /** 中文注释：统一读取 build job 详情，供服务内部复用和接口层直接输出。 */
 async function detail(job_id: string) {
   const row = await Database.use((db) => db.select().from(TpBuildJobTable).where(eq(TpBuildJobTable.id, job_id)).get())
@@ -410,9 +950,23 @@ async function detail(job_id: string) {
       db.select().from(TpBuildArtifactTable).where(eq(TpBuildArtifactTable.job_id, job_id)).orderBy(asc(TpBuildArtifactTable.time_created)).all(),
     ),
   ])
+  const stages = stage_rows.map(stageItem)
+  const live = row.current_stage === "coding" && row.status === "running"
+    ? await codingSnapshot({
+        session_id: row.session_id ?? undefined,
+        stage: stages.find((item) => item.stage === "coding"),
+      })
+    : undefined
   return {
     job: jobItem(row),
-    stages: stage_rows.map(stageItem),
+    stages: stages.map((item) =>
+      item.stage === "coding" && live
+        ? {
+            ...item,
+            detail_json: live,
+          }
+        : item,
+    ),
     artifacts: artifact_rows.map(artifactItem),
   } satisfies BuildJobDetail
 }
@@ -424,6 +978,98 @@ async function cleanupCompileSandboxes(items: Array<{ workspace_id: string }>) {
   }
 }
 
+/** 中文注释：会话式 build job 优先复用当前会话绑定的 overlay 工作区，不存在时再补建并回写会话上下文。 */
+async function ensureBuildSessionContext(input: {
+  job_id: string
+  session_id: string
+  project_id: string
+  project_worktree: string
+  product_name: string
+  members: Awaited<ReturnType<typeof productMembers>>
+}) {
+  const session = await Database.use((db) =>
+    db
+      .select()
+      .from(SessionTable)
+      .where(and(eq(SessionTable.id, input.session_id), isNull(SessionTable.time_deleted)))
+      .get(),
+  )
+  if (!session) return { ok: false as const, code: "session_missing" as const }
+
+  const current = session.workspace_id ? await Workspace.get(session.workspace_id).catch(() => undefined) : undefined
+  const overlay = current ? BuildOverlay.fromWorkspace(current) : undefined
+  if (current && overlay) {
+    if (session.directory !== current.directory || session.workspace_directory !== current.directory) {
+      await Database.use((db) =>
+        db
+          .update(SessionTable)
+          .set({
+            directory: current.directory,
+            workspace_directory: current.directory,
+            workspace_kind: current.kind,
+            workspace_status: "ready",
+            workspace_cleanup_status: "none",
+            time_updated: Date.now(),
+          })
+          .where(eq(SessionTable.id, input.session_id))
+          .run(),
+      )
+    }
+    await updateJob({
+      job_id: input.job_id,
+      session_id: input.session_id,
+      workspace_id: current.id,
+    })
+    return {
+      ok: true as const,
+      session_id: input.session_id,
+      workspace: current,
+      overlay,
+    }
+  }
+
+  const workspace = await Instance.provide({
+    directory: input.project_worktree,
+    fn: () =>
+      Workspace.createOverlay({
+        projectID: input.project_id,
+        sourceRoots: [...new Set(input.members.map((item) => item.directory))],
+        members: input.members,
+        name: [input.product_name, input.job_id].join("-"),
+      }),
+  })
+  const next_overlay = BuildOverlay.fromWorkspace(workspace)
+  if (!next_overlay) return { ok: false as const, code: "overlay_workspace_missing" as const }
+
+  await Database.use((db) =>
+    db
+      .update(SessionTable)
+      .set({
+        directory: workspace.directory,
+        workspace_id: workspace.id,
+        workspace_directory: workspace.directory,
+        workspace_branch: workspace.branch,
+        workspace_kind: workspace.kind,
+        workspace_status: "ready",
+        workspace_cleanup_status: "none",
+        time_updated: Date.now(),
+      })
+      .where(eq(SessionTable.id, input.session_id))
+      .run(),
+  )
+  await updateJob({
+    job_id: input.job_id,
+    session_id: input.session_id,
+    workspace_id: workspace.id,
+  })
+  return {
+    ok: true as const,
+    session_id: input.session_id,
+    workspace,
+    overlay: next_overlay,
+  }
+}
+
 export namespace BuildJobService {
   export async function create(input: {
     source_type: "prompt" | "saved_plan"
@@ -431,12 +1077,19 @@ export namespace BuildJobService {
     solution_id?: string
     prompt_text?: string
     saved_plan_id?: string
+    session_id?: string
     runtime_model?: {
       providerID: string
       modelID: string
     }
   }) {
-    const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
+    const product = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, input.product_id), isNull(TpProductTable.time_deleted)))
+        .get(),
+    )
     if (!product) return { ok: false as const, code: "product_missing" as const }
     const solution_scope = input.solution_id?.trim() ? "single" : "product_all"
     const solution = await ProductSolutionService.resolve({
@@ -457,6 +1110,29 @@ export namespace BuildJobService {
       if (!saved) return { ok: false as const, code: "saved_plan_missing" as const }
       plan_content = saved.plan_content
     }
+    if (input.session_id?.trim()) {
+      const session = await Database.use((db) =>
+        db
+          .select({ id: SessionTable.id })
+          .from(SessionTable)
+          .where(and(eq(SessionTable.id, input.session_id!.trim()), isNull(SessionTable.time_deleted)))
+          .get(),
+      )
+      if (!session) return { ok: false as const, code: "session_missing" as const }
+    }
+    const active =
+      input.source_type === "saved_plan" && source_id
+        ? await activeSavedPlanJob({
+            product_id: input.product_id,
+            source_id,
+            solution_scope,
+            solution_id: solution.id,
+          })
+        : undefined
+    if (active) {
+      const reused = await detail(active.id)
+      if (reused) return { ok: true as const, job: reused.job, reused: true as const }
+    }
     const now = Date.now()
     const id = ulid()
     await Database.use((db) =>
@@ -472,6 +1148,7 @@ export namespace BuildJobService {
           solution_id: solution.id,
           runtime_provider_id: input.runtime_model?.providerID,
           runtime_model_id: input.runtime_model?.modelID,
+          session_id: input.session_id?.trim(),
           status: "pending",
           current_stage: null,
           plan_content,
@@ -483,7 +1160,7 @@ export namespace BuildJobService {
     )
     const next = await detail(id)
     if (!next) return { ok: false as const, code: "build_job_missing" as const }
-    return { ok: true as const, job: next.job }
+    return { ok: true as const, job: next.job, reused: false as const }
   }
 
   export async function createBatch(input: {
@@ -496,6 +1173,8 @@ export namespace BuildJobService {
     }
   }) {
     const jobs = [] as BuildJobItem[]
+    let created_count = 0
+    let reused_count = 0
     for (const saved_plan_id of input.saved_plan_ids) {
       const created = await create({
         source_type: "saved_plan",
@@ -506,8 +1185,10 @@ export namespace BuildJobService {
       })
       if (!created.ok) return created
       jobs.push(created.job)
+      if (created.reused) reused_count += 1
+      if (!created.reused) created_count += 1
     }
-    return { ok: true as const, jobs }
+    return { ok: true as const, jobs, created_count, reused_count }
   }
 
   export async function list(input?: {
@@ -539,10 +1220,20 @@ export namespace BuildJobService {
         .limit(limit)
         .all()
     })
+    void Promise.all(
+      rows.map(async (row) => {
+        if (!(await staleCoding({ job: row, timeout_ms: codingTimeout() }))) return
+        await run(row.id, { coding_timeout_ms: codingTimeout() }).catch(() => undefined)
+      }),
+    ).catch(() => undefined)
     return rows.map(jobItem)
   }
 
   export async function get(job_id: string) {
+    const row = await Database.use((db) => db.select().from(TpBuildJobTable).where(eq(TpBuildJobTable.id, job_id)).get())
+    if (row && (await staleCoding({ job: row, timeout_ms: codingTimeout() }))) {
+      void run(job_id, { coding_timeout_ms: codingTimeout() }).catch(() => undefined)
+    }
     return detail(job_id)
   }
 
@@ -553,13 +1244,37 @@ export namespace BuildJobService {
   }
 
   /** 中文注释：执行单条 build job，按计划、编码、编译、打包四阶段串行推进。 */
-  export async function run(job_id: string) {
+  export async function run(
+    job_id: string,
+    options?: {
+      coding_timeout_ms?: number
+      compile_prepare_timeout_ms?: number
+      compile_command_timeout_ms?: number
+      package_timeout_ms?: number
+    },
+  ) {
     const job = await Database.use((db) => db.select().from(TpBuildJobTable).where(eq(TpBuildJobTable.id, job_id)).get())
     if (!job) return { ok: false as const, code: "build_job_missing" as const }
+    const timeout_ms = options?.coding_timeout_ms ?? codingTimeout()
+    const compile_prepare_timeout_ms = options?.compile_prepare_timeout_ms ?? compilePrepareTimeout()
+    const compile_command_timeout_ms = options?.compile_command_timeout_ms ?? compileCommandTimeout()
+    const package_timeout_ms = options?.package_timeout_ms ?? packageTimeout()
     if (job.status === "completed") return { ok: true as const, detail: await detail(job_id) }
-    if (job.started && job.status === "running") return { ok: false as const, code: "build_job_running" as const }
+    const stale_stage = await staleCoding({
+      job,
+      timeout_ms,
+    })
+    if (job.started && job.status === "running" && !stale_stage) {
+      return { ok: false as const, code: "build_job_running" as const }
+    }
 
-    const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, job.product_id)).get())
+    const product = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, job.product_id), isNull(TpProductTable.time_deleted)))
+        .get(),
+    )
     if (!product) return { ok: false as const, code: "product_missing" as const }
     const solutions = await runSolutions(job)
     if (solutions.length === 0) return { ok: false as const, code: "solution_missing" as const }
@@ -581,137 +1296,401 @@ export namespace BuildJobService {
     }>
 
     try {
-      const project = await Project.get(product.project_id)
+      const anchor = (await anchorBySolutions(solutions)) ??
+        (product.project_id
+          ? {
+              project_id: product.project_id,
+              worktree: undefined,
+              vcs: undefined,
+            }
+          : undefined)
+      if (!anchor?.project_id) return { ok: false as const, code: "solution_project_missing" as const }
+      const project = await Project.get(anchor.project_id)
       if (!project) return { ok: false as const, code: "project_missing" as const }
 
-      const workspace = await Instance.provide({
-        directory: project.worktree,
-        fn: () =>
-          Workspace.createOverlay({
-            projectID: project.id,
-            sourceRoots: [...new Set(solutions.flatMap((item) => item.roots.map((root) => root.directory)))],
-            members: member_rows,
-            name: [product.name, job.id].join("-"),
-          }),
-      })
-      const overlay = BuildOverlay.fromWorkspace(workspace)
-      if (!overlay) return { ok: false as const, code: "overlay_workspace_missing" as const }
-
-      const session = await Instance.provide({
-        directory: project.worktree,
-        fn: () =>
-          Session.createNext({
-            directory: workspace.directory,
-            title: `Build Job ${product.name}`,
-            workspaceID: workspace.id,
-            workspaceDirectory: workspace.directory,
-            workspaceBranch: workspace.branch ?? undefined,
-            workspaceKind: workspace.kind,
-            workspaceStatus: "ready",
-            workspaceCleanupStatus: "none",
-          }),
-      })
-
-      await updateJob({
-        job_id,
-        session_id: session.id,
-        workspace_id: workspace.id,
-      })
-      if (job.runtime_provider_id && job.runtime_model_id) {
-        await Session.setRuntimeModel(session.id, {
-          providerID: job.runtime_provider_id,
-          modelID: job.runtime_model_id,
-        })
-      }
-
-      await markStage({
-        job_id,
-        stage: "plan",
-        status: "completed",
-        detail_json: {
-          source_type: job.source_type,
-          solution_scope: job.solution_scope,
-          solution_ids: solutions.map((item) => item.id),
-          runtime_model:
-            job.runtime_provider_id && job.runtime_model_id
-              ? {
-                  providerID: job.runtime_provider_id,
-                  modelID: job.runtime_model_id,
-                }
-              : undefined,
-          prompt_text: job.prompt_text ?? undefined,
-          plan_content: job.plan_content ?? undefined,
-        },
-      })
-      await updateJob({
-        job_id,
-        current_stage: "coding",
-        plan_content: job.plan_content ?? job.prompt_text ?? undefined,
-      })
-
-      await markStage({
-        job_id,
-        stage: "coding",
-        status: "running",
-      })
-      const message = await Instance.provide({
-        directory: workspace.directory,
-        fn: () =>
-          SessionPrompt.prompt({
-            sessionID: session.id,
-            agent: "build",
-            parts: [
-              {
-                type: "text",
-                text: [
-                  "请先输出简要计划，再根据计划直接修改代码。",
-                  "本轮只需要完成代码修改，不要主动执行编译和打包。",
-                  "必须实际使用工具修改工作区文件；如果没有改动，不要声称已经完成。",
-                  job.source_type === "saved_plan" ? `计划内容：${job.plan_content ?? ""}` : `用户需求：${job.prompt_text ?? ""}`,
-                ].join("\n\n"),
+      const coding = stale_stage
+        ? await withAnchorProjectContext(project.id, async () => {
+            if (!job.session_id || !job.workspace_id) {
+              await markStage({
+                job_id,
+                stage: "coding",
+                status: "failed",
+                error_code: "coding_resume_missing_context",
+                error_message: "自动恢复改码任务失败：缺少会话或工作区上下文",
+              })
+              await updateJob({
+                job_id,
+                status: "failed",
+                current_stage: "coding",
+                error_code: "coding_resume_missing_context",
+                error_message: "自动恢复改码任务失败：缺少会话或工作区上下文",
+              })
+              return { ok: false as const, code: "coding_resume_missing_context" as const }
+            }
+            const workspace = await Workspace.get(job.workspace_id)
+            const overlay = workspace ? BuildOverlay.fromWorkspace(workspace) : undefined
+            if (!workspace || !overlay) {
+              await markStage({
+                job_id,
+                stage: "coding",
+                status: "failed",
+                error_code: "overlay_workspace_missing",
+                error_message: "自动恢复改码任务失败：找不到 overlay 工作区",
+              })
+              await updateJob({
+                job_id,
+                status: "failed",
+                current_stage: "coding",
+                error_code: "overlay_workspace_missing",
+                error_message: "自动恢复改码任务失败：找不到 overlay 工作区",
+              })
+              return { ok: false as const, code: "overlay_workspace_missing" as const }
+            }
+            const stage = stageItem(stale_stage)
+            await markStage({
+              job_id,
+              stage: "coding",
+              status: "running",
+              detail_json: {
+                ...(stage.detail_json ?? {}),
+                timed_out: true,
+                timeout_ms,
+                current_status: `改码阶段超过 ${timeoutText(timeout_ms)} 未收口，系统正在自动恢复并继续执行`,
               },
-            ],
-          }),
-      })
-      const plan_content = assistantText(message) ?? job.plan_content ?? job.prompt_text ?? ""
-      const changes = await BuildOverlay.listChanges(overlay)
-      if (changes.length === 0) {
+            })
+            await updateJob({
+              job_id,
+              current_stage: "coding",
+            })
+            const { changes, snapshot } = await recoverTimedOutCoding({
+              overlay,
+              session_id: job.session_id,
+              stage,
+            })
+            if (changes.length === 0) {
+              await markStage({
+                job_id,
+                stage: "coding",
+                status: "failed",
+                error_code: "coding_timeout",
+                error_message: `改码阶段超过 ${timeoutText(timeout_ms)} 仍未完成，且未恢复到有效代码变更`,
+                detail_json: snapshot,
+              })
+              await updateJob({
+                job_id,
+                status: "failed",
+                current_stage: "coding",
+                plan_content: job.plan_content ?? job.prompt_text ?? undefined,
+                error_code: "coding_timeout",
+                error_message: `改码阶段超过 ${timeoutText(timeout_ms)} 仍未完成，且未恢复到有效代码变更`,
+              })
+              return { ok: false as const, code: "coding_timeout" as const }
+            }
+            await markStage({
+              job_id,
+              stage: "coding",
+              status: "completed",
+              detail_json: {
+                ...(snapshot ?? {}),
+                overlay_root: overlay.root,
+                change_count: changes.length,
+                changes,
+                timed_out: true,
+                timeout_ms,
+                current_status: `改码阶段超过 ${timeoutText(timeout_ms)} 后由系统自动接管恢复，已继续进入编译阶段`,
+              },
+            })
+            await updateJob({
+              job_id,
+              current_stage: "compile",
+              plan_content: job.plan_content ?? job.prompt_text ?? undefined,
+            })
+            return {
+              ok: true as const,
+              session_id: job.session_id,
+              overlay,
+              changes,
+            }
+          })
+        : await withAnchorProjectContext(project.id, async () => {
+        const coding_context = job.session_id?.trim()
+          ? await ensureBuildSessionContext({
+              job_id,
+              session_id: job.session_id,
+              project_id: project.id,
+              project_worktree: project.worktree,
+              product_name: product.name,
+              members: member_rows,
+            })
+          : undefined
+        if (coding_context && !coding_context.ok) return coding_context
+        const workspace =
+          coding_context && coding_context.ok
+            ? coding_context.workspace
+            : await Instance.provide({
+                directory: project.worktree,
+                fn: () =>
+                  Workspace.createOverlay({
+                    projectID: project.id,
+                    sourceRoots: [...new Set(member_rows.map((item) => item.directory))],
+                    members: member_rows,
+                    name: [product.name, job.id].join("-"),
+                  }),
+              })
+        const overlay = coding_context && coding_context.ok ? coding_context.overlay : BuildOverlay.fromWorkspace(workspace)
+        if (!overlay) return { ok: false as const, code: "overlay_workspace_missing" as const }
+        const hints = await codingHints({
+          text: job.plan_content ?? job.prompt_text ?? "",
+          solutions,
+          members: member_rows,
+        })
+
+        const session = coding_context && coding_context.ok
+          ? { id: coding_context.session_id }
+          : await Instance.provide({
+              directory: project.worktree,
+              fn: () =>
+                Session.createNext({
+                  directory: workspace.directory,
+                  title: `Build Job ${product.name}`,
+                  workspaceID: workspace.id,
+                  workspaceDirectory: workspace.directory,
+                  workspaceBranch: workspace.branch ?? undefined,
+                  workspaceKind: workspace.kind,
+                  workspaceStatus: "ready",
+                  workspaceCleanupStatus: "none",
+                }),
+            })
+
+        await updateJob({
+          job_id,
+          session_id: session.id,
+          workspace_id: workspace.id,
+        })
+        if (job.runtime_provider_id && job.runtime_model_id) {
+          await Session.setRuntimeModel(session.id, {
+            providerID: job.runtime_provider_id,
+            modelID: job.runtime_model_id,
+          })
+        }
+
         await markStage({
           job_id,
-          stage: "coding",
-          status: "failed",
-          error_code: "coding_no_changes",
-          error_message: "AI 未在沙盒内产生任何代码变更",
+          stage: "plan",
+          status: "completed",
           detail_json: {
-            assistant_message_id: message.info.id,
-            overlay_root: overlay.root,
+            source_type: job.source_type,
+            solution_scope: job.solution_scope,
+            solution_ids: solutions.map((item) => item.id),
+            runtime_model:
+              job.runtime_provider_id && job.runtime_model_id
+                ? {
+                    providerID: job.runtime_provider_id,
+                    modelID: job.runtime_model_id,
+                  }
+                : undefined,
+            prompt_text: job.prompt_text ?? undefined,
+            plan_content: job.plan_content ?? undefined,
           },
         })
         await updateJob({
           job_id,
-          status: "failed",
           current_stage: "coding",
-          plan_content,
-          error_code: "coding_no_changes",
-          error_message: "AI 未在沙盒内产生任何代码变更",
+          plan_content: job.plan_content ?? job.prompt_text ?? undefined,
         })
-        return { ok: false as const, code: "coding_no_changes" as const }
-      }
-      await markStage({
-        job_id,
-        stage: "coding",
-        status: "completed",
-        detail_json: {
-          assistant_message_id: message.info.id,
-          overlay_root: overlay.root,
-          change_count: changes.length,
+
+        await markStage({
+          job_id,
+          stage: "coding",
+          status: "running",
+          detail_json: {
+            session_id: session.id,
+            overlay_root: overlay.root,
+            solutions: hints.map((item) => ({
+              ...item,
+              relative_path: item.mount_name,
+            })),
+          },
+        })
+        const coding_result = await Instance.provide({
+          directory: workspace.directory,
+          fn: async () => {
+            try {
+              const message = await withTimeout(
+                SessionPrompt.prompt({
+                  sessionID: session.id,
+                  agent: "build",
+                  parts: [
+                    {
+                      type: "text",
+                      text: [
+                        ...(job.source_type === "saved_plan"
+                          ? [
+                              "以下内容是已经确认并进入构建中心执行的计划，请不要重复输出计划。",
+                              "禁止继续向用户提问、禁止等待确认，必须直接根据计划修改代码。",
+                              "如果计划里出现“待确认”“需要确认”“示例文案”等字样，请直接采用计划中已有示例或选择最稳妥默认值后继续编码。",
+                            ]
+                          : ["请先输出简要计划，再根据计划直接修改代码。"]),
+                        "本轮只需要完成代码修改，不要主动执行编译和打包。",
+                        "必须实际使用工具修改工作区文件；如果没有改动，不要声称已经完成。",
+                        hints.length > 0
+                          ? [
+                              "以下是本次参与解决方案的代码搜索提示，请优先根据这些提示定位代码，不要先按默认 Web 前端假设盲搜：",
+                              ...hints.map((item) =>
+                                [
+                                  `方案：${item.solution_code}`,
+                                  `挂载目录：${item.mount_name}`,
+                                  `技术栈：${item.stack}`,
+                                  item.compile_targets.length > 0 ? `编译目标：${item.compile_targets.join("、")}` : undefined,
+                                  item.candidate_files.length > 0 ? `优先检查：${item.candidate_files.join("、")}` : undefined,
+                                ]
+                                  .filter(Boolean)
+                                  .join("\n"),
+                              ),
+                              hints.some((item) => item.stack === ".NET/C#")
+                                ? "如果是 .NET/C#、WinForms 或 WebForms 项目，请优先搜索 *.cs、*.Designer.cs、*.aspx、*.resx，不要先按 React/Vue 假设搜索 *.tsx。"
+                                : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join("\n\n")
+                          : undefined,
+                        job.source_type === "saved_plan" ? `计划内容：${job.plan_content ?? ""}` : `用户需求：${job.prompt_text ?? ""}`,
+                      ]
+                        .filter(Boolean)
+                        .join("\n\n"),
+                    },
+                  ],
+                }),
+                timeout_ms,
+              )
+              return {
+                kind: "message" as const,
+                message,
+              }
+            } catch (error) {
+              if (error instanceof Error && error.message.includes("Operation timed out")) {
+                SessionPrompt.cancel(session.id)
+              }
+              throw error
+            }
+          },
+        }).catch(async (error) => {
+          if (!(error instanceof Error) || !error.message.includes("Operation timed out")) throw error
+          const stage = {
+            id: "",
+            job_id,
+            stage: "coding" as const,
+            status: "running",
+            detail_json: {
+              session_id: session.id,
+              overlay_root: overlay.root,
+              solutions: hints.map((item) => ({
+                ...item,
+                relative_path: item.mount_name,
+              })),
+            },
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          }
+          const { changes, snapshot } = await recoverTimedOutCoding({
+            overlay,
+            session_id: session.id,
+            stage,
+          })
+          if (changes.length > 0) {
+            return {
+              kind: "timeout_with_changes" as const,
+              changes,
+              snapshot,
+            }
+          }
+          await markStage({
+            job_id,
+            stage: "coding",
+            status: "failed",
+            error_code: "coding_timeout",
+            error_message: `改码阶段超过 ${timeoutText(timeout_ms)} 仍未完成，已自动终止。`,
+            detail_json: snapshot,
+          })
+          await updateJob({
+            job_id,
+            status: "failed",
+            current_stage: "coding",
+            plan_content: job.plan_content ?? job.prompt_text ?? undefined,
+            error_code: "coding_timeout",
+            error_message: `改码阶段超过 ${timeoutText(timeout_ms)} 仍未完成，已自动终止。`,
+          })
+          return
+        })
+        if (!coding_result) return { ok: false as const, code: "coding_timeout" as const }
+        const plan_content =
+          coding_result.kind === "message"
+            ? assistantText(coding_result.message) ?? job.plan_content ?? job.prompt_text ?? ""
+            : job.plan_content ?? job.prompt_text ?? ""
+        const changes =
+          coding_result.kind === "message"
+            ? await recoverCodingChanges({
+                overlay,
+                session_id: session.id,
+              })
+            : coding_result.changes
+        if (changes.length === 0) {
+          await markStage({
+            job_id,
+            stage: "coding",
+            status: "failed",
+            error_code: "coding_no_changes",
+            error_message: "AI 未在沙盒内产生任何代码变更",
+            detail_json: {
+              assistant_message_id: coding_result.kind === "message" ? coding_result.message.info.id : undefined,
+              overlay_root: overlay.root,
+            },
+          })
+          await updateJob({
+            job_id,
+            status: "failed",
+            current_stage: "coding",
+            plan_content,
+            error_code: "coding_no_changes",
+            error_message: "AI 未在沙盒内产生任何代码变更",
+          })
+          return { ok: false as const, code: "coding_no_changes" as const }
+        }
+        await markStage({
+          job_id,
+          stage: "coding",
+          status: "completed",
+          detail_json: {
+            assistant_message_id: coding_result.kind === "message" ? coding_result.message.info.id : undefined,
+            overlay_root: overlay.root,
+            change_count: changes.length,
+            changes,
+            timed_out: coding_result.kind === "timeout_with_changes",
+            timeout_ms: coding_result.kind === "timeout_with_changes" ? timeout_ms : undefined,
+            current_status:
+              coding_result.kind === "timeout_with_changes"
+                ? `改码阶段在 ${timeoutText(timeout_ms)} 后超时，但已检测到真实代码变更，已继续进入编译阶段`
+                : undefined,
+            recent_activity: coding_result.kind === "timeout_with_changes" ? coding_result.snapshot?.recent_activity : undefined,
+          },
+        })
+        await updateJob({
+          job_id,
+          current_stage: "compile",
+          plan_content,
+        })
+        return {
+          ok: true as const,
+          session_id: session.id,
+          overlay,
           changes,
-        },
+        }
       })
-      await updateJob({
-        job_id,
-        current_stage: "compile",
-        plan_content,
+      if (!coding.ok) return coding
+      const overlay = coding.overlay
+      const targets = changedCompileTargets({
+        solutions,
+        changes: coding.changes,
       })
 
       await markStage({
@@ -719,8 +1698,8 @@ export namespace BuildJobService {
         stage: "compile",
         status: "running",
       })
-      const compile_logs = [] as Array<Record<string, unknown>>
-      for (const solution of solutions) {
+      const compile_logs = [...targets.skipped] as Array<Record<string, unknown>>
+      for (const solution of targets.items) {
         const profile = normalizeBuildProfile(solution.build_profile)
         if (placeholder(profile.compile_command)) {
           compile_logs.push({
@@ -752,23 +1731,90 @@ export namespace BuildJobService {
           return { ok: false as const, code: "compile_command_unconfigured" as const }
         }
         const solution_members = await members(solution)
-        const compile_sandbox = await BuildCompileSandbox.create({
-          projectID: project.id,
-          name: [job.id, solution.code, "compile"].join("-"),
-          sourceRoots: [...new Set(solution_members.map((item) => item.directory))],
-          members: solution_members,
-          overlay,
-          solution,
+        await markCompileRunning({
+          job_id,
+          solutions: compile_logs,
+          active: {
+            solution_id: solution.id,
+            solution_code: solution.code,
+            current_step: "prepare_compile_sandbox",
+            current_status: "正在准备独立编译沙盒",
+            source_roots: [...new Set(solution_members.map((item) => item.directory))],
+            requested_workdirs: profile.workdirs.length > 0 ? profile.workdirs : ["."],
+          },
         })
+        const compile_sandbox = await withTimeout(
+          BuildCompileSandbox.create({
+            projectID: project.id,
+            name: [job.id, solution.code, "compile"].join("-"),
+            sourceRoots: [...new Set(solution_members.map((item) => item.directory))],
+            members: solution_members,
+            overlay,
+            changes: coding.changes,
+            solution,
+          }),
+          compile_prepare_timeout_ms,
+        ).catch((error) => error)
+        if (compile_sandbox instanceof Error) {
+          const timed_out = compile_sandbox.message.includes("Operation timed out")
+          const code = timed_out ? "compile_sandbox_timeout" : "compile_sandbox_failed"
+          const error_message = timed_out
+            ? `准备编译沙盒超时，${timeoutText(compile_prepare_timeout_ms)} 内未完成`
+            : compile_sandbox.message || "准备编译沙盒失败"
+          compile_logs.push({
+            solution_id: solution.id,
+            solution_code: solution.code,
+            source_roots: [...new Set(solution_members.map((item) => item.directory))],
+            requested_workdirs: profile.workdirs.length > 0 ? profile.workdirs : ["."],
+            logs: [
+              {
+                step: "prepare_compile_sandbox",
+                exit_code: timed_out ? 124 : 1,
+                stderr: error_message,
+              },
+            ],
+          })
+          await markStage({
+            job_id,
+            stage: "compile",
+            status: "failed",
+            error_code: code,
+            error_message,
+            detail_json: { solutions: compile_logs },
+          })
+          await updateJob({
+            job_id,
+            status: "failed",
+            current_stage: "compile",
+            error_code: code,
+            error_message,
+          })
+          await cleanupCompileSandboxes(compile_sandboxes)
+          return { ok: false as const, code }
+        }
         compile_sandboxes.push({
           workspace_id: compile_sandbox.workspace.id,
           workspace_directory: compile_sandbox.workspace.directory,
           solution,
           profile,
         })
+        await markCompileRunning({
+          job_id,
+          solutions: compile_logs,
+          active: {
+            solution_id: solution.id,
+            solution_code: solution.code,
+            current_step: "resolve_workdirs",
+            current_status: "正在解析编译目录",
+            requested_workdirs: profile.workdirs.length > 0 ? profile.workdirs : ["."],
+            compile_sandbox_directory: compile_sandbox.workspace.directory,
+            applied_files_count: compile_sandbox.applied.length,
+          },
+        })
         const resolved = await workdirs({
           workspaceDirectory: compile_sandbox.workspace.directory,
           workdirs: profile.workdirs.length > 0 ? profile.workdirs : ["."],
+          mounts: solution_members.map((item) => item.relative_path),
         })
         if (!resolved.ok) {
           compile_logs.push({
@@ -802,24 +1848,116 @@ export namespace BuildJobService {
           await cleanupCompileSandboxes(compile_sandboxes)
           return { ok: false as const, code: resolved.code }
         }
+        if (process.platform !== "win32" && windowsOnly(profile.compile_command)) {
+          const error_message = `当前解决方案的编译命令是 Windows PowerShell/MSBuild 脚本，只能在 Windows 构建节点执行。当前节点: ${process.platform}`
+          compile_logs.push({
+            solution_id: solution.id,
+            solution_code: solution.code,
+            requested_workdirs: resolved.requested,
+            resolved_workdirs: resolved.resolved,
+            warnings: resolved.warnings,
+            compile_sandbox_directory: compile_sandbox.workspace.directory,
+            applied_files_count: compile_sandbox.applied.length,
+            required_platform: "win32",
+            current_platform: process.platform,
+            logs: [
+              {
+                step: "compile",
+                exit_code: 1,
+                stderr: error_message,
+              },
+            ],
+          })
+          await markStage({
+            job_id,
+            stage: "compile",
+            status: "failed",
+            error_code: "compile_platform_unsupported",
+            error_message,
+            detail_json: { solutions: compile_logs },
+          })
+          await updateJob({
+            job_id,
+            status: "failed",
+            current_stage: "compile",
+            error_code: "compile_platform_unsupported",
+            error_message,
+          })
+          await cleanupCompileSandboxes(compile_sandboxes)
+          return { ok: false as const, code: "compile_platform_unsupported" as const }
+        }
         const solution_logs = [] as Array<Record<string, unknown>>
         for (const item of resolved.items) {
           const workdir = item.workdir
           const cwd = item.cwd
           if (profile.install_command?.trim()) {
-            const install = await shell(profile.install_command, cwd)
+            await markCompileRunning({
+              job_id,
+              solutions: compile_logs,
+              active: {
+                solution_id: solution.id,
+                solution_code: solution.code,
+                current_step: "install",
+                current_status: "正在安装依赖",
+                command: profile.install_command,
+                cwd,
+                workdir,
+                requested_workdirs: resolved.requested,
+                resolved_workdirs: resolved.resolved,
+                warnings: resolved.warnings,
+                compile_sandbox_directory: compile_sandbox.workspace.directory,
+                applied_files_count: compile_sandbox.applied.length,
+              },
+            })
+            const install = await shell(profile.install_command, cwd, compile_command_timeout_ms)
             solution_logs.push({
               workdir,
               step: "install",
               exit_code: install.exitCode,
-              stdout: install.stdout.toString().trim(),
-              stderr: install.stderr.toString().trim(),
+              stdout: install.stdout,
+              stderr: install.stderr,
             })
+            if (install.timed_out) {
+              compile_logs.push({
+                solution_id: solution.id,
+                solution_code: solution.code,
+                requested_workdirs: resolved.requested,
+                resolved_workdirs: resolved.resolved,
+                warnings: resolved.warnings,
+                logs: solution_logs,
+                command: profile.install_command,
+                cwd,
+                compile_sandbox_directory: compile_sandbox.workspace.directory,
+                applied_files_count: compile_sandbox.applied.length,
+              })
+              await markStage({
+                job_id,
+                stage: "compile",
+                status: "failed",
+                error_code: "install_timeout",
+                error_message: `依赖安装超时，${timeoutText(compile_command_timeout_ms)} 内未完成`,
+                detail_json: { solutions: compile_logs },
+              })
+              await updateJob({
+                job_id,
+                status: "failed",
+                current_stage: "compile",
+                error_code: "install_timeout",
+                error_message: `依赖安装超时，${timeoutText(compile_command_timeout_ms)} 内未完成`,
+              })
+              await cleanupCompileSandboxes(compile_sandboxes)
+              return { ok: false as const, code: "install_timeout" as const }
+            }
             if (install.exitCode !== 0) {
               compile_logs.push({
                 solution_id: solution.id,
                 solution_code: solution.code,
+                requested_workdirs: resolved.requested,
+                resolved_workdirs: resolved.resolved,
+                warnings: resolved.warnings,
                 logs: solution_logs,
+                command: profile.install_command,
+                cwd,
                 compile_sandbox_directory: compile_sandbox.workspace.directory,
                 applied_files_count: compile_sandbox.applied.length,
               })
@@ -828,7 +1966,7 @@ export namespace BuildJobService {
                 stage: "compile",
                 status: "failed",
                 error_code: "install_failed",
-                error_message: install.stderr.toString().trim() || "install_failed",
+                error_message: install.stderr || "install_failed",
                 detail_json: { solutions: compile_logs },
               })
               await updateJob({
@@ -836,25 +1974,79 @@ export namespace BuildJobService {
                 status: "failed",
                 current_stage: "compile",
                 error_code: "install_failed",
-                error_message: install.stderr.toString().trim() || "install_failed",
+                error_message: install.stderr || "install_failed",
               })
               await cleanupCompileSandboxes(compile_sandboxes)
               return { ok: false as const, code: "install_failed" as const }
             }
           }
-          const compile = await shell(profile.compile_command, cwd)
+          await markCompileRunning({
+            job_id,
+            solutions: compile_logs,
+            active: {
+              solution_id: solution.id,
+              solution_code: solution.code,
+              current_step: "compile",
+              current_status: "正在执行编译命令",
+              command: profile.compile_command,
+              cwd,
+              workdir,
+              requested_workdirs: resolved.requested,
+              resolved_workdirs: resolved.resolved,
+              warnings: resolved.warnings,
+              compile_sandbox_directory: compile_sandbox.workspace.directory,
+              applied_files_count: compile_sandbox.applied.length,
+            },
+          })
+          const compile = await shell(profile.compile_command, cwd, compile_command_timeout_ms)
           solution_logs.push({
             workdir,
             step: "compile",
             exit_code: compile.exitCode,
-            stdout: compile.stdout.toString().trim(),
-            stderr: compile.stderr.toString().trim(),
+            stdout: compile.stdout,
+            stderr: compile.stderr,
           })
+          if (compile.timed_out) {
+            compile_logs.push({
+              solution_id: solution.id,
+              solution_code: solution.code,
+              requested_workdirs: resolved.requested,
+              resolved_workdirs: resolved.resolved,
+              warnings: resolved.warnings,
+              logs: solution_logs,
+              command: profile.compile_command,
+              cwd,
+              compile_sandbox_directory: compile_sandbox.workspace.directory,
+              applied_files_count: compile_sandbox.applied.length,
+            })
+            await markStage({
+              job_id,
+              stage: "compile",
+              status: "failed",
+              error_code: "compile_timeout",
+              error_message: `编译超时，${timeoutText(compile_command_timeout_ms)} 内未完成`,
+              detail_json: { solutions: compile_logs },
+            })
+            await updateJob({
+              job_id,
+              status: "failed",
+              current_stage: "compile",
+              error_code: "compile_timeout",
+              error_message: `编译超时，${timeoutText(compile_command_timeout_ms)} 内未完成`,
+            })
+            await cleanupCompileSandboxes(compile_sandboxes)
+            return { ok: false as const, code: "compile_timeout" as const }
+          }
           if (compile.exitCode !== 0) {
             compile_logs.push({
               solution_id: solution.id,
               solution_code: solution.code,
+              requested_workdirs: resolved.requested,
+              resolved_workdirs: resolved.resolved,
+              warnings: resolved.warnings,
               logs: solution_logs,
+              command: profile.compile_command,
+              cwd,
               compile_sandbox_directory: compile_sandbox.workspace.directory,
               applied_files_count: compile_sandbox.applied.length,
             })
@@ -863,7 +2055,7 @@ export namespace BuildJobService {
               stage: "compile",
               status: "failed",
               error_code: "compile_failed",
-              error_message: compile.stderr.toString().trim() || "compile_failed",
+              error_message: compile.stderr || "compile_failed",
               detail_json: { solutions: compile_logs },
             })
             await updateJob({
@@ -871,7 +2063,7 @@ export namespace BuildJobService {
               status: "failed",
               current_stage: "compile",
               error_code: "compile_failed",
-              error_message: compile.stderr.toString().trim() || "compile_failed",
+              error_message: compile.stderr || "compile_failed",
             })
             await cleanupCompileSandboxes(compile_sandboxes)
             return { ok: false as const, code: "compile_failed" as const }
@@ -880,6 +2072,9 @@ export namespace BuildJobService {
         compile_logs.push({
           solution_id: solution.id,
           solution_code: solution.code,
+          requested_workdirs: resolved.requested,
+          resolved_workdirs: resolved.resolved,
+          warnings: resolved.warnings,
           logs: solution_logs,
           compile_sandbox_directory: compile_sandbox.workspace.directory,
           applied_files_count: compile_sandbox.applied.length,
@@ -910,6 +2105,7 @@ export namespace BuildJobService {
         const resolved = await workdirs({
           workspaceDirectory: sandbox.workspace_directory,
           workdirs: profile.workdirs.length > 0 ? profile.workdirs : ["."],
+          mounts: (await members(solution)).map((item) => item.relative_path),
         })
         if (!resolved.ok) {
           await markStage({
@@ -930,13 +2126,73 @@ export namespace BuildJobService {
           await cleanupCompileSandboxes(compile_sandboxes)
           return { ok: false as const, code: resolved.code }
         }
-        const stageDirectory = path.join(Global.Path.data, "build-job-stage", job.id, solution.code)
-        const staged = await stageArtifacts({
-          workspaceDirectory: sandbox.workspace_directory,
-          stageDirectory,
-          workdirs: resolved.items.map((item) => item.workdir),
-          build_profile: profile,
+        const stageDirectory = path.join(Global.Path.runtime, "build-job-stage", job.id, solution.code)
+        await markPackageRunning({
+          job_id,
+          solutions: packaged,
+          active: {
+            solution_id: solution.id,
+            solution_code: solution.code,
+            current_step: "stage_artifacts",
+            current_status: "正在收集编译产物",
+            requested_workdirs: resolved.requested,
+            resolved_workdirs: resolved.resolved,
+            warnings: resolved.warnings,
+            compile_sandbox_directory: sandbox.workspace_directory,
+            output_directory: outputDirectory,
+            stage_directory: stageDirectory,
+          },
         })
+        const staged = await withTimeout(
+          stageArtifacts({
+            workspaceDirectory: sandbox.workspace_directory,
+            stageDirectory,
+            workdirs: resolved.items.map((item) => item.workdir),
+            build_profile: profile,
+          }),
+          package_timeout_ms,
+        ).catch((error) => error)
+        if (staged instanceof Error) {
+          const timed_out = staged.message.includes("Operation timed out")
+          const code = timed_out ? "package_timeout" : "package_failed"
+          const error_message = timed_out
+            ? `收集产物超时，${timeoutText(package_timeout_ms)} 内未完成`
+            : staged.message || "收集产物失败"
+          packaged.push({
+            solution_id: solution.id,
+            solution_code: solution.code,
+            requested_workdirs: resolved.requested,
+            resolved_workdirs: resolved.resolved,
+            warnings: resolved.warnings,
+            compile_sandbox_directory: sandbox.workspace_directory,
+            output_directory: outputDirectory,
+            stage_directory: stageDirectory,
+            logs: [
+              {
+                step: "stage_artifacts",
+                exit_code: timed_out ? 124 : 1,
+                stderr: error_message,
+              },
+            ],
+          })
+          await markStage({
+            job_id,
+            stage: "package",
+            status: "failed",
+            error_code: code,
+            error_message,
+            detail_json: { solutions: packaged },
+          })
+          await updateJob({
+            job_id,
+            status: "failed",
+            current_stage: "package",
+            error_code: code,
+            error_message,
+          })
+          await cleanupCompileSandboxes(compile_sandboxes)
+          return { ok: false as const, code }
+        }
         if (!staged.ok) {
           await markStage({
             job_id,
@@ -961,10 +2217,76 @@ export namespace BuildJobService {
           job: job.id,
         })
         const file_path = path.join(outputDirectory, file_name)
-        await Archive.createZip({
-          sourceDir: stageDirectory,
-          output: file_path,
+        await markPackageRunning({
+          job_id,
+          solutions: packaged,
+          active: {
+            solution_id: solution.id,
+            solution_code: solution.code,
+            current_step: "archive_zip",
+            current_status: "正在压缩发布包",
+            requested_workdirs: resolved.requested,
+            resolved_workdirs: resolved.resolved,
+            warnings: [...resolved.warnings, ...(staged.ok ? staged.warnings : [])],
+            matched_patterns: staged.ok ? staged.matched_patterns : undefined,
+            compile_sandbox_directory: sandbox.workspace_directory,
+            output_directory: outputDirectory,
+            stage_directory: stageDirectory,
+            file_name,
+            file_path,
+          },
         })
+        const archived = await withTimeout(
+          Archive.createZip({
+            sourceDir: stageDirectory,
+            output: file_path,
+          }),
+          package_timeout_ms,
+        ).catch((error) => error)
+        if (archived instanceof Error) {
+          const timed_out = archived.message.includes("Operation timed out")
+          const code = timed_out ? "package_timeout" : "package_failed"
+          const error_message = timed_out
+            ? `压缩发布包超时，${timeoutText(package_timeout_ms)} 内未完成`
+            : archived.message || "压缩发布包失败"
+          packaged.push({
+            solution_id: solution.id,
+            solution_code: solution.code,
+            requested_workdirs: resolved.requested,
+            resolved_workdirs: resolved.resolved,
+            warnings: [...resolved.warnings, ...(staged.ok ? staged.warnings : [])],
+            matched_patterns: staged.ok ? staged.matched_patterns : undefined,
+            compile_sandbox_directory: sandbox.workspace_directory,
+            output_directory: outputDirectory,
+            stage_directory: stageDirectory,
+            file_name,
+            file_path,
+            logs: [
+              {
+                step: "archive_zip",
+                exit_code: timed_out ? 124 : 1,
+                stderr: error_message,
+              },
+            ],
+          })
+          await markStage({
+            job_id,
+            stage: "package",
+            status: "failed",
+            error_code: code,
+            error_message,
+            detail_json: { solutions: packaged },
+          })
+          await updateJob({
+            job_id,
+            status: "failed",
+            current_stage: "package",
+            error_code: code,
+            error_message,
+          })
+          await cleanupCompileSandboxes(compile_sandboxes)
+          return { ok: false as const, code }
+        }
         const hash = createHash("sha1").update(Buffer.from(await Bun.file(file_path).arrayBuffer())).digest("hex")
         const size = await Filesystem.size(file_path)
         await Database.use((db) =>
@@ -986,7 +2308,12 @@ export namespace BuildJobService {
         packaged.push({
           solution_id: solution.id,
           solution_code: solution.code,
+          requested_workdirs: resolved.requested,
+          resolved_workdirs: resolved.resolved,
+          warnings: [...resolved.warnings, ...(staged.ok ? staged.warnings : [])],
           compile_sandbox_directory: sandbox.workspace_directory,
+          stage_directory: stageDirectory,
+          matched_patterns: staged.ok ? staged.matched_patterns : undefined,
           file_name,
           file_path,
           size,

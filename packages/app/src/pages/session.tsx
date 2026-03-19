@@ -15,14 +15,17 @@ import { useGlobalSync } from "@/context/global-sync"
 import { checksum, base64Encode } from "@opencode-ai/util/encode"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useLanguage } from "@/context/language"
-import { useNavigate, useParams } from "@solidjs/router"
+import { useLocation, useNavigate, useParams } from "@solidjs/router"
 import { UserMessage } from "@opencode-ai/sdk/v2"
 import { useSDK } from "@/context/sdk"
 import { usePrompt } from "@/context/prompt"
 import { useComments } from "@/context/comments"
+import { useAccountAuth } from "@/context/account-auth"
 import { resolveProjectByDirectory } from "@/context/project-resolver"
 import { SessionHeader, NewSessionView } from "@/components/session"
+import { SessionBuildStatus } from "@/components/session/session-build-status"
 import { same } from "@/utils/same"
+import { decode64 } from "@/utils/base64"
 import { createOpenReviewFile } from "@/pages/session/helpers"
 import { createScrollSpy } from "@/pages/session/scroll-spy"
 import { SessionReviewTab, type DiffStyle, type SessionReviewTabProps } from "@/pages/session/review-tab"
@@ -33,6 +36,8 @@ import { SessionComposerRegion, createSessionComposerState } from "@/pages/sessi
 import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
 import { shouldConsumePromptHandoff } from "@/context/layout"
+import { shouldConsumeVhoPlanHandoff } from "@/components/vho-feedback"
+import { freshSessionContextHref, freshSessionKey, isFreshSessionSearch } from "@/utils/session-route"
 
 export default function Page() {
   const layout = useLayout()
@@ -41,6 +46,8 @@ export default function Page() {
   const sync = useSync()
   const dialog = useDialog()
   const language = useLanguage()
+  const auth = useAccountAuth()
+  const location = useLocation()
   const params = useParams()
   const navigate = useNavigate()
   const sdk = useSDK()
@@ -100,6 +107,44 @@ export default function Page() {
 
   createEffect(
     on(
+      () => ({
+        id: params.id,
+        dir: params.dir,
+        search: location.search,
+        fresh_key: new URLSearchParams(location.search).get("fresh_key") ?? "",
+      }),
+      (value) => {
+        if (value.id || !value.dir) return
+        if (!isFreshSessionSearch(value.search)) return
+        const handoff = layout.handoff.prompt(value.dir)
+        if (handoff && Date.now() - handoff.at <= 60_000) return
+        prompt.reset()
+        prompt.context.clear()
+        comments.clear()
+        setStore("messageId", undefined)
+        setStore("newSessionWorktree", "main")
+        setStore("turnStart", 0)
+        // 中文注释：显式再次新建会话时同步重置当前智能体，避免继续沿用上一个新会话页的 build/planner 状态。
+        local.agent.set(undefined)
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => `${params.dir ?? ""}/${params.id ?? ""}`,
+      () => {
+        if (params.id) return
+        // 中文注释：进入新的产品会话入口时重置智能体，避免沿用上一次 build 模式导致首条消息误走构建闭环。
+        local.agent.set(undefined)
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
       () => params.id,
       (id, prev) => {
         if (!id) return
@@ -129,6 +174,21 @@ export default function Page() {
 
         workspaceTabs().setAll([])
         workspaceTabs().setActive(undefined)
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => ({ id: params.id, dir: params.dir, actual: info()?.directory }),
+      (value) => {
+        if (!value.id || !value.dir || !value.actual) return
+        const current = decode64(value.dir)
+        if (!current) return
+        if (current === value.actual) return
+        // 中文注释：旧产品会话可能仍停留在产品根目录路由，这里按后端返回的真实 overlay 目录自动纠偏。
+        navigate(`/${base64Encode(value.actual)}/session/${value.id}`, { replace: true })
       },
       { defer: true },
     ),
@@ -198,6 +258,24 @@ export default function Page() {
   const hasReview = createMemo(() => reviewCount() > 0)
   const revertMessageID = createMemo(() => info()?.revert?.messageID)
   const messages = createMemo(() => (params.id ? (sync.data.message[params.id] ?? []) : []))
+  const vhoPlanPreview = createMemo(() => {
+    const directory = params.dir
+    if (!directory) return
+    const handoff = layout.handoff.vhoPlan(directory)
+    if (
+      !shouldConsumeVhoPlanHandoff({
+        handoff,
+        session_id: params.id,
+        now: Date.now(),
+      })
+    ) {
+      if (handoff && Date.now() - handoff.at > 60_000) {
+        layout.handoff.clearVhoPlan(directory)
+      }
+      return
+    }
+    return handoff
+  })
   const messagesReady = createMemo(() => {
     const id = params.id
     if (!id) return true
@@ -355,7 +433,6 @@ export default function Page() {
           navigate(`/${dir}/session`, { replace: true })
         })
       },
-      { defer: true },
     ),
   )
 
@@ -1076,6 +1153,7 @@ export default function Page() {
   return (
     <div class="relative bg-background-base size-full overflow-hidden flex flex-col">
       <SessionHeader />
+      <SessionBuildStatus sessionID={params.id} />
       <div class="flex-1 min-h-0 flex flex-col md:flex-row">
         {/* Session panel */}
         <div
@@ -1092,17 +1170,6 @@ export default function Page() {
             <Switch>
               <Match when={params.id}>
                 <MessageTimeline
-                  mobileChanges={!isDesktop()}
-                  mobileFallback={reviewContent({
-                    diffStyle: "unified",
-                    classes: {
-                      root: "pb-8",
-                      header: "px-4",
-                      container: "px-4",
-                    },
-                    loadingClass: "px-4 py-4 text-text-weak",
-                    emptyClass: "h-full pb-30 flex flex-col items-center justify-center text-center gap-6",
-                  })}
                   scroll={ui.scroll}
                   onResumeScroll={resumeScroll}
                   setScrollRef={setScrollRef}
@@ -1141,6 +1208,7 @@ export default function Page() {
               <Match when={true}>
                 <NewSessionView
                   worktree={newSessionWorktree()}
+                  planPreview={vhoPlanPreview()?.plan_content}
                   onWorktreeChange={(value) => {
                     if (value === "create") {
                       setStore("newSessionWorktree", value)
@@ -1153,7 +1221,14 @@ export default function Page() {
                     if (!target) return
                     if (target === sdk.directory) return
                     layout.projects.open(target)
-                    navigate(`/${base64Encode(target)}/session`)
+                    navigate(
+                      freshSessionContextHref({
+                        directory: base64Encode(target),
+                        search: location.search,
+                        fallback_product_id: auth.user()?.context_product_id,
+                        fresh_key: freshSessionKey(),
+                      }),
+                    )
                   }}
                 />
               </Match>

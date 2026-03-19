@@ -6,8 +6,9 @@ import type { PermissionNext } from "@/permission/next"
 import { Timestamps } from "@/storage/schema.sql"
 import { TpDepartmentTable } from "@/user/department.sql"
 import { TpOrganizationTable } from "@/user/organization.sql"
+import { TpProductTable } from "@/user/product.sql"
 import { TpUserTable } from "@/user/user.sql"
-import { isNull } from "drizzle-orm"
+import { and, isNull } from "drizzle-orm"
 import { WorkspaceTable } from "@/control-plane/workspace.sql"
 import type { WorkspaceKind } from "@/control-plane/workspace-meta"
 
@@ -22,6 +23,7 @@ export const SessionTable = table(
       .notNull()
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
     context_project_id: text().references(() => ProjectTable.id, { onDelete: "set null" }),
+    context_product_id: text().references(() => TpProductTable.id, { onDelete: "set null" }),
     parent_id: text(),
     slug: text().notNull(),
     directory: text().notNull(),
@@ -54,10 +56,13 @@ export const SessionTable = table(
     ...Timestamps,
     time_compacting: integer(),
     time_archived: integer(),
+    // 中文注释：逻辑删除时间；为空表示仍然有效。
+    time_deleted: integer(),
   },
   (table) => [
     index("session_project_idx").on(table.project_id),
     index("session_context_project_idx").on(table.context_project_id),
+    index("session_context_product_idx").on(table.context_product_id),
     index("session_parent_idx").on(table.parent_id),
     index("session_user_idx").on(table.user_id),
     index("session_org_idx").on(table.org_id),
@@ -69,7 +74,8 @@ export const SessionTable = table(
     index("session_time_id_idx").on(table.time_updated, table.id),
     index("session_user_time_active_idx")
       .on(table.user_id, table.time_updated, table.id)
-      .where(isNull(table.time_archived)),
+      .where(and(isNull(table.time_archived), isNull(table.time_deleted))),
+    index("session_deleted_idx").on(table.time_deleted),
   ],
 )
 

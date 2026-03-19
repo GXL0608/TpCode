@@ -291,7 +291,7 @@ export const SettingsUsers = () => {
   const removeUser = async (item: AccountUser) => {
     if (!canManage()) return
     const name = item.display_name || item.username
-    const ok = globalThis.confirm(`确认删除成员「${name}」？\n\n删除后将同时移除该成员的登录账号、角色绑定、项目权限和模型配置，且无法恢复。`)
+    const ok = globalThis.confirm(`确认删除成员「${name}」？\n\n删除后该成员会从默认列表中隐藏，相关账号、角色绑定、项目权限和模型配置会保留删除标记。`)
     if (!ok) return
     setState("pending", true)
     setState("message", "")
@@ -305,7 +305,7 @@ export const SettingsUsers = () => {
       setState("error", await parseAccountError(response))
       return
     }
-    setState("message", `已删除成员 ${name}`)
+    setState("message", `已逻辑删除成员 ${name}`)
     const page = state.users.length === 1 && state.userPage > 1 ? state.userPage - 1 : state.userPage
     await load({ page })
   }

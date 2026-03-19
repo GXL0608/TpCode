@@ -56,6 +56,8 @@ export namespace Config {
     .optional()
 
   const log = Log.create({ service: "config" })
+  const installBackoff = new Map<string, number>()
+  const INSTALL_BACKOFF_MS = 300_000
 
   // Managed settings directory for enterprise deployments (highest priority, admin-controlled)
   // These settings override all user and project settings
@@ -261,6 +263,12 @@ export namespace Config {
   }
 
   export async function installDependencies(dir: string) {
+    const cooled = installBackoff.get(dir)
+    if (cooled && cooled > Date.now()) {
+      log.debug("dependency install backoff active", { dir, retry_at: cooled })
+      return
+    }
+    if (cooled) installBackoff.delete(dir)
     const pkg = path.join(dir, "package.json")
     const targetVersion = Installation.isLocal() ? "*" : Installation.VERSION
 
@@ -287,9 +295,14 @@ export namespace Config {
         ...(proxied() || process.env.CI ? ["--no-cache"] : []),
       ],
       { cwd: dir },
-    ).catch((err) => {
-      log.warn("failed to install dependencies", { dir, error: err })
-    })
+    )
+      .then(() => {
+        installBackoff.delete(dir)
+      })
+      .catch((err) => {
+        installBackoff.set(dir, Date.now() + INSTALL_BACKOFF_MS)
+        log.warn("failed to install dependencies", { dir, error: err })
+      })
   }
 
   async function isWritable(dir: string) {

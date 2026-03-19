@@ -64,6 +64,7 @@ import { Project } from "@/project/project"
 import { Filesystem } from "@/util/filesystem"
 import { Installation } from "@/installation"
 import { resolveWebGateway, webGatewayBootstrap } from "./web-gateway"
+import { createSSECleanup } from "./sse-cleanup"
 import { AccountProviderState } from "@/provider/account-provider-state"
 import { UserRbac } from "@/user/rbac"
 import { randomUUID } from "crypto"
@@ -126,7 +127,16 @@ export namespace Server {
     return next
   }
 
-  function decodeDirectory(input: string) {
+  /** 中文注释：统一解码目录提示，优先支持新的 base64 头格式，同时兼容旧的 URL 编码目录。 */
+  export function decodeDirectory(input: string) {
+    if (input.startsWith("b64:")) {
+      const value = input.slice(4)
+      if (value) {
+        try {
+          return Buffer.from(value, "base64url").toString("utf8")
+        } catch {}
+      }
+    }
     try {
       return decodeURIComponent(input)
     } catch {
@@ -139,6 +149,19 @@ export namespace Server {
     if (!Flag.TPCODE_ACCOUNT_ENABLED) return false
     if (pathname === "/project" || pathname.startsWith("/project/")) return true
     if (pathname === "/global" || pathname.startsWith("/global/")) return true
+    return false
+  }
+
+  /** 中文注释：产品上下文下即使暂时没有可访问的项目目录，也应该允许会话主链和首屏配置接口先工作起来。 */
+  function productContextPath(pathname: string) {
+    if (pathname === "/config" || pathname.startsWith("/config/")) return true
+    if (pathname === "/event") return true
+    if (pathname === "/experimental" || pathname.startsWith("/experimental/")) return true
+    if (pathname === "/find" || pathname.startsWith("/find/")) return true
+    if (pathname === "/global" || pathname.startsWith("/global/")) return true
+    if (pathname === "/path") return true
+    if (pathname === "/project" || pathname.startsWith("/project/")) return true
+    if (pathname === "/session" || pathname.startsWith("/session/")) return true
     return false
   }
 
@@ -359,8 +382,10 @@ export namespace Server {
             return (async () => {
               const debug = Flag.TPCODE_ACCOUNT_AUTH_DEBUG
               if (!accountSeeded) {
-                await UserService.ensureSeedOnce()
-                accountSeeded = true
+                accountSeeded = await UserService.ensureSeedReady()
+                if (!accountSeeded) {
+                  UserService.ensureSeedWarm()
+                }
               }
               const auth = c.req.header("authorization")
               const queryToken =
@@ -438,15 +463,26 @@ export namespace Server {
                   }
                 }
                 if (!context.worktree_ready) {
-                  log.warn("account context project worktree unavailable; keeping selected context", {
+                  await UserService.clearInvalidProjectContext({
+                    user_id: detail.user.id,
+                    project_id: context_project_id,
+                  })
+                  clearContextProject(context_project_id)
+                  log.warn("invalid account context project; forcing reselect", {
                     user_id: detail.user.id,
                     context_project_id,
                     worktree: context.project.worktree,
+                    reason: "worktree_unavailable",
                   })
+                  return {
+                    ...detail.user,
+                    context_project_id: undefined,
+                  }
                 }
                 const allowed = await AccountContextService.canAccessProject({
                   user_id: detail.user.id,
                   project_id: context_project_id,
+                  context_product_id: detail.user.context_product_id,
                 })
                 if (allowed) return detail.user
                 AccountContextService.invalidateProjectAccess({
@@ -470,6 +506,7 @@ export namespace Server {
               c.set("account_org_id" as never, user.org_id)
               c.set("account_department_id" as never, user.department_id)
               c.set("account_context_project_id" as never, user.context_project_id)
+              c.set("account_context_product_id" as never, user.context_product_id)
               c.set("account_roles" as never, user.roles)
               c.set("account_permissions" as never, user.permissions)
               const contextOptional =
@@ -477,12 +514,15 @@ export namespace Server {
                 path.startsWith("/provider/") ||
                 path.startsWith("/auth/") ||
                 path === "/config/providers"
+              const productContextReady =
+                !!user.context_product_id && (path.startsWith("/build") || path.startsWith("/product/") || productContextPath(path))
               if (
                 !path.startsWith("/account") &&
                 path !== "/global/health" &&
                 path !== "/global/ready" &&
                 path !== "/agent" &&
                 !contextOptional &&
+                !productContextReady &&
                 !user.context_project_id &&
                 !user.permissions.includes("role:manage")
               ) {
@@ -499,6 +539,7 @@ export namespace Server {
                   org_id: user.org_id,
                   department_id: user.department_id,
                   context_project_id: user.context_project_id,
+                  context_product_id: user.context_product_id,
                   roles: user.roles,
                   permissions: user.permissions,
                 },
@@ -687,20 +728,10 @@ export namespace Server {
           let directory = decodeDirectory(raw)
           if (Flag.TPCODE_ACCOUNT_ENABLED) {
             const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-            if (context_project_id) {
+            if (context_project_id && !hinted) {
               const context = await contextProject(context_project_id)
-              if (context.project) {
-                const hintedPath = Filesystem.windowsPath(path.resolve(directory)).toLowerCase()
-                const scoped = [context.project.worktree, ...(context.project.sandboxes ?? [])].find((item) => {
-                  return Filesystem.windowsPath(path.resolve(item)).toLowerCase() === hintedPath
-                })
-                if (scoped) {
-                  directory = scoped
-                } else {
-                  const hinted = await Project.fromDirectory(directory).catch(() => undefined)
-                  directory = hinted?.project.id === context_project_id ? hinted.sandbox : context.project.worktree
-                }
-              }
+              /** 中文注释：浏览器登录态未显式携带目录时，直接以当前上下文项目的 worktree 作为实例入口，避免再从服务端 cwd 反推目录导致卡慢或误判。 */
+              if (context.project?.worktree) directory = context.project.worktree
             }
           }
           return Instance.provide({
@@ -710,7 +741,7 @@ export namespace Server {
               if (Flag.TPCODE_ACCOUNT_ENABLED) {
                 const user_id = c.get("account_user_id" as never) as string | undefined
                 const context_project_id = c.get("account_context_project_id" as never) as string | undefined
-                if (user_id && context_project_id) {
+                if (user_id && context_project_id && !hinted) {
                   if (Instance.project.id !== context_project_id) {
                     const context = await contextProject(context_project_id)
                     const expected = context.project?.worktree
@@ -1093,6 +1124,7 @@ export namespace Server {
               const pending: Array<{ type: string; properties: Record<string, unknown> }> = []
               const sourceID = `${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`
               let timer: ReturnType<typeof setTimeout> | undefined
+              let heartbeat: ReturnType<typeof setInterval> | undefined
               let draining = false
               let closed = false
               const maxPending = 2000
@@ -1100,14 +1132,10 @@ export namespace Server {
               let degraded = false
               let droppedDelta = 0
               let lastDegradedAt = 0
+              let cleanup = () => false
 
               const close = (reason: string, error?: unknown) => {
-                if (closed) return
-                closed = true
-                if (timer) {
-                  clearTimeout(timer)
-                  timer = undefined
-                }
+                if (!cleanup()) return
                 if (error) {
                   log.error("closing event stream", { reason, error })
                 } else {
@@ -1250,12 +1278,34 @@ export namespace Server {
                   close("connected_write_failed", error)
                 })
               if (closed) return
-              const unsub = Bus.subscribeAll((event) => {
+              let unsub = () => {}
+              cleanup = createSSECleanup({
+                onClosed() {
+                  closed = true
+                },
+                tasks: [
+                  () => {
+                    if (!timer) return
+                    clearTimeout(timer)
+                    timer = undefined
+                  },
+                  () => {
+                    if (!heartbeat) return
+                    clearInterval(heartbeat)
+                    heartbeat = undefined
+                  },
+                  clearDegraded,
+                  () => {
+                    unsub()
+                  },
+                ],
+              })
+              unsub = Bus.subscribeAll((event) => {
                 queue(event as { type: string; properties: Record<string, unknown> })
               })
 
               // Send heartbeat every 10s to prevent stalled proxy streams.
-              const heartbeat = setInterval(() => {
+              heartbeat = setInterval(() => {
                 if (closed) return
                 stream
                   .writeSSE({
@@ -1271,13 +1321,9 @@ export namespace Server {
 
               await new Promise<void>((resolve) => {
                 stream.onAbort(() => {
-                  closed = true
-                  if (timer) clearTimeout(timer)
-                  clearInterval(heartbeat)
-                  clearDegraded()
-                  unsub()
+                  const changed = cleanup()
                   resolve()
-                  log.info("event disconnected")
+                  if (changed) log.info("event disconnected")
                 })
               })
             })

@@ -1,6 +1,7 @@
 import { index, table, text, integer } from "../storage/orm-core"
 import { TpUserTable } from "./user.sql"
 import { ProjectTable } from "@/project/project.sql"
+import { TpProductTable } from "./product.sql"
 
 export const TpSessionTokenTable = table(
   "tp_session_token",
@@ -12,6 +13,7 @@ export const TpSessionTokenTable = table(
     token_hash: text().notNull().unique(),
     token_type: text().notNull(),
     context_project_id: text().references(() => ProjectTable.id, { onDelete: "set null" }),
+    context_product_id: text().references(() => TpProductTable.id, { onDelete: "set null" }),
     expires_at: integer().notNull(),
     revoked_at: integer(),
     ip: text(),
@@ -23,6 +25,7 @@ export const TpSessionTokenTable = table(
   (table) => [
     index("tp_session_token_user_idx").on(table.user_id),
     index("tp_session_token_context_project_idx").on(table.context_project_id),
+    index("tp_session_token_context_product_idx").on(table.context_product_id),
     index("tp_session_token_expires_idx").on(table.expires_at),
   ],
 )

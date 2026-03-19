@@ -2,7 +2,9 @@ import { Button } from "@opencode-ai/ui/button"
 import { A, useLocation, useNavigate } from "@solidjs/router"
 import { Show, createSignal, createEffect } from "solid-js"
 import { useAccountAuth } from "@/context/account-auth"
+import { loginSuccessHref } from "@/utils/account-login-redirect"
 
+/** 中文注释：登录页在登录成功后优先回到用户原本要访问的深链接，避免产品会话入口丢失。 */
 export default function AccountLogin() {
   const auth = useAccountAuth()
   const navigate = useNavigate()
@@ -33,12 +35,18 @@ export default function AccountLogin() {
     return { userId, loginType }
   }
 
+  /** 中文注释：统一处理登录成功后的跳转目标，优先恢复深链接，否则回首页。 */
+  const finishLogin = () => {
+    navigate(loginSuccessHref(location.search), { replace: true })
+  }
+
   createEffect(() => {
     if (!auth.ready()) return
     if (!auth.authenticated()) return
-    navigate("/")
+    finishLogin()
   })
 
+  /** 中文注释：账号密码登录成功后复用统一跳转逻辑，避免不同入口表现不一致。 */
   const submit = async (event: SubmitEvent) => {
     event.preventDefault()
     setPending(true)
@@ -54,7 +62,7 @@ export default function AccountLogin() {
       setError(loginErrorText(auth.lastError()))
       return
     }
-    navigate("/")
+    finishLogin()
   }
 
   createEffect(() => {
@@ -75,8 +83,8 @@ export default function AccountLogin() {
         setError(loginErrorText(auth.lastError()))
         return
       }
-      navigate("/")
-      })
+      finishLogin()
+    })
   })
 
   return (

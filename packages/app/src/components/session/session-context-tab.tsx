@@ -18,7 +18,11 @@ import { useLanguage } from "@/context/language"
 import { canViewSessionRawMessages } from "./session-context-tab-access"
 import { getSessionContextMetrics } from "./session-context-metrics"
 import { estimateSessionContextBreakdown, type SessionContextBreakdownKey } from "./session-context-breakdown"
-import { createSessionContextFormatter } from "./session-context-format"
+import {
+  createSessionContextFormatter,
+  formatSessionContextCurrency,
+  readSessionContextLocale,
+} from "./session-context-format"
 
 const BREAKDOWN_COLOR: Record<SessionContextBreakdownKey, string> = {
   system: "var(--syntax-info)",
@@ -129,22 +133,16 @@ export function SessionContextTab() {
     { equals: same },
   )
 
-  const usd = createMemo(
-    () =>
-      new Intl.NumberFormat(language.locale(), {
-        style: "currency",
-        currency: "USD",
-      }),
-  )
+  /** 中文注释：上下文面板要允许语言状态短暂缺失，只降级展示，不允许炸页。 */
+  const locale = createMemo(() => readSessionContextLocale(language.locale))
 
   const metrics = createMemo(() => getSessionContextMetrics(messages(), sync.data.provider.all))
   const ctx = createMemo(() => metrics().context)
-  const formatter = createMemo(() => createSessionContextFormatter(language.locale()))
+  const formatter = createMemo(() => createSessionContextFormatter(locale()))
   const canViewRawMessages = createMemo(() => canViewSessionRawMessages(auth.user()?.roles))
 
-  const cost = createMemo(() => {
-    return usd().format(metrics().totalCost)
-  })
+  /** 中文注释：上下文 tab 也直接输出字符串，避免格式化器对象在热更新边界失效。 */
+  const cost = createMemo(() => formatSessionContextCurrency(locale(), metrics().totalCost))
 
   const counts = createMemo(() => {
     const all = messages()
@@ -192,7 +190,7 @@ export function SessionContextTab() {
 
   const stats = [
     { label: "context.stats.session", value: () => info()?.title ?? params.id ?? "—" },
-    { label: "context.stats.messages", value: () => counts().all.toLocaleString(language.locale()) },
+    { label: "context.stats.messages", value: () => formatter().number(counts().all) },
     { label: "context.stats.limit", value: () => formatter().number(ctx()?.limit) },
     { label: "context.stats.totalTokens", value: () => formatter().number(ctx()?.total) },
     { label: "context.stats.usage", value: () => formatter().percent(ctx()?.usage) },
@@ -203,8 +201,8 @@ export function SessionContextTab() {
       label: "context.stats.cacheTokens",
       value: () => `${formatter().number(ctx()?.cacheRead)} / ${formatter().number(ctx()?.cacheWrite)}`,
     },
-    { label: "context.stats.userMessages", value: () => counts().user.toLocaleString(language.locale()) },
-    { label: "context.stats.assistantMessages", value: () => counts().assistant.toLocaleString(language.locale()) },
+    { label: "context.stats.userMessages", value: () => formatter().number(counts().user) },
+    { label: "context.stats.assistantMessages", value: () => formatter().number(counts().assistant) },
     { label: "context.stats.totalCost", value: cost },
     { label: "context.stats.sessionCreated", value: () => formatter().time(info()?.time.created) },
     { label: "context.stats.lastActivity", value: () => formatter().time(ctx()?.message.time.created) },
@@ -297,7 +295,7 @@ export function SessionContextTab() {
                   <div class="flex items-center gap-1 text-11-regular text-text-weak">
                     <div class="size-2 rounded-sm" style={{ "background-color": BREAKDOWN_COLOR[segment.key] }} />
                     <div>{breakdownLabel(segment.key)}</div>
-                    <div class="text-text-weaker">{segment.percent.toLocaleString(language.locale())}%</div>
+                    <div class="text-text-weaker">{formatter().percent(segment.percent)}</div>
                   </div>
                 )}
               </For>

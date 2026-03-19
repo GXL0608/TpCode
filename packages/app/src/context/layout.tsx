@@ -63,6 +63,47 @@ type PromptHandoff = {
   at: number
 }
 
+type VhoPlanHandoff = {
+  directory: string
+  saved_plan_id: string
+  plan_content: string
+  prompt: string
+  feedback_des?: string
+  at: number
+}
+
+type SavedPlanHandoff = {
+  id: string
+  prompt?: string
+  at: number
+}
+
+type BuildStageHandoff = {
+  stage?: string
+  status?: string
+  detail_json?: Record<string, unknown>
+  error_message?: string
+}
+
+type BuildArtifactHandoff = {
+  id: string
+  file_name: string
+}
+
+type BuildJobHandoff = {
+  job_id: string
+  status: string
+  current_stage?: string
+  error_code?: string
+  error_message?: string
+  session_id?: string
+  session_directory?: string
+  solution_scope?: string
+  stages: BuildStageHandoff[]
+  artifacts: BuildArtifactHandoff[]
+  at: number
+}
+
 export type LocalProject = Partial<Project> & { worktree: string; expanded: boolean }
 
 export type ReviewDiffStyle = "unified" | "split"
@@ -213,6 +254,9 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           tabs: undefined as TabHandoff | undefined,
           workspaces: {} as Record<string, WorkspaceHandoff | undefined>,
           prompts: {} as Record<string, PromptHandoff | undefined>,
+          vho_plans: {} as Record<string, VhoPlanHandoff | undefined>,
+          saved_plans: {} as Record<string, SavedPlanHandoff | undefined>,
+          build_jobs: {} as Record<string, BuildJobHandoff | undefined>,
         },
       }),
     )
@@ -442,6 +486,84 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
             "prompts",
             produce((draft) => {
               delete draft[directory]
+            }),
+          )
+        },
+        /** 中文注释：读取反馈回填到新会话页的一次性计划信息，供 Markdown 预览与首次 build 复用 saved_plan。 */
+        vhoPlan(directory: string) {
+          return store.handoff?.vho_plans?.[directory]
+        },
+        /** 中文注释：在“选择并回填”后写入反馈关联的 saved_plan 与计划内容，保证新会话页可直接展示和复用。 */
+        setVhoPlan(
+          directory: string,
+          input: {
+            saved_plan_id: string
+            plan_content: string
+            prompt: string
+            feedback_des?: string
+          },
+        ) {
+          setStore("handoff", "vho_plans", directory, {
+            directory,
+            saved_plan_id: input.saved_plan_id,
+            plan_content: input.plan_content,
+            prompt: input.prompt,
+            feedback_des: input.feedback_des,
+            at: Date.now(),
+          })
+        },
+        /** 中文注释：当反馈回填已被消费或显式放弃时，清理目录级计划交接，避免旧计划污染后续新会话。 */
+        clearVhoPlan(directory: string) {
+          if (!store.handoff?.vho_plans?.[directory]) return
+          setStore(
+            "handoff",
+            "vho_plans",
+            produce((draft) => {
+              delete draft[directory]
+            }),
+          )
+        },
+        /** 中文注释：记录当前会话最近一次保存成功的 plan_id，供 build 模式在同会话内直接执行已保存计划。 */
+        savedPlan(sessionID: string) {
+          return store.handoff?.saved_plans?.[sessionID]
+        },
+        /** 中文注释：保存计划成功后写入当前会话的最新 plan_id，避免 build 模式还要额外拉列表才能执行。 */
+        setSavedPlan(sessionID: string, id: string) {
+          setStore("handoff", "saved_plans", sessionID, {
+            id,
+            at: Date.now(),
+          })
+        },
+        /** 中文注释：当会话上下文明确切走或需要重置时，允许清理当前会话暂存的最新 plan_id。 */
+        clearSavedPlan(sessionID: string) {
+          if (!store.handoff?.saved_plans?.[sessionID]) return
+          setStore(
+            "handoff",
+            "saved_plans",
+            produce((draft) => {
+              delete draft[sessionID]
+            }),
+          )
+        },
+        /** 中文注释：读取当前会话最近一次 build 任务快照，供会话页持续展示阶段状态与产物入口。 */
+        buildJob(sessionID: string) {
+          return store.handoff?.build_jobs?.[sessionID]
+        },
+        /** 中文注释：在 build 创建、轮询和完成时持续回写当前会话的构建快照，避免用户只能依赖 toast 感知结果。 */
+        setBuildJob(sessionID: string, input: Omit<BuildJobHandoff, "at">) {
+          setStore("handoff", "build_jobs", sessionID, {
+            ...input,
+            at: Date.now(),
+          })
+        },
+        /** 中文注释：当会话被显式重置或需要清空历史构建态时，允许删除当前会话保存的 build 快照。 */
+        clearBuildJob(sessionID: string) {
+          if (!store.handoff?.build_jobs?.[sessionID]) return
+          setStore(
+            "handoff",
+            "build_jobs",
+            produce((draft) => {
+              delete draft[sessionID]
             }),
           )
         },

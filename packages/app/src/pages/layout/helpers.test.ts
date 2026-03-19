@@ -7,8 +7,15 @@ import {
   errorMessage,
   getDraggableId,
   hasProjectPermissions,
+  hiddenWorkspaceDirectory,
   latestRootSession,
+  productContextStateKey,
+  productContextStateShouldSync,
+  productContextStateSynced,
   projectSupportsWorkspace,
+  projectWorkspaceDirectories,
+  rememberedSessionKey,
+  sortSessions,
   syncWorkspaceOrder,
   workspaceModeEnabled,
   workspaceKey,
@@ -120,6 +127,84 @@ describe("layout workspace helpers", () => {
     expect(result?.id).toBe("workspace")
   })
 
+  test("keeps sessions sorted by updated time even inside the recent window", () => {
+    const result = [
+      session({
+        id: "older",
+        directory: "/root",
+        time: { created: 1, updated: 119_000, archived: undefined },
+      }),
+      session({
+        id: "newer",
+        directory: "/root",
+        time: { created: 2, updated: 119_500, archived: undefined },
+      }),
+    ].sort(sortSessions(120_000))
+
+    expect(result.map((item) => item.id)).toEqual(["newer", "older"])
+  })
+
+  test("builds a stable remembered session key only after the session has real messages", () => {
+    expect(
+      rememberedSessionKey({
+        directory: "/root",
+        id: "ses_1",
+        message_count: 0,
+      }),
+    ).toBeUndefined()
+
+    expect(
+      rememberedSessionKey({
+        directory: "/root",
+        id: "ses_1",
+        message_count: 1,
+      }),
+    ).toBe("/root\0ses_1")
+  })
+
+  test("treats null and undefined last_project_id as the same empty product context", () => {
+    expect(
+      productContextStateSynced({
+        open_project_ids: [],
+        last_project_id: null,
+        state_open_project_ids: [],
+        state_last_project_id: undefined,
+      }),
+    ).toBe(true)
+  })
+
+  test("does not re-sync the same product context state while an identical patch is in flight", () => {
+    const pending_key = productContextStateKey({
+      open_project_ids: ["folder_a"],
+      last_project_id: "folder_a",
+    })
+    expect(
+      productContextStateShouldSync({
+        open_project_ids: ["folder_a"],
+        last_project_id: "folder_a",
+        state_open_project_ids: [],
+        state_last_project_id: undefined,
+        pending_key,
+      }),
+    ).toBe(false)
+  })
+
+  test("still syncs product context state when the pending patch differs", () => {
+    const pending_key = productContextStateKey({
+      open_project_ids: ["folder_a"],
+      last_project_id: "folder_a",
+    })
+    expect(
+      productContextStateShouldSync({
+        open_project_ids: ["folder_b"],
+        last_project_id: "folder_b",
+        state_open_project_ids: [],
+        state_last_project_id: undefined,
+        pending_key,
+      }),
+    ).toBe(true)
+  })
+
   test("detects project permissions with a filter", () => {
     const result = hasProjectPermissions(
       {
@@ -225,6 +310,32 @@ describe("layout workspace helpers", () => {
       bootstrap: "/root/b",
       sessions: ["/root", "/root/a"],
     })
+  })
+
+  test("keeps the current overlay workspace visible but hides stale overlay sandboxes", () => {
+    expect(
+      projectWorkspaceDirectories({
+        project: {
+          worktree: "/root",
+          sandboxes: [
+            "/Users/demo/.local/share/opencode/build-overlay/project_a/stale-1",
+            "/root/a",
+          ],
+        },
+        currentDir: "/Users/demo/.local/share/opencode/build-overlay/project_a/current-session",
+      }),
+    ).toEqual([
+      "/root",
+      "/Users/demo/.local/share/opencode/build-overlay/project_a/current-session",
+      "/root/a",
+    ])
+  })
+
+  test("treats build overlay directories as hidden workspaces", () => {
+    expect(hiddenWorkspaceDirectory("/Users/demo/.local/share/opencode/build-overlay/project_a/current-session")).toBe(
+      true,
+    )
+    expect(hiddenWorkspaceDirectory("/root/a")).toBe(false)
   })
 
   test("keeps workspace-disabled projects on root session loading while bootstrapping the active sandbox", () => {

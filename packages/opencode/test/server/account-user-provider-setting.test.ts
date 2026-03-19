@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { AccountSystemSettingService } from "../../src/user/system-setting"
 import { Flag } from "../../src/flag/flag"
+import { Database, eq } from "../../src/storage/db"
+import { TpUserProviderSettingTable } from "../../src/user/user-provider-setting.sql"
 
 const accountEnabled = Flag.TPCODE_ACCOUNT_ENABLED
 
@@ -385,5 +387,78 @@ describe("account user provider setting", () => {
       },
     })
     expect(configDenied.status).toBe(403)
+  })
+
+  test.skipIf(!accountEnabled)("个人 provider 删除接口会写入逻辑删除快照并从读取结果中隐藏", async () => {
+    const service = state.user
+    if (!service) throw new Error("user_service_missing")
+    const username = uid("provider_delete_route")
+    const password = "TpCode@123A"
+    const created = await service.createUser({
+      username,
+      password,
+      display_name: "Provider Delete Route",
+      account_type: "internal",
+      org_id: "org_tp_internal",
+      role_codes: ["super_admin"],
+      actor_user_id: "user_tp_admin",
+    })
+    expect(created.ok).toBe(true)
+    if (!("id" in created) || !created.id) throw new Error("user_id_missing")
+
+    try {
+      const token = await login(username, password)
+      const selected = await selectContext(token)
+
+      const authSave = await req({
+        path: "/auth/openrouter",
+        method: "PUT",
+        token: selected.token,
+        body: { type: "api", key: "sk-delete-route-openrouter" },
+      })
+      expect(authSave.status).toBe(200)
+
+      const configSave = await req({
+        path: "/account/me/providers/openrouter/config",
+        method: "PUT",
+        token: selected.token,
+        body: {
+          models: {
+            "openai/gpt-4o-mini": {},
+          },
+        },
+      })
+      expect(configSave.status).toBe(200)
+
+      const deleted = await req({
+        path: "/account/me/providers/openrouter",
+        method: "DELETE",
+        token: selected.token,
+      })
+      expect(deleted.status).toBe(200)
+
+      const own = await req({
+        path: "/account/me/provider/openrouter",
+        token: selected.token,
+      })
+      expect(own.status).toBe(200)
+      const ownBody = (await own.json()) as {
+        configured?: boolean
+      }
+      expect(ownBody.configured).toBe(false)
+
+      const row = await Database.use((db) =>
+        db.select().from(TpUserProviderSettingTable).where(eq(TpUserProviderSettingTable.user_id, created.id)).get(),
+      )
+      expect(row?.provider_deleted_json?.["openrouter"]).toBeNumber()
+      expect(row?.provider_auth_deleted_json?.["openrouter"]).toBeDefined()
+      expect(row?.provider_config_deleted_json?.["openrouter"]).toBeDefined()
+    } finally {
+      const cleanup = await service.deleteUser({
+        user_id: created.id,
+        actor_user_id: "user_tp_admin",
+      })
+      expect(cleanup.ok).toBe(true)
+    }
   })
 })

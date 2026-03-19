@@ -81,6 +81,7 @@ export type SessionItemProps = {
   clearHoverProjectSoon: () => void
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   archiveSession: (session: Session) => Promise<void>
+  deleteSession?: (session: Session) => void
 }
 
 const SessionRow = (props: {
@@ -99,6 +100,7 @@ const SessionRow = (props: {
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   scheduleHoverPrefetch: () => void
   cancelHoverPrefetch: () => void
+  onActivate: () => void
 }): JSX.Element => (
   <A
     href={`/${props.slug}/session/${props.session.id}`}
@@ -109,6 +111,7 @@ const SessionRow = (props: {
     onMouseLeave={props.cancelHoverPrefetch}
     onFocus={() => props.prefetchSession(props.session, "high")}
     onClick={() => {
+      props.onActivate()
       props.setHoverSession(undefined)
       if (props.sidebarOpened()) return
       props.clearHoverProjectSoon()
@@ -277,6 +280,10 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
       prefetchSession={props.prefetchSession}
       scheduleHoverPrefetch={scheduleHoverPrefetch}
       cancelHoverPrefetch={cancelHoverPrefetch}
+      onActivate={() => {
+        globalSync.child(props.session.directory)
+        props.prefetchSession(props.session, "high")
+      }}
     />
   )
 
@@ -341,6 +348,23 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
             }}
           />
         </Tooltip>
+        <Show when={props.deleteSession}>
+          {(remove) => (
+            <Tooltip value={language.t("common.delete")} placement="top">
+              <IconButton
+                icon="trash"
+                variant="ghost"
+                class="size-6 rounded-md"
+                aria-label={language.t("common.delete")}
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  remove()(props.session)
+                }}
+              />
+            </Tooltip>
+          )}
+        </Show>
       </div>
     </div>
   )

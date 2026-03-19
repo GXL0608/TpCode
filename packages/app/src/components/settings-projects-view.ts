@@ -4,7 +4,28 @@ type SolutionLike = {
 
 type ProductLike = {
   id: string
+  name?: string
   solutions?: SolutionLike[]
+}
+
+/** 中文注释：统一按名称升序整理导航项，保证产品列表展示稳定可预期。 */
+export function sortNamedItems<T extends { name?: string }>(items: T[]) {
+  return [...items].sort((a, b) => {
+    const left = a.name ?? ""
+    const right = b.name ?? ""
+    const leftBucket = /^[a-z0-9]/i.test(left) ? 0 : 1
+    const rightBucket = /^[a-z0-9]/i.test(right) ? 0 : 1
+    if (leftBucket !== rightBucket) return leftBucket - rightBucket
+    return left.localeCompare(right, "zh-Hans-CN", { numeric: true, sensitivity: "base" })
+  })
+}
+
+/** 中文注释：按名称执行大小写不敏感检索，并始终返回排好序的结果。 */
+export function filterNamedItems<T extends { name?: string }>(items: T[], keyword: string) {
+  const query = keyword.trim().toLocaleLowerCase()
+  const sorted = sortNamedItems(items)
+  if (!query) return sorted
+  return sorted.filter((item) => (item.name ?? "").toLocaleLowerCase().includes(query))
 }
 
 /** 中文注释：校正当前产品选中项，保证列表刷新后始终落在有效产品上。 */

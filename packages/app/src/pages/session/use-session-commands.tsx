@@ -1,5 +1,6 @@
 import { createMemo } from "solid-js"
-import { useNavigate, useParams } from "@solidjs/router"
+import { useLocation, useNavigate, useParams } from "@solidjs/router"
+import { freshSessionContextHref, freshSessionKey } from "@/utils/session-route"
 import { useCommand, type CommandOption } from "@/context/command"
 import { useAccountAuth } from "@/context/account-auth"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -47,6 +48,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const sync = useSync()
   const terminal = useTerminal()
   const layout = useLayout()
+  const location = useLocation()
   const params = useParams()
   const navigate = useNavigate()
   const canBrowse = createMemo(() => auth.has("file:browse"))
@@ -105,7 +107,17 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.new"),
       keybind: "mod+shift+s",
       slash: "new",
-      onSelect: () => navigate(`/${params.dir}/session`),
+      onSelect: () => {
+        if (!params.dir) return
+        navigate(
+          freshSessionContextHref({
+            directory: params.dir,
+            search: location.search,
+            fallback_product_id: auth.user()?.context_product_id,
+            fresh_key: freshSessionKey(),
+          }),
+        )
+      },
     }),
   ])
 

@@ -15,6 +15,7 @@ describe("global shared root", () => {
     })
 
     expect(result.data).toBe("/tmp/data/opencode")
+    expect(result.runtime).toBe("/tmp/data/opencode")
     expect(result.cache).toBe("/tmp/cache/opencode")
     expect(result.config).toBe("/tmp/config/opencode")
     expect(result.state).toBe("/tmp/state/opencode")
@@ -35,6 +36,7 @@ describe("global shared root", () => {
     })
 
     expect(result.data).toBe("/tmp/data/opencode")
+    expect(result.runtime).toBe("/tmp/data/opencode")
     expect(result.cache).toBe("/tmp/cache/opencode")
     expect(result.config).toBe("/tmp/config/opencode")
     expect(result.state).toBe("/tmp/state/opencode")
@@ -43,6 +45,7 @@ describe("global shared root", () => {
   test("uses packaged default shared root when runtime is not local", () => {
     const result = resolvePaths({
       local: false,
+      platform: "win32",
       xdg: {
         data: "/tmp/data",
         cache: "/tmp/cache",
@@ -52,6 +55,7 @@ describe("global shared root", () => {
     })
 
     expect(result.data).toBe(path.win32.join("Y:\\tpcode", ".local", "share", "opencode"))
+    expect(result.runtime).toBe(path.join("/tmp/cache", "opencode-runtime"))
     expect(result.cache).toBe(path.win32.join("Y:\\tpcode", ".cache", "opencode"))
     expect(result.config).toBe(path.win32.join("Y:\\tpcode", ".config", "opencode"))
     expect(result.state).toBe(path.win32.join("Y:\\tpcode", ".local", "state", "opencode"))
@@ -63,6 +67,7 @@ describe("global shared root", () => {
     const result = resolvePaths({
       local: false,
       sharedRoot: "Z:\\shared\\tpcode",
+      platform: "win32",
       xdg: {
         data: "/tmp/data",
         cache: "/tmp/cache",
@@ -72,8 +77,26 @@ describe("global shared root", () => {
     })
 
     expect(result.data).toBe(path.win32.join("Z:\\shared\\tpcode", ".local", "share", "opencode"))
+    expect(result.runtime).toBe(path.join("/tmp/cache", "opencode-runtime"))
     expect(result.cache).toBe(path.win32.join("Z:\\shared\\tpcode", ".cache", "opencode"))
     expect(result.config).toBe(path.win32.join("Z:\\shared\\tpcode", ".config", "opencode"))
     expect(result.state).toBe(path.win32.join("Z:\\shared\\tpcode", ".local", "state", "opencode"))
+  })
+
+  test("prefers explicit runtime root for packaged runtime", () => {
+    const result = resolvePaths({
+      local: false,
+      sharedRoot: "Z:\\shared\\tpcode",
+      runtimeRoot: "D:\\tpcode-runtime",
+      platform: "win32",
+      xdg: {
+        data: "/tmp/data",
+        cache: "/tmp/cache",
+        config: "/tmp/config",
+        state: "/tmp/state",
+      },
+    })
+
+    expect(result.runtime).toBe("D:\\tpcode-runtime")
   })
 })

@@ -54,7 +54,7 @@ async function context(input: { user_id: string; project_id: string }) {
       product_id: hit.id,
       product_name: productName({
         name: hit.name,
-        worktree: hit.worktree,
+        worktree: hit.worktree ?? hit.project_id ?? input.project_id,
       }),
     }
   }

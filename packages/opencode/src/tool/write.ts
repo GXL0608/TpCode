@@ -26,7 +26,14 @@ export const WriteTool = Tool.define("write", {
   }),
   async execute(params, ctx) {
     const overlay = await BuildOverlay.load(ctx.sessionID)
-    const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
+    const filepath = overlay
+      ? BuildOverlay.remapSourcePath({
+          overlay,
+          filePath: path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath),
+        })
+      : path.isAbsolute(params.filePath)
+        ? params.filePath
+        : path.join(Instance.directory, params.filePath)
     await assertExternalDirectory(ctx, filepath)
     await assertBuildWriteTarget({
       sessionID: ctx.sessionID,

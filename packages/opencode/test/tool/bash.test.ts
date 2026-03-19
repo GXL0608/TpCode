@@ -112,6 +112,7 @@ describe("tool.bash", () => {
         })
         expect(solution.ok).toBe(true)
         if (!solution.ok) return
+        if (!product.item.project_id) throw new Error("product_project_missing")
 
         const workspace = await Workspace.createOverlay({
           projectID: product.item.project_id,
@@ -172,6 +173,126 @@ describe("tool.bash", () => {
       },
     })
   })
+
+  test(
+    "read-only bash command does not persist whole solution files into overlay",
+    { timeout: 15_000 },
+    async () => {
+    await using tmp = await tmpdir()
+    const backend = await createRepo(tmp.path, "backend")
+    const frontend = await createRepo(tmp.path, "frontend")
+    await Instance.provide({
+      directory: backend,
+      fn: async () => {
+        const product = await AccountProductService.create({
+          name: "只读 overlay 产品",
+          directory: backend,
+        })
+        expect(product.ok).toBe(true)
+        if (!product.ok) return
+
+        const backendSolution = await ProductSolutionService.create({
+          product_id: product.item.id,
+          name: "后端方案",
+          code: "backend-solution",
+          build_profile: {
+            workdirs: ["backend"],
+            compile_command: "echo build",
+            artifact_include: [],
+          },
+          roots: [
+            {
+              root_type: "single_repo",
+              directory: backend,
+              display_name: "后端方案",
+              mount_name: "backend",
+              sort_order: 1,
+            },
+          ],
+        })
+        expect(backendSolution.ok).toBe(true)
+        if (!backendSolution.ok) return
+
+        const frontendSolution = await ProductSolutionService.create({
+          product_id: product.item.id,
+          name: "前端方案",
+          code: "frontend-solution",
+          build_profile: {
+            workdirs: ["frontend"],
+            compile_command: "echo build",
+            artifact_include: [],
+          },
+          roots: [
+            {
+              root_type: "single_repo",
+              directory: frontend,
+              display_name: "前端方案",
+              mount_name: "frontend",
+              sort_order: 1,
+            },
+          ],
+        })
+        expect(frontendSolution.ok).toBe(true)
+        if (!frontendSolution.ok) return
+        if (!product.item.project_id) throw new Error("product_project_missing")
+
+        const workspace = await Workspace.createOverlay({
+          projectID: product.item.project_id,
+          sourceRoots: [backend, frontend],
+          members: [
+            {
+              directory: backend,
+              name: "backend",
+              relative_path: "backend",
+              solution_id: backendSolution.item.id,
+              solution_code: backendSolution.item.code,
+            },
+            {
+              directory: frontend,
+              name: "frontend",
+              relative_path: "frontend",
+              solution_id: frontendSolution.item.id,
+              solution_code: frontendSolution.item.code,
+            },
+          ],
+          name: "bash-overlay-readonly-workspace",
+        })
+        const overlay = BuildOverlay.fromWorkspace(workspace)
+        expect(overlay).toBeDefined()
+        if (!overlay) return
+        const session = await Session.createNext({
+          directory: workspace.directory,
+          workspaceID: workspace.id,
+          workspaceDirectory: workspace.directory,
+          workspaceKind: workspace.kind,
+          workspaceStatus: "ready",
+          workspaceCleanupStatus: "none",
+        })
+        const bash = await BashTool.init()
+        const started = Date.now()
+        const result = await bash.execute(
+          {
+            command: "ls -d */ 2>/dev/null || ls -la",
+            workdir: workspace.directory,
+            description: "列出当前目录第一级子目录",
+          },
+          {
+            ...ctx,
+            sessionID: session.id,
+          },
+        )
+        const duration = Date.now() - started
+
+        expect(result.metadata.exit).toBe(0)
+        expect(result.metadata.output).toContain("backend/")
+        expect(result.metadata.output).toContain("frontend/")
+        expect(duration).toBeLessThan(3_000)
+        expect(await BuildOverlay.listChanges(overlay)).toEqual([])
+        expect(await Bun.file(path.join(workspace.directory, "backend", "source.txt")).exists()).toBe(false)
+        expect(await Bun.file(path.join(workspace.directory, "frontend", "source.txt")).exists()).toBe(false)
+      },
+    })
+  )
 })
 
 describe("tool.bash permissions", () => {

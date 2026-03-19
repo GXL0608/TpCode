@@ -8,6 +8,11 @@ import { useLayout } from "@/context/layout"
 import { useSync } from "@/context/sync"
 import { useLanguage } from "@/context/language"
 import { getSessionContextMetrics } from "@/components/session/session-context-metrics"
+import {
+  createSessionContextFormatter,
+  formatSessionContextCurrency,
+  readSessionContextLocale,
+} from "@/components/session/session-context-format"
 
 interface SessionContextUsageProps {
   variant?: "button" | "indicator"
@@ -37,19 +42,13 @@ export function SessionContextUsage(props: SessionContextUsageProps) {
   const view = createMemo(() => layout.view(sessionKey))
   const messages = createMemo(() => (params.id ? (sync.data.message[params.id] ?? []) : []))
 
-  const usd = createMemo(
-    () =>
-      new Intl.NumberFormat(language.locale(), {
-        style: "currency",
-        currency: "USD",
-      }),
-  )
-
+  /** 中文注释：语言上下文在切换产品和会话时可能短暂未就绪，这里统一做安全降级。 */
+  const locale = createMemo(() => readSessionContextLocale(language.locale))
+  const formatter = createMemo(() => createSessionContextFormatter(locale()))
   const metrics = createMemo(() => getSessionContextMetrics(messages(), sync.data.provider.all))
   const context = createMemo(() => metrics().context)
-  const cost = createMemo(() => {
-    return usd().format(metrics().totalCost)
-  })
+  /** 中文注释：这里直接生成最终展示字符串，彻底避免组件层再访问 format 属性。 */
+  const cost = createMemo(() => formatSessionContextCurrency(locale(), metrics().totalCost))
 
   const openContext = () => {
     if (!params.id) return
@@ -77,7 +76,7 @@ export function SessionContextUsage(props: SessionContextUsageProps) {
         {(ctx) => (
           <>
             <div class="flex items-center gap-2">
-              <span class="text-text-invert-strong">{ctx().total.toLocaleString(language.locale())}</span>
+              <span class="text-text-invert-strong">{formatter().number(ctx().total)}</span>
               <span class="text-text-invert-base">{language.t("context.usage.tokens")}</span>
             </div>
             <div class="flex items-center gap-2">

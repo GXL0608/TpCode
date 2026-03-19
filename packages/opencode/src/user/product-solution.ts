@@ -1,11 +1,10 @@
-import path from "path"
 import z from "zod"
 import { ulid } from "ulid"
 import { BuildProfile, normalizeBuildProfile, type BuildProfile as BuildProfileType } from "@/build/profile"
-import { ProjectTable } from "@/project/project.sql"
-import { Database, asc, desc, eq, inArray } from "@/storage/db"
+import { Database, and, asc, desc, eq, inArray, isNull } from "@/storage/db"
 import { Filesystem } from "@/util/filesystem"
 import { TpProductTable } from "./product.sql"
+import { invalidateProductAnchorCache, solutionProjectID } from "./product-anchor"
 import { TpProductSolutionBindingTable } from "./product-solution-binding.sql"
 import { TpProductSolutionRootTable } from "./product-solution-root.sql"
 import { TpProductSolutionTable } from "./product-solution.sql"
@@ -45,20 +44,35 @@ export type ProductSolutionRootItem = {
 
 export type ProductSolutionItem = {
   id: string
-  product_id: string
+  product_id?: string
+  primary_project_id?: string
   name: string
   code: string
   enabled: boolean
-  primary_project_id?: string
   build_profile: BuildProfileType
   roots: ProductSolutionRootItem[]
   time_created: number
   time_updated: number
 }
 
+/** 中文注释：统一过滤未逻辑删除的产品，避免解决方案绑定落到已删除产品上。 */
+function activeProduct() {
+  return isNull(TpProductTable.time_deleted)
+}
+
+/** 中文注释：统一过滤未逻辑删除的解决方案，供方案库与产品方案列表复用。 */
+function activeSolution() {
+  return isNull(TpProductSolutionTable.time_deleted)
+}
+
+/** 中文注释：统一过滤未逻辑删除的绑定关系，避免解绑历史继续出现在产品方案列表中。 */
+function activeBinding() {
+  return isNull(TpProductSolutionBindingTable.time_deleted)
+}
+
 /** 中文注释：把目录统一规整为绝对路径，保证解决方案根目录比较和去重稳定。 */
 function resolveDirectory(input: string) {
-  return path.resolve(input.trim())
+  return Filesystem.stablePath(input.trim())
 }
 
 /** 中文注释：校验单个解决方案根目录定义，避免运行期再碰到路径缺失或虚拟组配置不完整。 */
@@ -128,20 +142,27 @@ function rootItem(row: typeof TpProductSolutionRootTable.$inferSelect): ProductS
 function solutionItem(
   row: typeof TpProductSolutionTable.$inferSelect,
   roots: ProductSolutionRootItem[],
-  product_id = row.product_id,
+  primary_project_id?: string,
+  product_id?: string,
 ): ProductSolutionItem {
   return {
     id: row.id,
     product_id,
+    primary_project_id,
     name: row.name,
     code: row.code,
     enabled: row.enabled,
-    primary_project_id: row.primary_project_id ?? undefined,
     build_profile: normalizeBuildProfile(row.build_profile_json),
     roots: roots.sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id)),
     time_created: row.time_created,
     time_updated: row.time_updated,
   }
+}
+
+/** 中文注释：产品方案绑定或根目录配置变更后，需要清空账号产品上下文缓存，避免用户侧继续看到旧路径摘要。 */
+async function invalidateAccountContextCache() {
+  const { AccountContextService } = await import("./context")
+  AccountContextService.invalidateProjectAccess()
 }
 
 /** 中文注释：按解决方案主表批量回填根目录，避免接口层出现 N+1 查询。 */
@@ -164,7 +185,18 @@ async function hydrate(rows: (typeof TpProductSolutionTable.$inferSelect)[]) {
     list.push(rootItem(row))
     map.set(row.solution_id, list)
   }
-  return rows.map((row) => solutionItem(row, map.get(row.id) ?? []))
+  return Promise.all(
+    rows.map(async (row) => {
+      const items = map.get(row.id) ?? []
+      return solutionItem(
+        row,
+        items,
+        await solutionProjectID({
+          roots: items,
+        }),
+      )
+    }),
+  )
 }
 
 /** 中文注释：把绑定关系映射成指定产品视角下的解决方案列表，确保同一方案可被多个产品复用。 */
@@ -177,7 +209,7 @@ async function hydrateBindings(rows: (typeof TpProductSolutionBindingTable.$infe
           db
             .select()
             .from(TpProductSolutionTable)
-            .where(inArray(TpProductSolutionTable.id, ids))
+            .where(and(inArray(TpProductSolutionTable.id, ids), activeSolution()))
             .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
             .all(),
         )
@@ -196,21 +228,6 @@ async function hydrateBindings(rows: (typeof TpProductSolutionBindingTable.$infe
   })
 }
 
-/** 中文注释：判断哪些产品仍需走旧的 product_id 兜底逻辑；只在完全没有绑定关系历史时才回退。 */
-async function legacyProducts(product_ids: string[]) {
-  if (product_ids.length === 0) return new Set<string>()
-  const rows = await Database.use((db) =>
-    db
-      .select({ product_id: TpProductSolutionTable.product_id })
-      .from(TpProductSolutionBindingTable)
-      .innerJoin(TpProductSolutionTable, eq(TpProductSolutionBindingTable.solution_id, TpProductSolutionTable.id))
-      .where(inArray(TpProductSolutionTable.product_id, product_ids))
-      .all(),
-  )
-  const bound = new Set(rows.map((item) => item.product_id))
-  return new Set(product_ids.filter((item) => !bound.has(item)))
-}
-
 export namespace ProductSolutionService {
   /** 中文注释：返回全局解决方案库，供产品绑定现有方案与后续独立方案库页面复用。 */
   export async function listLibrary() {
@@ -218,6 +235,7 @@ export namespace ProductSolutionService {
       db
         .select()
         .from(TpProductSolutionTable)
+        .where(activeSolution())
         .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
         .all(),
     )
@@ -229,22 +247,11 @@ export namespace ProductSolutionService {
       db
         .select()
         .from(TpProductSolutionBindingTable)
-        .where(eq(TpProductSolutionBindingTable.product_id, product_id))
+        .where(and(eq(TpProductSolutionBindingTable.product_id, product_id), activeBinding()))
         .orderBy(asc(TpProductSolutionBindingTable.sort_order), asc(TpProductSolutionBindingTable.id))
         .all(),
     )
-    if (bindings.length > 0) return hydrateBindings(bindings)
-    const legacy = await legacyProducts([product_id])
-    if (!legacy.has(product_id)) return [] as ProductSolutionItem[]
-    const rows = await Database.use((db) =>
-      db
-        .select()
-        .from(TpProductSolutionTable)
-        .where(eq(TpProductSolutionTable.product_id, product_id))
-        .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
-        .all(),
-    )
-    return hydrate(rows)
+    return hydrateBindings(bindings)
   }
 
   export async function listByProductIDs(product_ids: string[]) {
@@ -253,7 +260,7 @@ export namespace ProductSolutionService {
       db
         .select()
         .from(TpProductSolutionBindingTable)
-        .where(inArray(TpProductSolutionBindingTable.product_id, product_ids))
+        .where(and(inArray(TpProductSolutionBindingTable.product_id, product_ids), activeBinding()))
         .orderBy(
           asc(TpProductSolutionBindingTable.product_id),
           asc(TpProductSolutionBindingTable.sort_order),
@@ -261,41 +268,41 @@ export namespace ProductSolutionService {
         )
         .all(),
     )
-    const bound = await hydrateBindings(bindings)
-    const missing = product_ids.filter((item) => !bindings.some((binding) => binding.product_id === item))
-    if (missing.length === 0) return bound
-    const legacy = await legacyProducts(missing)
-    const fallback = missing.filter((item) => legacy.has(item))
-    if (fallback.length === 0) return bound
-    const rows = await Database.use((db) =>
-      db
-        .select()
-        .from(TpProductSolutionTable)
-        .where(inArray(TpProductSolutionTable.product_id, fallback))
-        .orderBy(asc(TpProductSolutionTable.name), asc(TpProductSolutionTable.id))
-        .all(),
-    )
-    return [...bound, ...(await hydrate(rows))]
+    return hydrateBindings(bindings)
   }
 
   export async function get(solution_id: string) {
-    const row = await Database.use((db) => db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.id, solution_id), activeSolution()))
+        .get(),
+    )
     if (!row) return
     const list = await hydrate([row])
     return list[0]
   }
 
   export async function create(input: {
-    product_id: string
+    product_id?: string
     name: string
     code: string
     enabled?: boolean
-    primary_project_id?: string
     build_profile: unknown
     roots: ProductSolutionRootInput[]
   }) {
-    const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
-    if (!product) return { ok: false as const, code: "product_missing" as const }
+    const product_id = input.product_id?.trim()
+    if (product_id) {
+      const product = await Database.use((db) =>
+        db
+          .select()
+          .from(TpProductTable)
+          .where(and(eq(TpProductTable.id, product_id), activeProduct()))
+          .get(),
+      )
+      if (!product) return { ok: false as const, code: "product_missing" as const }
+    }
     const name = input.name.trim()
     const code = input.code.trim()
     if (!name) return { ok: false as const, code: "solution_name_invalid" as const }
@@ -311,18 +318,12 @@ export namespace ProductSolutionService {
     }
     const duplicate = await Database.use((db) =>
       db
-        .select()
-        .from(TpProductSolutionTable)
-        .where(eq(TpProductSolutionTable.code, code))
-        .all(),
+          .select()
+          .from(TpProductSolutionTable)
+          .where(and(eq(TpProductSolutionTable.code, code), activeSolution()))
+          .get(),
     )
-    const hit = duplicate.find((item) => item.product_id === input.product_id)
-    if (hit) return { ok: false as const, code: "solution_exists" as const }
-    const primary_project_id = input.primary_project_id?.trim() || product.project_id
-    const project = await Database.use((db) =>
-      db.select({ id: ProjectTable.id }).from(ProjectTable).where(eq(ProjectTable.id, primary_project_id)).get(),
-    )
-    if (!project) return { ok: false as const, code: "solution_project_missing" as const }
+    if (duplicate) return { ok: false as const, code: "solution_exists" as const }
     const now = Date.now()
     const id = ulid()
     await Database.transaction(async (tx) => {
@@ -330,28 +331,28 @@ export namespace ProductSolutionService {
         .insert(TpProductSolutionTable)
         .values({
           id,
-          product_id: input.product_id,
           name,
           code,
           enabled: input.enabled ?? true,
-          primary_project_id,
           build_profile_json: build_profile.data,
           time_created: now,
           time_updated: now,
         })
         .run()
-      await tx
-        .insert(TpProductSolutionBindingTable)
-        .values({
-          id: ulid(),
-          product_id: input.product_id,
-          solution_id: id,
-          enabled: true,
-          sort_order: 0,
-          time_created: now,
-          time_updated: now,
-        })
-        .run()
+      if (product_id) {
+        await tx
+          .insert(TpProductSolutionBindingTable)
+          .values({
+            id: ulid(),
+            product_id,
+            solution_id: id,
+            enabled: true,
+            sort_order: 0,
+            time_created: now,
+            time_updated: now,
+          })
+          .run()
+      }
       await tx
         .insert(TpProductSolutionRootTable)
         .values(
@@ -373,6 +374,8 @@ export namespace ProductSolutionService {
     })
     const item = await get(id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
+    invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const, item }
   }
 
@@ -381,11 +384,16 @@ export namespace ProductSolutionService {
     name?: string
     code?: string
     enabled?: boolean
-    primary_project_id?: string
     build_profile?: unknown
     roots?: ProductSolutionRootInput[]
   }) {
-    const row = await Database.use((db) => db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, input.solution_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.id, input.solution_id), activeSolution()))
+        .get(),
+    )
     if (!row) return { ok: false as const, code: "solution_missing" as const }
     const name = input.name === undefined ? row.name : input.name.trim()
     const code = input.code === undefined ? row.code : input.code.trim()
@@ -393,23 +401,6 @@ export namespace ProductSolutionService {
     if (!code) return { ok: false as const, code: "solution_code_invalid" as const }
     const build_profile =
       input.build_profile === undefined ? normalizeBuildProfile(row.build_profile_json) : normalizeBuildProfile(input.build_profile)
-    const primary_project_id = input.primary_project_id?.trim() || row.primary_project_id || undefined
-    if (primary_project_id) {
-      const project = await Database.use((db) =>
-        db.select({ id: ProjectTable.id }).from(ProjectTable).where(eq(ProjectTable.id, primary_project_id)).get(),
-      )
-      if (!project) return { ok: false as const, code: "solution_project_missing" as const }
-    }
-    const duplicate = await Database.use((db) =>
-      db
-        .select()
-        .from(TpProductSolutionTable)
-        .where(eq(TpProductSolutionTable.product_id, row.product_id))
-        .all(),
-    )
-    const hit = duplicate.find((item) => item.code === code && item.id !== input.solution_id)
-    if (hit) return { ok: false as const, code: "solution_exists" as const }
-
     const roots = [] as ProductSolutionRootInput[]
     if (input.roots) {
       if (input.roots.length === 0) return { ok: false as const, code: "solution_root_missing" as const }
@@ -424,6 +415,35 @@ export namespace ProductSolutionService {
         })
       }
     }
+    const current_roots =
+      roots.length > 0
+        ? roots
+        : (
+            await Database.use((db) =>
+              db
+                .select()
+                .from(TpProductSolutionRootTable)
+                .where(eq(TpProductSolutionRootTable.solution_id, input.solution_id))
+                .all(),
+            )
+          ).map((item) => ({
+            root_type: ProductSolutionRootType.parse(item.root_type),
+            directory: item.directory,
+            display_name: item.display_name ?? undefined,
+            mount_name: item.mount_name ?? undefined,
+            sort_order: item.sort_order,
+            enabled: item.enabled,
+            meta: item.meta_json ? ProductSolutionRootMeta.parse(item.meta_json) : undefined,
+          }))
+    const duplicate = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.code, code), activeSolution()))
+        .get(),
+    )
+    const hit = duplicate && duplicate.id !== input.solution_id ? duplicate : undefined
+    if (hit) return { ok: false as const, code: "solution_exists" as const }
     const now = Date.now()
     await Database.transaction(async (tx) => {
       await tx
@@ -432,7 +452,6 @@ export namespace ProductSolutionService {
           name,
           code,
           enabled: input.enabled ?? row.enabled,
-          primary_project_id: primary_project_id ?? null,
           build_profile_json: build_profile,
           time_updated: now,
         })
@@ -462,6 +481,8 @@ export namespace ProductSolutionService {
     })
     const item = await get(input.solution_id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
+    invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const, item }
   }
 
@@ -472,17 +493,27 @@ export namespace ProductSolutionService {
     enabled?: boolean
     sort_order?: number
   }) {
-    const product = await Database.use((db) => db.select().from(TpProductTable).where(eq(TpProductTable.id, input.product_id)).get())
+    const product = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductTable)
+        .where(and(eq(TpProductTable.id, input.product_id), activeProduct()))
+        .get(),
+    )
     if (!product) return { ok: false as const, code: "product_missing" as const }
     const solution = await Database.use((db) =>
-      db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, input.solution_id)).get(),
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.id, input.solution_id), activeSolution()))
+        .get(),
     )
     if (!solution) return { ok: false as const, code: "solution_missing" as const }
     const current = await Database.use((db) =>
       db
         .select()
         .from(TpProductSolutionBindingTable)
-        .where(eq(TpProductSolutionBindingTable.product_id, input.product_id))
+        .where(and(eq(TpProductSolutionBindingTable.product_id, input.product_id), activeBinding()))
         .orderBy(desc(TpProductSolutionBindingTable.sort_order), desc(TpProductSolutionBindingTable.id))
         .all(),
     )
@@ -506,11 +537,12 @@ export namespace ProductSolutionService {
     )
     const item = await get(input.solution_id)
     if (!item) return { ok: false as const, code: "solution_missing" as const }
+    invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return {
       ok: true as const,
       item: {
         ...item,
-        product_id: input.product_id,
         enabled: input.enabled ?? item.enabled,
       } satisfies ProductSolutionItem,
     }
@@ -522,71 +554,55 @@ export namespace ProductSolutionService {
       db
         .select()
         .from(TpProductSolutionBindingTable)
-        .where(eq(TpProductSolutionBindingTable.product_id, input.product_id))
+        .where(and(eq(TpProductSolutionBindingTable.product_id, input.product_id), activeBinding()))
         .all(),
     )
     const row = binding.find((item) => item.solution_id === input.solution_id)
     if (!row) return { ok: false as const, code: "solution_binding_missing" as const }
-    await Database.use((db) => db.delete(TpProductSolutionBindingTable).where(eq(TpProductSolutionBindingTable.id, row.id)).run())
+    await Database.use((db) =>
+      db
+        .update(TpProductSolutionBindingTable)
+        .set({
+          time_deleted: Date.now(),
+          time_updated: Date.now(),
+        })
+        .where(eq(TpProductSolutionBindingTable.id, row.id))
+        .run(),
+    )
+    invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const }
   }
 
   export async function remove(solution_id: string) {
-    const row = await Database.use((db) => db.select().from(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).get())
+    const row = await Database.use((db) =>
+      db
+        .select()
+        .from(TpProductSolutionTable)
+        .where(and(eq(TpProductSolutionTable.id, solution_id), activeSolution()))
+        .get(),
+    )
     if (!row) return { ok: false as const, code: "solution_missing" as const }
-    await Database.use((db) => db.delete(TpProductSolutionTable).where(eq(TpProductSolutionTable.id, solution_id)).run())
+    await Database.use((db) =>
+      db
+        .update(TpProductSolutionTable)
+        .set({
+          time_deleted: Date.now(),
+          time_updated: Date.now(),
+        })
+        .where(eq(TpProductSolutionTable.id, solution_id))
+        .run(),
+    )
+    invalidateProductAnchorCache()
+    await invalidateAccountContextCache()
     return { ok: true as const }
   }
 
   /** 中文注释：为历史遗留的产品私有方案补齐绑定关系，方便正式环境平滑迁移到新的多对多模型。 */
   export async function backfillBindings(input?: { product_ids?: string[] }) {
-    const product_ids = [...new Set((input?.product_ids ?? []).map((item) => item.trim()).filter(Boolean))]
-    const solutions = await Database.use((db) => {
-      const query = db.select().from(TpProductSolutionTable).orderBy(asc(TpProductSolutionTable.product_id), asc(TpProductSolutionTable.time_created), asc(TpProductSolutionTable.id))
-      if (product_ids.length === 0) return query.all()
-      return query.where(inArray(TpProductSolutionTable.product_id, product_ids)).all()
-    })
-    if (solutions.length === 0) {
-      return {
-        scanned: 0,
-        created: 0,
-      }
-    }
-    const bindings = await Database.use((db) => {
-      const query = db.select().from(TpProductSolutionBindingTable).orderBy(asc(TpProductSolutionBindingTable.product_id), asc(TpProductSolutionBindingTable.sort_order), asc(TpProductSolutionBindingTable.id))
-      if (product_ids.length === 0) return query.all()
-      return query.where(inArray(TpProductSolutionBindingTable.product_id, product_ids)).all()
-    })
-    const exists = new Set(bindings.map((item) => `${item.product_id}:${item.solution_id}`))
-    const sort = new Map<string, number>()
-    for (const item of bindings) {
-      sort.set(item.product_id, Math.max(sort.get(item.product_id) ?? -1, item.sort_order))
-    }
-    const now = Date.now()
-    const values = solutions.flatMap((item) => {
-      const key = `${item.product_id}:${item.id}`
-      if (exists.has(key)) return []
-      const next = (sort.get(item.product_id) ?? -1) + 1
-      sort.set(item.product_id, next)
-      exists.add(key)
-      return [
-        {
-          id: ulid(),
-          product_id: item.product_id,
-          solution_id: item.id,
-          enabled: item.enabled,
-          sort_order: next,
-          time_created: now,
-          time_updated: now,
-        },
-      ]
-    })
-    if (values.length > 0) {
-      await Database.use((db) => db.insert(TpProductSolutionBindingTable).values(values).run())
-    }
     return {
-      scanned: solutions.length,
-      created: values.length,
+      scanned: 0,
+      created: 0,
     }
   }
 

@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test"
+import { test, expect, spyOn } from "bun:test"
 import path from "path"
 
 import { tmpdir } from "../fixture/fixture"
@@ -6,6 +6,9 @@ import { Instance } from "../../src/project/instance"
 import { Provider } from "../../src/provider/provider"
 import { Env } from "../../src/env"
 import { AccountSystemSettingService } from "../../src/user/system-setting"
+import { AccountUserProviderSettingService } from "../../src/user/user-provider-setting"
+import { AccountCurrent } from "../../src/user/current"
+import { AccountProviderState } from "../../src/provider/account-provider-state"
 import { Flag } from "../../src/flag/flag"
 
 test("provider loaded from env variable", async () => {
@@ -531,6 +534,164 @@ test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("defaultModel rejects an invalid globa
     for (const [providerID, config] of Object.entries(configs)) {
       await AccountSystemSettingService.setProviderConfig(providerID, config)
     }
+  }
+})
+
+test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("provider list reuses the cached account provider state in build scope", async () => {
+  const control = await AccountSystemSettingService.providerControl()
+  const auths = await AccountSystemSettingService.providerAuths()
+  const configs = await AccountSystemSettingService.providerConfigs()
+  const user_id = "user_tp_admin"
+  const userControl = await AccountUserProviderSettingService.providerControl(user_id)
+  const userAuths = await AccountUserProviderSettingService.providerAuths(user_id)
+  const userConfigs = await AccountUserProviderSettingService.providerConfigs(user_id)
+  const load = spyOn(AccountProviderState, "load")
+
+  try {
+    await AccountSystemSettingService.setProviderAuth("openai", {
+      type: "api",
+      key: "sk-global-openai",
+    })
+    await AccountSystemSettingService.setProviderConfig("openai", {
+      models: {
+        "gpt-5.2-chat-latest": {},
+      },
+    })
+    await AccountSystemSettingService.setProviderControl({
+      model: "openai/gpt-5.2-chat-latest",
+      small_model: "openai/gpt-5.2-chat-latest",
+      enabled_providers: ["openai"],
+    })
+    await AccountUserProviderSettingService.setProviderControl(user_id, {})
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () =>
+        AccountCurrent.provide(
+          {
+            user_id,
+            org_id: "org_tp_internal",
+            roles: ["super_admin"],
+            permissions: [],
+          },
+          async () => {
+            const [providers, state] = await Promise.all([Provider.list(), Provider.accountState(user_id)])
+            expect(providers["openai"]).toBeDefined()
+            expect(state?.control.model).toBe("openai/gpt-5.2-chat-latest")
+          },
+        ),
+    })
+
+    expect(load).toHaveBeenCalledTimes(1)
+  } finally {
+    load.mockRestore()
+    await AccountUserProviderSettingService.setProviderControl(user_id, userControl)
+    for (const providerID of Object.keys(await AccountUserProviderSettingService.providerAuths(user_id))) {
+      if (userAuths[providerID]) continue
+      await AccountUserProviderSettingService.removeProviderAuth(user_id, providerID)
+    }
+    for (const [providerID, auth] of Object.entries(userAuths)) {
+      await AccountUserProviderSettingService.setProviderAuth(user_id, providerID, auth)
+    }
+    for (const providerID of Object.keys(await AccountUserProviderSettingService.providerConfigs(user_id))) {
+      if (userConfigs[providerID]) continue
+      await AccountUserProviderSettingService.removeProviderConfig(user_id, providerID)
+    }
+    for (const [providerID, config] of Object.entries(userConfigs)) {
+      await AccountUserProviderSettingService.setProviderConfig(user_id, providerID, config)
+    }
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+      if (auths[providerID]) continue
+      await AccountSystemSettingService.removeProviderAuth(providerID)
+    }
+    for (const [providerID, auth] of Object.entries(auths)) {
+      await AccountSystemSettingService.setProviderAuth(providerID, auth)
+    }
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+      if (configs[providerID]) continue
+      await AccountSystemSettingService.removeProviderConfig(providerID)
+    }
+    for (const [providerID, config] of Object.entries(configs)) {
+      await AccountSystemSettingService.setProviderConfig(providerID, config)
+    }
+    await AccountSystemSettingService.setProviderControl(control)
+  }
+})
+
+test.skipIf(!Flag.TPCODE_ACCOUNT_ENABLED)("provider accountState falls back to direct load without account context", async () => {
+  const control = await AccountSystemSettingService.providerControl()
+  const auths = await AccountSystemSettingService.providerAuths()
+  const configs = await AccountSystemSettingService.providerConfigs()
+  const user_id = "user_tp_admin"
+  const userControl = await AccountUserProviderSettingService.providerControl(user_id)
+  const load = spyOn(AccountProviderState, "load")
+
+  try {
+    await AccountSystemSettingService.setProviderAuth("openai", {
+      type: "api",
+      key: "sk-global-openai",
+    })
+    await AccountSystemSettingService.setProviderConfig("openai", {
+      models: {
+        "gpt-5.2-chat-latest": {},
+      },
+    })
+    await AccountSystemSettingService.setProviderControl({
+      model: "openai/gpt-5.2-chat-latest",
+      small_model: "openai/gpt-5.2-chat-latest",
+      enabled_providers: ["openai"],
+    })
+    await AccountUserProviderSettingService.setProviderControl(user_id, {})
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const state = await Provider.accountState(user_id)
+        expect(state?.control.model).toBe("openai/gpt-5.2-chat-latest")
+      },
+    })
+
+    expect(load).toHaveBeenCalledTimes(1)
+  } finally {
+    load.mockRestore()
+    await AccountUserProviderSettingService.setProviderControl(user_id, userControl)
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerAuths())) {
+      if (auths[providerID]) continue
+      await AccountSystemSettingService.removeProviderAuth(providerID)
+    }
+    for (const [providerID, auth] of Object.entries(auths)) {
+      await AccountSystemSettingService.setProviderAuth(providerID, auth)
+    }
+    for (const providerID of Object.keys(await AccountSystemSettingService.providerConfigs())) {
+      if (configs[providerID]) continue
+      await AccountSystemSettingService.removeProviderConfig(providerID)
+    }
+    for (const [providerID, config] of Object.entries(configs)) {
+      await AccountSystemSettingService.setProviderConfig(providerID, config)
+    }
+    await AccountSystemSettingService.setProviderControl(control)
   }
 })
 

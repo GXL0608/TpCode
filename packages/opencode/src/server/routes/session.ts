@@ -460,7 +460,7 @@ export const SessionRoutes = lazy(() =>
       "/:sessionID",
       describeRoute({
         summary: "Delete session",
-        description: "Delete a session and permanently remove all associated data, including messages and history.",
+        description: "Logically delete a session and hide it from active lists while retaining historical data for audit and recovery.",
         operationId: "session.delete",
         responses: {
           200: {

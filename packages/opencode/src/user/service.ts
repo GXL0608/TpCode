@@ -1,6 +1,7 @@
 import { and, Database, desc, eq, inArray, isNull, like, or, sql, type SQL } from "@/storage/db"
 import { TpOrganizationTable } from "./organization.sql"
 import { TpDepartmentTable } from "./department.sql"
+import { TpProductTable } from "./product.sql"
 import { TpUserTable } from "./user.sql"
 import { TpRoleTable, TpUserRoleTable } from "./role.sql"
 import { TpPermissionTable, TpRolePermissionTable } from "./permission.sql"
@@ -15,8 +16,11 @@ import { ulid } from "ulid"
 import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
 import { AccountContextService } from "./context"
+import { AccountProductService } from "./product"
+import { AccountProjectStateService } from "./project-state"
 import { Project } from "@/project/project"
 import { ServerDegraded } from "@/server/degraded"
+import { Filesystem } from "@/util/filesystem"
 
 type UserRow = typeof TpUserTable.$inferSelect
 const log = Log.create({ service: "user" })
@@ -25,7 +29,9 @@ const AUTH_CACHE_MAX_SIZE = 20_000
 const AUTH_CACHE_SWEEP_BATCH = 256
 const LOGIN_BULKHEAD_CONCURRENCY = 16
 const LOGIN_BULKHEAD_QUEUE_MAX = 200
-const LOGIN_BULKHEAD_TIMEOUT_MS = 3000
+/** 中文注释：登录链会触发共享目录锚点恢复与权限校验，企业环境冷启动时 3 秒过于激进，这里允许通过环境变量拉长等待时间。 */
+const LOGIN_BULKHEAD_TIMEOUT_MS = Flag.TPCODE_AUTH_BULKHEAD_TIMEOUT_MS ?? 10_000
+const ACCOUNT_SEED_READY_TIMEOUT_MS = 3000
 
 function hash(input: string) {
   return createHash("sha256").update(input).digest("hex")
@@ -268,7 +274,29 @@ function builtinUser(user: UserRow) {
   return user.username === "admin" && (user.external_source ?? "").trim() === "tpcode"
 }
 
-function profile(input: { user: UserRow; roles: string[]; permissions: string[]; context_project_id?: string }) {
+/** 中文注释：统一过滤未逻辑删除的用户，避免删除后的账号继续参与鉴权和列表展示。 */
+function activeUser() {
+  return isNull(TpUserTable.time_deleted)
+}
+
+/** 中文注释：统一过滤未逻辑删除的角色，避免删除后的角色继续参与权限计算。 */
+function activeRole() {
+  return isNull(TpRoleTable.time_deleted)
+}
+
+/** 中文注释：统一过滤未逻辑删除的产品，避免删除后的产品继续作为账号上下文候选。 */
+function activeProduct() {
+  return isNull(TpProductTable.time_deleted)
+}
+
+/** 中文注释：统一组装登录态用户信息，同时返回产品与项目双上下文，方便前后端平滑迁移。 */
+function profile(input: {
+  user: UserRow
+  roles: string[]
+  permissions: string[]
+  context_project_id?: string
+  context_product_id?: string
+}) {
   return {
     id: input.user.id,
     username: input.user.username,
@@ -278,6 +306,7 @@ function profile(input: { user: UserRow; roles: string[]; permissions: string[];
     department_id: input.user.department_id ?? undefined,
     force_password_reset: input.user.force_password_reset,
     context_project_id: input.context_project_id,
+    context_product_id: input.context_product_id,
     roles: input.roles,
     permissions: input.permissions,
     feedback_enabled: Flag.TPCODE_FEEDBACK_ENABLED,
@@ -469,6 +498,42 @@ export namespace UserService {
     return ensureSeedPromise
   }
 
+  /** 中文注释：后台预热账号种子，同步失败只记录日志，不阻塞当前请求链路。 */
+  export function ensureSeedWarm() {
+    void ensureSeedOnce().catch((error) => {
+      log.error("account seed warm failed", { error })
+    })
+  }
+
+  /** 中文注释：账号鉴权只做有限时间等待，超时后放后台继续，避免登录页被长期卡死。 */
+  export async function ensureSeedReady(timeout_ms = ACCOUNT_SEED_READY_TIMEOUT_MS) {
+    const task = ensureSeedOnce()
+    const ready = await new Promise<boolean>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(false), timeout_ms)
+      void task.then(
+        () => {
+          clearTimeout(timer)
+          resolve(true)
+        },
+        (error) => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      )
+    })
+    if (ready) return true
+    if (ensureSeedPromise === task) {
+      ensureSeedPromise = undefined
+    }
+    log.warn("account seed ready timeout", {
+      timeout_ms,
+    })
+    void task.catch((error) => {
+      log.error("account seed timeout follow-up failed", { error })
+    })
+    return false
+  }
+
   export async function ensureSeed() {
     const p = permissions()
     const r = roles()
@@ -609,11 +674,23 @@ export namespace UserService {
   }
 
   export async function userByID(user_id: string) {
-    return await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.id, user_id)).get())
+    return await Database.use((db) =>
+      db
+        .select()
+        .from(TpUserTable)
+        .where(and(eq(TpUserTable.id, user_id), activeUser()))
+        .get(),
+    )
   }
 
   export async function userByUsername(username: string) {
-    return await Database.use((db) => db.select().from(TpUserTable).where(eq(TpUserTable.username, username)).get())
+    return await Database.use((db) =>
+      db
+        .select()
+        .from(TpUserTable)
+        .where(and(eq(TpUserTable.username, username), activeUser()))
+        .get(),
+    )
   }
 
   export async function orgByCode(code: string) {
@@ -624,7 +701,13 @@ export namespace UserService {
     const links = await Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
     const ids = [...new Set(links.map((item) => item.role_id))]
     if (ids.length === 0) return [] as string[]
-    const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, ids)).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(inArray(TpRoleTable.id, ids), activeRole()))
+        .all(),
+    )
     return rows.map((item) => item.code)
   }
 
@@ -632,8 +715,17 @@ export namespace UserService {
     const links = await Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
     const role_ids = [...new Set(links.map((item) => item.role_id))]
     if (role_ids.length === 0) return [] as string[]
+    const roles = await Database.use((db) =>
+      db
+        .select({ id: TpRoleTable.id })
+        .from(TpRoleTable)
+        .where(and(inArray(TpRoleTable.id, role_ids), activeRole()))
+        .all(),
+    )
+    const active_role_ids = roles.map((item) => item.id)
+    if (active_role_ids.length === 0) return [] as string[]
     const permLinks = await Database.use((db) =>
-      db.select().from(TpRolePermissionTable).where(inArray(TpRolePermissionTable.role_id, role_ids)).all(),
+      db.select().from(TpRolePermissionTable).where(inArray(TpRolePermissionTable.role_id, active_role_ids)).all(),
     )
     const perm_ids = [...new Set(permLinks.map((item) => item.permission_id))]
     if (perm_ids.length === 0) return [] as string[]
@@ -743,6 +835,7 @@ export namespace UserService {
   async function issueTokens(input: {
     user_id: string
     context_project_id?: string
+    context_product_id?: string
     ip?: string
     user_agent?: string
   }) {
@@ -752,11 +845,13 @@ export namespace UserService {
       user_id: input.user_id,
       session_id: access_id,
       context_project_id: input.context_project_id,
+      context_product_id: input.context_product_id,
     })
     const refresh = await UserJwt.issueRefresh({
       user_id: input.user_id,
       session_id: refresh_id,
       context_project_id: input.context_project_id,
+      context_product_id: input.context_product_id,
     })
     await Database.use(async (db) => {
       await db.insert(TpSessionTokenTable)
@@ -767,6 +862,7 @@ export namespace UserService {
             token_hash: tokenHash(access.token),
             token_type: "access",
             context_project_id: input.context_project_id,
+            context_product_id: input.context_product_id,
             expires_at: access.exp,
             ip: input.ip,
             user_agent: input.user_agent,
@@ -777,6 +873,7 @@ export namespace UserService {
             token_hash: tokenHash(refresh.token),
             token_type: "refresh",
             context_project_id: input.context_project_id,
+            context_product_id: input.context_product_id,
             expires_at: refresh.exp,
             ip: input.ip,
             user_agent: input.user_agent,
@@ -789,6 +886,128 @@ export namespace UserService {
       refresh_token: refresh.token,
       access_expires_at: access.exp,
       refresh_expires_at: refresh.exp,
+    }
+  }
+
+  /** 中文注释：登录时尽量恢复用户上次有效的产品/项目上下文，避免重新登录后回到空上下文再靠前端兜底恢复。 */
+  async function productContextProjectID(input: {
+    user_id: string
+    product: Awaited<ReturnType<typeof AccountProductService.get>>
+  }) {
+    if (!input.product) return
+    const ids = [...new Set([...(input.product.related_project_ids ?? []), input.product.project_id ?? ""].filter(Boolean))]
+    if (ids.length === 0) return
+    const last_project_id = await AccountContextService.lastProject(input.user_id)
+    const ordered = [
+      ...(last_project_id && ids.includes(last_project_id) ? [last_project_id] : []),
+      ...ids.filter((project_id) => project_id !== last_project_id),
+    ]
+    for (const project_id of ordered) {
+      const allowed = await AccountContextService.canAccessProject({
+        user_id: input.user_id,
+        project_id,
+        context_product_id: input.product.id,
+      })
+      if (allowed) return project_id
+    }
+  }
+
+  /** 中文注释：产品上下文切换后立即同步项目状态，保证刷新或重新登录时 open_project_ids 与当前产品保持一致。 */
+  async function syncProductState(input: {
+    user_id: string
+    product: Awaited<ReturnType<typeof AccountProductService.get>>
+    context_project_id?: string
+  }) {
+    if (!input.product) return
+    const open_project_ids = [...new Set([...(input.product.related_project_ids ?? []), input.product.project_id ?? ""].filter(Boolean))]
+    await AccountProjectStateService.syncProductContext({
+      user_id: input.user_id,
+      open_project_ids,
+      last_project_id: input.context_project_id ?? open_project_ids[0] ?? null,
+    })
+  }
+
+  /** 中文注释：登录链路只做后台产品状态预热，避免共享目录探测阻塞登录响应。 */
+  function syncProductStateWarm(input: {
+    user_id: string
+    context_product_id?: string
+    context_project_id?: string
+  }) {
+    const product_id = input.context_product_id?.trim()
+    if (!product_id) return
+    void AccountProductService.get(product_id, "light")
+      .then((product) => {
+        if (!product) return
+        return syncProductState({
+          user_id: input.user_id,
+          product,
+          context_project_id: input.context_project_id,
+        })
+      })
+      .catch((error) => {
+        log.warn("product state warm failed", {
+          user_id: input.user_id,
+          context_product_id: product_id,
+          error,
+        })
+      })
+  }
+
+  /** 中文注释：旧数据里同一真实目录可能对应多个项目 ID，这里按真实目录归一化反推所属产品。 */
+  async function productByProjectDirectory(project_id: string) {
+    const project = await Project.get(project_id).catch(() => undefined)
+    if (!project?.worktree) return
+    const current = Filesystem.normalizePath(Filesystem.accessPath(project.worktree)).toLowerCase()
+    const products = await AccountProductService.list("light")
+    return products.find((item) =>
+      [item.worktree, ...item.paths]
+        .filter(Boolean)
+        .map((directory) => Filesystem.normalizePath(Filesystem.accessPath(directory)).toLowerCase())
+        .includes(current),
+    )
+  }
+
+  /** 中文注释：登录时尽量恢复用户上次有效的产品/项目上下文，避免重新登录后回到空上下文再靠前端兜底恢复。 */
+  async function restoreContext(user_id: string) {
+    const product_id = await AccountContextService.lastProduct(user_id)
+    if (product_id) {
+      const row = await Database.use((db) =>
+        db
+          .select({ id: TpProductTable.id })
+          .from(TpProductTable)
+          .where(and(eq(TpProductTable.id, product_id), activeProduct()))
+          .get(),
+      )
+      if (row) {
+        const project_id = await AccountContextService.lastProject(user_id)
+        return {
+          context_product_id: row.id,
+          context_project_id: project_id && (await AccountContextService.canAccessProject({
+            user_id,
+            project_id,
+            context_product_id: row.id,
+          }))
+            ? project_id
+            : undefined,
+        }
+      }
+    }
+
+    const project_id = await AccountContextService.lastProject(user_id)
+    if (!project_id) return {}
+    const allowed = await AccountContextService.canAccessProject({
+      user_id,
+      project_id,
+    })
+    if (!allowed) return {}
+    const product =
+      (await AccountProductService.listByProjectIDs([project_id], "light")).find((item) =>
+        [item.project_id, ...(item.related_project_ids ?? [])].filter(Boolean).includes(project_id),
+      ) ??
+      (await productByProjectDirectory(project_id))
+    return {
+      context_project_id: project_id,
+      context_product_id: product?.id,
     }
   }
 
@@ -835,8 +1054,16 @@ export namespace UserService {
       }
       const roles = await rolesByUser(user.id)
       const permissions = await permissionsByUser(user.id)
+      const context = await restoreContext(user.id)
+      syncProductStateWarm({
+        user_id: user.id,
+        context_product_id: context.context_product_id,
+        context_project_id: context.context_project_id,
+      })
       const token = await issueTokens({
         user_id: user.id,
+        context_project_id: context.context_project_id,
+        context_product_id: context.context_product_id,
         ip: input.ip,
         user_agent: input.user_agent,
       })
@@ -863,7 +1090,13 @@ export namespace UserService {
       return {
         ok: true as const,
         ...token,
-        user: profile({ user, roles, permissions }),
+        user: profile({
+          user,
+          roles,
+          permissions,
+          context_project_id: context.context_project_id,
+          context_product_id: context.context_product_id,
+        }),
       }
     } finally {
       release()
@@ -1050,9 +1283,11 @@ export namespace UserService {
         .run(),
     )
     const context_project_id = row.context_project_id ?? parsed.pid
+    const context_product_id = row.context_product_id ?? parsed.prid
     const token = await issueTokens({
       user_id: user.id,
       context_project_id: context_project_id ?? undefined,
+      context_product_id: context_product_id ?? undefined,
       ip: input.ip,
       user_agent: input.user_agent,
     })
@@ -1064,6 +1299,7 @@ export namespace UserService {
         roles,
         permissions,
         context_project_id: context_project_id ?? undefined,
+        context_product_id: context_product_id ?? undefined,
       }),
     }
   }
@@ -1229,6 +1465,7 @@ export namespace UserService {
         roles,
         permissions,
         context_project_id: row.context_project_id ?? parsed.pid,
+        context_product_id: row.context_product_id ?? parsed.prid,
       }),
       sid: parsed.sid,
       sub: parsed.sub,
@@ -1252,7 +1489,8 @@ export namespace UserService {
     return result.user
   }
 
-  export async function me(input: { user_id: string; context_project_id?: string }) {
+  /** 中文注释：读取当前登录用户信息时，同时返回产品与项目上下文，供前端统一恢复选择状态。 */
+  export async function me(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
     const user_id = input.user_id
     const user = await userByID(user_id)
     if (!user) return
@@ -1263,22 +1501,45 @@ export namespace UserService {
       roles,
       permissions,
       context_project_id: input.context_project_id,
+      context_product_id: input.context_product_id,
     })
   }
 
-  export async function selectContext(input: { user_id: string; project_id: string; ip?: string; user_agent?: string }) {
+  /** 中文注释：保留项目级上下文切换能力，并在当前产品上下文内允许选择其解决方案项目。 */
+  export async function selectContext(input: {
+    user_id: string
+    project_id: string
+    current_product_id?: string
+    ip?: string
+    user_agent?: string
+  }) {
     const user = await userByID(input.user_id)
     if (!user || user.status !== "active") return { ok: false as const, code: "user_invalid" }
-    const allowed = await AccountContextService.canAccessProject({ user_id: input.user_id, project_id: input.project_id })
+    const allowed = await AccountContextService.canAccessProject({
+      user_id: input.user_id,
+      project_id: input.project_id,
+      context_product_id: input.current_product_id,
+    })
     if (!allowed) return { ok: false as const, code: "project_forbidden" }
     const project = await Project.get(input.project_id)
     if (!project) return { ok: false as const, code: "project_missing" }
-    await AccountContextService.remember({ user_id: input.user_id, project_id: input.project_id })
+    const product = (await AccountProductService.listByProjectIDs([input.project_id])).find(
+      (item) =>
+        item.id === input.current_product_id ||
+        item.project_id === input.project_id ||
+        item.related_project_ids.includes(input.project_id),
+    )
+    await AccountContextService.remember({
+      user_id: input.user_id,
+      project_id: input.project_id,
+      product_id: product?.id,
+    })
     const roles = await rolesByUser(input.user_id)
     const permissions = await permissionsByUser(input.user_id)
     const token = await issueTokens({
       user_id: input.user_id,
       context_project_id: input.project_id,
+      context_product_id: product?.id,
       ip: input.ip,
       user_agent: input.user_agent,
     })
@@ -1299,8 +1560,106 @@ export namespace UserService {
         roles,
         permissions,
         context_project_id: input.project_id,
+        context_product_id: product?.id,
       }),
     }
+  }
+
+  /** 中文注释：新增产品级上下文切换，产品不再要求自带目录，而是通过解决方案推导运行锚点。 */
+  export async function selectProductContext(input: { user_id: string; product_id: string; ip?: string; user_agent?: string }) {
+    const user = await userByID(input.user_id)
+    if (!user || user.status !== "active") return { ok: false as const, code: "user_invalid" }
+    const product = await AccountContextService.getVisibleProduct({
+      user_id: input.user_id,
+      product_id: input.product_id,
+    })
+    if (!product) return { ok: false as const, code: "product_forbidden" as const }
+    const context_project_id = await productContextProjectID({
+      user_id: input.user_id,
+      product,
+    })
+    await syncProductState({
+      user_id: input.user_id,
+      product,
+      context_project_id,
+    })
+    await AccountContextService.remember({
+      user_id: input.user_id,
+      project_id: context_project_id,
+      product_id: product.id,
+    })
+    const roles = await rolesByUser(input.user_id)
+    const permissions = await permissionsByUser(input.user_id)
+    const token = await issueTokens({
+      user_id: input.user_id,
+      context_project_id,
+      context_product_id: product.id,
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    auditLater({
+      actor_user_id: input.user_id,
+      action: "account.context.product.select",
+      target_type: "tp_product",
+      target_id: product.id,
+      result: "success",
+      ip: input.ip,
+      user_agent: input.user_agent,
+    })
+    return {
+      ok: true as const,
+      ...token,
+      user: profile({
+        user,
+        roles,
+        permissions,
+        context_project_id,
+        context_product_id: product.id,
+      }),
+      product,
+    }
+  }
+
+  /** 中文注释：当当前机器无法访问项目 worktree 时，清空用户所有活跃 token 里的项目上下文，并移除本地项目状态中的无效痕迹。 */
+  export async function clearInvalidProjectContext(input: { user_id: string; project_id: string }) {
+    await Database.use((db) =>
+      db
+        .update(TpSessionTokenTable)
+        .set({
+          context_project_id: null,
+        })
+        .where(
+          and(
+            eq(TpSessionTokenTable.user_id, input.user_id),
+            eq(TpSessionTokenTable.context_project_id, input.project_id),
+            isNull(TpSessionTokenTable.revoked_at),
+          ),
+        )
+        .run(),
+    )
+    const state = await AccountProjectStateService.get({
+      user_id: input.user_id,
+    })
+    await AccountProjectStateService.update({
+      user_id: input.user_id,
+      patch: {
+        last_project_id: state.last_project_id === input.project_id ? null : state.last_project_id,
+        open_project_ids: state.open_project_ids.filter((project_id) => project_id !== input.project_id),
+        last_session_by_project: Object.fromEntries(
+          Object.entries(state.last_session_by_project).filter(([project_id]) => project_id !== input.project_id),
+        ),
+        workspace_mode_by_project: Object.fromEntries(
+          Object.entries(state.workspace_mode_by_project).filter(([project_id]) => project_id !== input.project_id),
+        ),
+        workspace_order_by_project: Object.fromEntries(
+          Object.entries(state.workspace_order_by_project).filter(([project_id]) => project_id !== input.project_id),
+        ),
+        workspace_alias_by_project_branch: Object.fromEntries(
+          Object.entries(state.workspace_alias_by_project_branch).filter(([project_id]) => project_id !== input.project_id),
+        ),
+      },
+    })
+    invalidateByUserID(input.user_id)
   }
 
   export async function meVho(user_id: string) {
@@ -1503,7 +1862,13 @@ export namespace UserService {
 
   async function roleIDs(codes: string[]) {
     if (codes.length === 0) return [] as string[]
-    const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, codes)).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(inArray(TpRoleTable.code, codes), activeRole()))
+        .all(),
+    )
     return rows.map((item) => item.id)
   }
 
@@ -1625,7 +1990,14 @@ export namespace UserService {
   }
 
   export async function listRoles() {
-    const rows = await Database.use((db) => db.select().from(TpRoleTable).orderBy(TpRoleTable.code).all())
+    const rows = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(activeRole())
+        .orderBy(TpRoleTable.code)
+        .all(),
+    )
     return await roleItems(rows)
   }
 
@@ -1638,6 +2010,7 @@ export namespace UserService {
         db
           .select()
           .from(TpRoleTable)
+          .where(activeRole())
           .orderBy(TpRoleTable.code)
           .limit(page_size)
           .offset(offset)
@@ -1649,6 +2022,7 @@ export namespace UserService {
             total: sql<number>`count(*)`,
           })
           .from(TpRoleTable)
+          .where(activeRole())
           .get(),
       ),
     ])
@@ -1662,7 +2036,7 @@ export namespace UserService {
   }
 
   function userFilter(input?: { org_id?: string; department_id?: string; keyword?: string }) {
-    const conditions: SQL[] = []
+    const conditions: SQL[] = [activeUser()]
     if (input?.org_id) conditions.push(eq(TpUserTable.org_id, input.org_id))
     if (input?.department_id) conditions.push(eq(TpUserTable.department_id, input.department_id))
     if (input?.keyword) {
@@ -1690,11 +2064,11 @@ export namespace UserService {
         ? []
         : await Database.use((db) =>
             db
-              .select()
-              .from(TpRoleTable)
-              .where(inArray(TpRoleTable.id, role_ids))
-              .all(),
-          )
+          .select()
+          .from(TpRoleTable)
+          .where(and(inArray(TpRoleTable.id, role_ids), activeRole()))
+          .all(),
+      )
     const roleCode = new Map(roles.map((item) => [item.id, item.code]))
 
     const rolePermLinks =
@@ -1948,7 +2322,13 @@ export namespace UserService {
     if (!roleCodeValid(code)) return { ok: false as const, code: "role_code_invalid" }
     const name = input.name.trim()
     if (!name) return { ok: false as const, code: "role_name_invalid" }
-    const exists = await Database.use((db) => db.select({ id: TpRoleTable.id }).from(TpRoleTable).where(eq(TpRoleTable.code, code)).get())
+    const exists = await Database.use((db) =>
+      db
+        .select({ id: TpRoleTable.id })
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, code), activeRole()))
+        .get(),
+    )
     if (exists) return { ok: false as const, code: "role_exists" }
     const permission_codes = [
       ...new Set(
@@ -2104,7 +2484,7 @@ export namespace UserService {
             db
               .select()
               .from(TpUserTable)
-              .where(inArray(TpUserTable.username, usernames))
+              .where(and(inArray(TpUserTable.username, usernames), activeUser()))
               .all(),
           )
     const users = new Map(existing.map((item) => [item.username, item]))
@@ -2581,7 +2961,18 @@ export namespace UserService {
     if (!user) return { ok: false as const, code: "user_missing" }
     if (input.actor_user_id && input.actor_user_id === input.user_id) return { ok: false as const, code: "user_self_delete_forbidden" }
     if (builtinUser(user)) return { ok: false as const, code: "user_builtin_forbidden" }
-    await Database.use((db) => db.delete(TpUserTable).where(eq(TpUserTable.id, input.user_id)).run())
+    const now = Date.now()
+    await Database.use((db) =>
+      db
+        .update(TpUserTable)
+        .set({
+          status: "inactive",
+          time_deleted: now,
+          time_updated: now,
+        })
+        .where(eq(TpUserTable.id, input.user_id))
+        .run(),
+    )
     invalidateByUserID(input.user_id)
     AccountContextService.invalidateProjectAccess({ user_id: input.user_id })
     auditLater({
@@ -2606,7 +2997,13 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, input.role_code), activeRole()))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" }
     const codes = [...new Set(input.permission_codes)]
     const permission_ids = await permissionIDs(codes)
@@ -2651,7 +3048,13 @@ export namespace UserService {
     ip?: string
     user_agent?: string
   }) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, input.role_code), activeRole()))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" }
     if (builtinRole(role.code)) return { ok: false as const, code: "role_builtin_forbidden" }
     const affectedUsers = await Database.use((db) =>
@@ -2661,7 +3064,18 @@ export namespace UserService {
         .where(eq(TpUserRoleTable.role_id, role.id))
         .all(),
     )
-    await Database.use((db) => db.delete(TpRoleTable).where(eq(TpRoleTable.id, role.id)).run())
+    const now = Date.now()
+    await Database.use((db) =>
+      db
+        .update(TpRoleTable)
+        .set({
+          status: "inactive",
+          time_deleted: now,
+          time_updated: now,
+        })
+        .where(eq(TpRoleTable.id, role.id))
+        .run(),
+    )
     for (const item of affectedUsers) {
       invalidateByUserID(item.user_id)
       AccountContextService.invalidateProjectAccess({ user_id: item.user_id })

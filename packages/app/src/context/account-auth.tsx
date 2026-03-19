@@ -14,6 +14,7 @@ type User = {
   department_id?: string
   force_password_reset: boolean
   context_project_id?: string
+  context_product_id?: string
   roles: string[]
   permissions: string[]
   feedback_enabled: boolean
@@ -28,14 +29,43 @@ type ContextProject = {
   last_selected: boolean
 }
 
-type ContextProduct = {
+type ContextProjectsPayload = {
+  current_project_id?: string
+  last_project_id?: string
+  projects: ContextProject[]
+}
+
+export type ContextProduct = {
   id: string
   name?: string
-  project_id: string
-  worktree: string
+  project_id?: string
+  worktree?: string
   vcs?: string
+  related_project_ids?: string[]
+  paths?: string[]
+  solutions?: Array<{
+    id: string
+    name?: string
+    code?: string
+    roots?: Array<{
+      directory: string
+      enabled?: boolean
+      meta?: {
+        directories?: string[]
+      }
+    }>
+  }>
   selected: boolean
   last_selected: boolean
+}
+
+type ContextProductsPayload = {
+  current_product_id?: string
+  current_project_id?: string
+  last_product_id?: string
+  last_project_id?: string
+  recent_product_ids?: string[]
+  products: ContextProduct[]
 }
 
 export type AccountProjectStateLastSession = {
@@ -49,13 +79,14 @@ export type AccountProjectState = {
   last_project_id?: string
   open_project_ids: string[]
   last_session_by_project: Record<string, AccountProjectStateLastSession>
+  last_session_by_product: Record<string, AccountProjectStateLastSession>
   workspace_mode_by_project: Record<string, boolean>
   workspace_order_by_project: Record<string, string[]>
   workspace_expanded_by_directory: Record<string, boolean>
   workspace_alias_by_project_branch: Record<string, Record<string, string>>
 }
 
-export type AccountProjectStatePatch = Partial<Omit<AccountProjectState, "current_project_id">> & {
+export type AccountProjectStatePatch = Omit<Partial<Omit<AccountProjectState, "current_project_id">>, "last_project_id"> & {
   last_project_id?: string | null
 }
 
@@ -79,6 +110,7 @@ type SavePlanInput = {
   message_id: string
   part_id?: string
   project_id?: string
+  vho_feedback_no?: string
 }
 
 type SavePlanResult =
@@ -253,8 +285,40 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
       return payload?.code ?? payload?.error
     }
 
+    const CONTEXT_CACHE_TTL_MS = 1200
+    const contextCache = new Map<string, { expires_at?: number; value?: unknown; pending?: Promise<unknown | undefined> }>()
+
+    /** 中文注释：上下文类接口在一个交互周期内会被多个组件重复调用，这里做短时缓存和并发合并以减少重复请求。 */
+    const cachedContext = <T,>(key: string, load: () => Promise<T | undefined>) => {
+      const cached = contextCache.get(key)
+      if (cached?.pending) return cached.pending as Promise<T | undefined>
+      if (cached?.expires_at && cached.expires_at > Date.now()) return Promise.resolve(cached.value as T | undefined)
+      const pending = load().then((value) => {
+        if (value === undefined) {
+          contextCache.delete(key)
+          return
+        }
+        contextCache.set(key, {
+          expires_at: Date.now() + CONTEXT_CACHE_TTL_MS,
+          value,
+        })
+        return value
+      }).finally(() => {
+        const latest = contextCache.get(key)
+        if (latest?.pending === pending) contextCache.delete(key)
+      })
+      contextCache.set(key, { pending })
+      return pending
+    }
+
+    /** 中文注释：发生上下文切换或状态写入后立即清空短时缓存，避免左侧产品和会话页读到旧数据。 */
+    const clearContextCache = () => {
+      contextCache.clear()
+    }
+
     /** 中文注释：登录态写入使用批量更新，避免 enabled/user 等字段分次变更时触发依赖 effect 重复执行。 */
     const writeSession = (result: LoginResult) => {
+      clearContextCache()
       AccountToken.setTokens(result)
       batch(() => {
         setState("enabled", true)
@@ -265,6 +329,7 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
 
     /** 中文注释：清空登录态时合并状态写入，避免切项目或登出时触发重复的认证衍生副作用。 */
     const clearSession = () => {
+      clearContextCache()
       AccountToken.clear()
       batch(() => {
         setState("user", undefined)
@@ -387,7 +452,7 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
       authenticated: createMemo(() => !!state.user),
       needsProjectContext: createMemo(() => {
         if (!state.enabled || !state.user) return false
-        if (state.user.context_project_id) return false
+        if (state.user.context_product_id || state.user.context_project_id) return false
         return !state.user.permissions.includes("role:manage")
       }),
       user: createMemo(() => state.user),
@@ -663,65 +728,64 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         return body
       },
       async contextProjects() {
-        const response = await request({
-          path: "/account/context/projects",
-          method: "GET",
-          auth: "required",
-        }).catch(() => undefined)
-        if (!response?.ok) {
-          setState("last_error", (await responseCode(response)) ?? "context_projects_failed")
-          return
-        }
-        const payload = json<{
-          current_project_id?: string
-          last_project_id?: string
-          projects: ContextProject[]
-        }>(await response.json().catch(() => undefined))
-        if (!payload) {
-          setState("last_error", "context_projects_failed")
-          return
-        }
-        return payload
+        return cachedContext<ContextProjectsPayload>("context_projects", async () => {
+          const response = await request({
+            path: "/account/context/projects",
+            method: "GET",
+            auth: "required",
+          }).catch(() => undefined)
+          if (!response?.ok) {
+            setState("last_error", (await responseCode(response)) ?? "context_projects_failed")
+            return
+          }
+          const payload = json<ContextProjectsPayload>(await response.json().catch(() => undefined))
+          if (!payload) {
+            setState("last_error", "context_projects_failed")
+            return
+          }
+          return payload
+        })
       },
       async contextProducts() {
-        const response = await request({
-          path: "/account/context/products",
-          method: "GET",
-          auth: "required",
-        }).catch(() => undefined)
-        if (!response?.ok) {
-          setState("last_error", (await responseCode(response)) ?? "context_products_failed")
-          return
-        }
-        const payload = json<{
-          current_project_id?: string
-          last_project_id?: string
-          products: ContextProduct[]
-        }>(await response.json().catch(() => undefined))
-        if (!payload) {
-          setState("last_error", "context_products_failed")
-          return
-        }
-        return payload
+        return cachedContext<ContextProductsPayload>("context_products", async () => {
+          const response = await request({
+            path: "/account/context/products",
+            method: "GET",
+            auth: "required",
+          }).catch(() => undefined)
+          if (!response?.ok) {
+            setState("last_error", (await responseCode(response)) ?? "context_products_failed")
+            return
+          }
+          const payload = json<ContextProductsPayload>(await response.json().catch(() => undefined))
+          if (!payload) {
+            setState("last_error", "context_products_failed")
+            return
+          }
+          return payload
+        })
       },
       async contextState() {
-        const response = await request({
-          path: "/account/context/state",
-          method: "GET",
-          auth: "required",
-        }).catch(() => undefined)
-        if (!response?.ok) {
-          setState("last_error", (await responseCode(response)) ?? "context_state_failed")
-          return
-        }
-        const payload = json<AccountProjectState>(await response.json().catch(() => undefined))
-        if (!payload) {
-          setState("last_error", "context_state_failed")
-          return
-        }
-        return payload
+        return cachedContext<AccountProjectState>("context_state", async () => {
+          const response = await request({
+            path: "/account/context/state",
+            method: "GET",
+            auth: "required",
+          }).catch(() => undefined)
+          if (!response?.ok) {
+            setState("last_error", (await responseCode(response)) ?? "context_state_failed")
+            return
+          }
+          const payload = json<AccountProjectState>(await response.json().catch(() => undefined))
+          if (!payload) {
+            setState("last_error", "context_state_failed")
+            return
+          }
+          return payload
+        })
       },
       async updateContextState(input: AccountProjectStatePatch) {
+        clearContextCache()
         const response = await request({
           path: "/account/context/state",
           method: "PATCH",
@@ -740,10 +804,41 @@ export const { use: useAccountAuth, provider: AccountAuthProvider } = createSimp
         return payload
       },
       async selectContext(project_id: string) {
+        clearContextCache()
         const response = await request({
           path: "/account/context/select",
           method: "POST",
           body: { project_id },
+          auth: "required",
+        }).catch(() => undefined)
+        if (!response?.ok) {
+          const code = await responseCode(response)
+          setState("last_error", code ?? "context_select_failed")
+          return {
+            ok: false as const,
+            code: code ?? "context_select_failed",
+          }
+        }
+        const result = json<LoginResult>(await response.json().catch(() => undefined))
+        if (!result?.access_token || !result.refresh_token || !result.user) {
+          setState("last_error", "context_select_failed")
+          return {
+            ok: false as const,
+            code: "context_select_failed",
+          }
+        }
+        writeSession(result)
+        return {
+          ok: true as const,
+        }
+      },
+      /** 中文注释：按产品切换上下文，供产品选择页和 build 场景优先使用产品级上下文。 */
+      async selectProductContext(product_id: string) {
+        clearContextCache()
+        const response = await request({
+          path: "/account/context/select",
+          method: "POST",
+          body: { product_id },
           auth: "required",
         }).catch(() => undefined)
         if (!response?.ok) {

@@ -1,4 +1,4 @@
-import type { Message, Session } from "@opencode-ai/sdk/v2/client"
+import type { Message, Session, SessionStatus } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate, useParams } from "@solidjs/router"
@@ -22,6 +22,7 @@ import { Worktree as WorktreeState } from "@/utils/worktree"
 import { buildToastDescription } from "@/components/build-job-summary"
 import { buildRequestParts } from "./build-request-parts"
 import { setCursorPosition } from "./editor-dom"
+import { shouldConsumeVhoPlanHandoff, shouldUseVhoFeedbackSavedPlan } from "../vho-feedback"
 
 type PendingPrompt = {
   abort: AbortController
@@ -65,6 +66,11 @@ function routeDirectory() {
   return decode(dir)
 }
 
+/** 中文注释：overlay 会话目录属于临时产品沙盒，不应被登记成用户长期可见的项目沙盒。 */
+function hiddenWorkspaceDirectory(directory: string) {
+  return /(?:^|[\\/])build-overlay(?:[\\/]|$)/i.test(directory)
+}
+
 type PromptSubmitInput = {
   info: Accessor<{ id: string } | undefined>
   currentRuntimeModel?: Accessor<{ providerID: string; modelID: string } | undefined>
@@ -97,13 +103,46 @@ type CommentItem = {
 
 type BuildStageDetail = {
   stage?: string
+  status?: string
   detail_json?: Record<string, unknown>
+  error_message?: string
 }
 
 type BuildArtifactDetail = {
   id: string
   file_name: string
 }
+
+type BuildJobStatus = "pending" | "running" | "completed" | "failed"
+
+type BuildJobSnapshot = {
+  id: string
+  status: BuildJobStatus
+  current_stage?: string
+  error_code?: string
+  error_message?: string
+  session_id?: string
+  solution_scope?: string
+}
+
+type BuildJobDetail = {
+  job?: BuildJobSnapshot
+  session_directory?: string
+  stages?: BuildStageDetail[]
+  artifacts?: BuildArtifactDetail[]
+}
+
+type BuildJobCreateInput =
+  | {
+      session_id?: string
+      source_type: "prompt"
+      prompt_text: string
+    }
+  | {
+      session_id?: string
+      source_type: "saved_plan"
+      saved_plan_id: string
+    }
 
 export function createPromptSubmit(input: PromptSubmitInput) {
   const navigate = useNavigate()
@@ -148,14 +187,56 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     return language.t("common.requestFailed")
   }
 
-  /** 中文注释：直接调用后端 build job 闭环接口，并在完成后返回构建会话目录，供前端跳转到执行会话。 */
-  const runBuildPipeline = async (prompt_text: string) => {
+  /** 中文注释：统一解析 build job 详情响应，便于会话页和后续构建态展示复用同一结构。 */
+  const parseBuildDetail = (input: unknown) => {
+    const body = input as BuildJobDetail | undefined
+    return {
+      job_id: body?.job?.id,
+      job: body?.job,
+      session_id: body?.job?.session_id,
+      session_directory: body?.session_directory,
+      solution_scope: body?.job?.solution_scope,
+      stages: body?.stages ?? [],
+      artifacts: body?.artifacts ?? [],
+    }
+  }
+
+  /** 中文注释：把构建轮询得到的最新详情写回会话级 handoff，供会话页持续展示阶段和产物。 */
+  const syncBuildJobHandoff = (sessionID: string | undefined, detail: ReturnType<typeof parseBuildDetail>) => {
+    const target = detail.session_id ?? sessionID
+    if (!target || !detail.job_id || !detail.job) return
+    layout.handoff.setBuildJob(target, {
+      job_id: detail.job_id,
+      status: detail.job.status,
+      current_stage: detail.job.current_stage,
+      error_code: detail.job.error_code,
+      error_message: detail.job.error_message,
+      session_id: detail.session_id,
+      session_directory: detail.session_directory,
+      solution_scope: detail.solution_scope,
+      stages: detail.stages.map((item) => ({
+        stage: item.stage,
+        status: item.status,
+        detail_json: item.detail_json,
+        error_message: item.error_message,
+      })),
+      artifacts: detail.artifacts.map((item) => ({
+        id: item.id,
+        file_name: item.file_name,
+      })),
+    })
+  }
+
+  /** 中文注释：直接向后端创建异步 build job，只负责建单，不在当前请求里同步等待完整编译闭环。 */
+  const createBuildJob = async (input: BuildJobCreateInput, runtime_model?: { providerID: string; modelID: string }) => {
     const current = server.current
     const user = auth.user()
     if (!current || !user) return
     if (!user.permissions.includes("agent:use_build")) return
     const payload = await auth.contextProducts()
-    const product = payload?.products?.find((item) => item.project_id === user.context_project_id)
+    const product =
+      payload?.products?.find((item) => item.id === user.context_product_id) ??
+      payload?.products?.find((item) => item.project_id === user.context_project_id)
     if (!product) return
     const token = AccountToken.access()
     if (!token) return
@@ -168,9 +249,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       },
       body: JSON.stringify({
         product_id: product.id,
-        source_type: "prompt",
-        prompt_text,
-        run_mode: "sync",
+        run_mode: "async",
+        ...input,
+        ...(runtime_model ? { providerID: runtime_model.providerID, modelID: runtime_model.modelID } : {}),
       }),
     })
     const body = (await response.json().catch(() => undefined)) as
@@ -178,14 +259,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           ok?: boolean
           code?: string
           error?: string
-          detail?: {
-            job?: {
-              session_id?: string
-              solution_scope?: string
-            }
-            session_directory?: string
-            stages?: BuildStageDetail[]
-            artifacts?: BuildArtifactDetail[]
+          job?: {
+            id?: string
+            session_id?: string
+            solution_scope?: string
           }
         }
       | undefined
@@ -193,12 +270,49 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       throw new Error(body?.code ?? body?.error ?? "build_pipeline_failed")
     }
     return {
-      session_id: body.detail?.job?.session_id,
-      session_directory: body.detail?.session_directory,
-      solution_scope: body.detail?.job?.solution_scope,
-      stages: body.detail?.stages ?? [],
-      artifacts: body.detail?.artifacts ?? [],
+      job_id: body.job?.id,
+      session_id: body.job?.session_id,
+      solution_scope: body.job?.solution_scope,
     }
+  }
+
+  /** 中文注释：按 job_id 读取最新构建详情，供会话页后台轮询阶段状态与产物结果。 */
+  const loadBuildJobDetail = async (job_id: string) => {
+    const current = server.current
+    const token = AccountToken.access()
+    if (!current || !token) throw new Error("build_job_detail_unavailable")
+    const response = await fetcher(new URL(`/build/job/${encodeURIComponent(job_id)}`, current.http.url).toString(), {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+    })
+    const body = await response.json().catch(() => undefined)
+    if (!response.ok) {
+      const error = body as { code?: string; error?: string } | undefined
+      throw new Error(error?.code ?? error?.error ?? "build_job_detail_failed")
+    }
+    return parseBuildDetail(body)
+  }
+
+  /** 中文注释：后台轮询 build job，直到完成或失败，再把结果回写到当前会话与提示信息中。 */
+  const waitBuildJob = async (job_id: string) => {
+    const schedule = [0, 800, 1500, 2500, 4000, 6000, 10000, 15000, 20000]
+    const deadline = Date.now() + 15 * 60 * 1000
+    let index = 0
+    while (Date.now() < deadline) {
+      const delay = schedule[Math.min(index, schedule.length - 1)] ?? 20000
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay))
+      }
+      index += 1
+      const detail = await loadBuildJobDetail(job_id)
+      syncBuildJobHandoff(undefined, detail)
+      const status = detail.job?.status
+      if (status === "completed" || status === "failed") return detail
+    }
+    throw new Error("build_job_timeout")
   }
 
   /** 中文注释：在本地 child store 里预写入新会话，避免首次 build 切目录时迁移不到 session 条目。 */
@@ -210,14 +324,48 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     setStore("session", reconcile(next, { key: "id" }))
   }
 
-  /** 中文注释：异步发送成功后主动补拉消息，避免仅靠事件流时乐观消息长期停留。 */
-  const refreshSessionMessages = (directory: string, sessionID: string) => {
+  /** 中文注释：异步提示词在事件流丢失时也要能把回复补拉回来，因此这里按固定节奏轮询消息与状态。 */
+  const refreshSessionMessages = (
+    directory: string,
+    sessionID: string,
+    client: {
+      session: {
+        status: () => Promise<{ data?: Record<string, SessionStatus> }>
+      }
+    },
+  ) => {
     const run = () => sync.session.syncAt({ directory, sessionID }).catch(() => undefined)
     void run()
     if (typeof window === "undefined") return
-    window.setTimeout(() => {
-      void run()
-    }, 1200)
+    const key = `${directory}\n${sessionID}`
+    const existing = statusCompensationTimers.get(key)
+    if (existing !== undefined) clearTimeout(existing)
+    const schedule = [1200, 3000, 6000, 12000, 20000, 30000, 45000]
+    const tick = (index: number) => {
+      const timer = window.setTimeout(async () => {
+        try {
+          await run()
+          const [, setStore] = globalSync.child(directory)
+          const status = await client.session.status().then((result) => {
+            setStore("session_status", reconcile(result.data ?? {}))
+            return result.data?.[sessionID]
+          })
+          if (index > 0 && status?.type && status.type !== "busy") {
+            statusCompensationTimers.delete(key)
+            return
+          }
+        } catch {
+          // 中文注释：补偿刷新不应打断当前会话，只在下一个轮次继续兜底。
+        }
+        if (index >= schedule.length - 1) {
+          statusCompensationTimers.delete(key)
+          return
+        }
+        tick(index + 1)
+      }, schedule[index])
+      statusCompensationTimers.set(key, timer)
+    }
+    tick(0)
   }
 
   type QueuedPrompt = {
@@ -322,7 +470,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
             (row) => !(row.directory === item.directory && row.input.messageID === item.input.messageID),
           )
           writeQueue(next)
-          refreshSessionMessages(item.directory, item.input.sessionID)
+          refreshSessionMessages(item.directory, item.input.sessionID, client)
           continue
         }
 
@@ -425,7 +573,50 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const voices = currentPrompt.filter((part): part is VoiceAttachmentPart => part.type === "voice")
     const mode = input.mode()
 
-    if (text.trim().length === 0 && images.length === 0 && voices.length === 0 && input.commentCount() === 0) {
+    const currentAgent = local.agent.current()
+    const selectedAgent = local.agent.selected?.()
+    /** 中文注释：未显式选择模式时回到 plan，只有手动切到 build 才触发构建闭环。 */
+    const agent = currentAgent?.name ?? "plan"
+    const pendingVhoPlan = (() => {
+      const directory = params.dir
+      if (!directory) return
+      const handoff = layout.handoff.vhoPlan(directory)
+      if (
+        !shouldConsumeVhoPlanHandoff({
+          handoff,
+          session_id: params.id,
+          now: Date.now(),
+        })
+      ) {
+        if (handoff && Date.now() - handoff.at > 60_000) {
+          layout.handoff.clearVhoPlan(directory)
+        }
+        return
+      }
+      return handoff
+    })()
+    const rememberedPlan = (() => {
+      const knownSessionID = params.id ?? input.info()?.id
+      if (knownSessionID) return layout.handoff.savedPlan(knownSessionID)
+      if (!pendingVhoPlan) return
+      return {
+        id: pendingVhoPlan.saved_plan_id,
+        at: pendingVhoPlan.at,
+        prompt: pendingVhoPlan.prompt,
+      }
+    })()
+    const useSavedPlanBuild =
+      selectedAgent?.name === "build" &&
+      shouldUseVhoFeedbackSavedPlan({
+        current: text,
+        prompt: rememberedPlan?.prompt,
+        has_saved_plan: !!rememberedPlan?.id,
+        image_count: images.length,
+        voice_count: voices.length,
+        comment_count: input.commentCount(),
+      })
+
+    if (text.trim().length === 0 && images.length === 0 && voices.length === 0 && input.commentCount() === 0 && !useSavedPlanBuild) {
       if (input.working()) abort()
       return
     }
@@ -445,8 +636,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return
     }
 
-    const currentAgent = local.agent.current()
-    const agent = currentAgent?.name ?? "build"
     const currentModel = local.model.current()
     const model =
       currentModel &&
@@ -459,35 +648,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           }
         : undefined
     const variant = local.model.variant.current()
-
-    if (mode === "normal" && agent === "build" && images.length === 0 && voices.length === 0 && input.commentCount() === 0) {
-      try {
-        const created = await runBuildPipeline(text)
-        if (!created) {
-          // 中文注释：非账号模式或上下文尚未准备好时，回退到原有会话式 build 流程。
-        } else {
-        input.addToHistory(currentPrompt, mode)
-        input.resetHistoryNavigation()
-        input.clearDraft?.()
-        prompt.reset()
-        input.setMode("normal")
-        input.setPopover(null)
-        if (created?.session_id && created.session_directory) {
-          navigate(`/${base64Encode(created.session_directory)}/session/${created.session_id}`)
-        }
-        showToast({
-          title: "构建闭环已完成",
-          description: buildToastDescription(created ?? {}),
-        })
-        return
-        }
-      } catch (error) {
-        showToast({
-          title: "构建闭环执行失败",
-          description: errorMessage(error),
-        })
-      }
-    }
 
     if (!model) {
       showToast({
@@ -558,6 +718,56 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     let sessionID = routeID ?? input.info()?.id
+
+    /** 中文注释：首次 build 切到新的 session worktree 后，立即把目录补进当前项目 sandboxes，并等待会话列表预加载完成，确保左侧工作区展开后立刻能看到 session。 */
+    const registerWorkspace = async (directory: string) => {
+      const project =
+        resolveProjectByDirectory(globalSync.data.project, sessionDirectory) ??
+        resolveProjectByDirectory(globalSync.data.project, projectDirectory)
+      if (!project) return
+      if (!hiddenWorkspaceDirectory(directory) && project.worktree !== directory && !(project.sandboxes ?? []).includes(directory)) {
+        globalSync.set(
+          "project",
+          produce((draft) => {
+            const item = draft.find((entry) => entry.id === project.id)
+            if (!item) return
+            item.sandboxes = [...new Set([...(item.sandboxes ?? []), directory])]
+          }),
+        )
+      }
+      layout.sidebar.setWorkspaces(project.worktree, true)
+      if (!hiddenWorkspaceDirectory(directory)) {
+        layout.sidebar.setWorkspaceExpanded(directory, true)
+      }
+      globalSync.child(directory)
+      await globalSync.project.loadSessions(directory)
+    }
+
+    const switchDirectory = async (directory: string, targetSessionID: string) => {
+      const previousDirectory = sessionDirectory
+      await registerWorkspace(directory)
+      sync.session.migrate({
+        from: previousDirectory,
+        to: directory,
+        sessionID: targetSessionID,
+      })
+      await sync.session.syncAt({
+        directory,
+        sessionID: targetSessionID,
+      })
+      await globalSync.project.loadSessions(directory)
+      sessionDirectory = directory
+      client =
+        directory === projectDirectory
+          ? sdk.client
+          : sdk.createClient({
+              directory,
+              throwOnError: true,
+            })
+      layout.handoff.setTabs(base64Encode(directory), targetSessionID)
+      navigate(`/${base64Encode(directory)}/session/${targetSessionID}`)
+    }
+
     if (!sessionID && !routeID) {
       const ownedWorkspace = layout.handoff.workspace(sessionDirectory)
       const created = await client.session
@@ -571,11 +781,21 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           return undefined
         })
       if (created) {
-        upsertSession(sessionDirectory, created)
+        const nextDirectory = created.directory || sessionDirectory
+        upsertSession(nextDirectory, created)
         if (createdWorkspace || ownedWorkspace) layout.handoff.clearWorkspace(sessionDirectory)
         sessionID = created.id
-        layout.handoff.setTabs(base64Encode(sessionDirectory), created.id)
-        navigate(`/${base64Encode(sessionDirectory)}/session/${created.id}`)
+        if (pendingVhoPlan?.saved_plan_id) {
+          layout.handoff.setSavedPlan(created.id, pendingVhoPlan.saved_plan_id)
+          if (params.dir) layout.handoff.clearVhoPlan(params.dir)
+        }
+        if (nextDirectory !== sessionDirectory) {
+          /** 中文注释：新会话创建后优先切到服务端返回的真实目录，避免产品 overlay 会话继续停留在旧根目录路由。 */
+          await switchDirectory(nextDirectory, created.id)
+        } else {
+          layout.handoff.setTabs(base64Encode(sessionDirectory), created.id)
+          navigate(`/${base64Encode(sessionDirectory)}/session/${created.id}`)
+        }
         await input.syncRuntimeModel?.(created.id)
       }
     }
@@ -587,54 +807,117 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return
     }
 
-    input.onSubmit?.()
-
-    /** 中文注释：首次 build 切到新的 session worktree 后，立即把目录补进当前项目 sandboxes，并等待会话列表预加载完成，确保左侧工作区展开后立刻能看到 session。 */
-    const registerWorkspace = async (directory: string) => {
-      const project =
-        resolveProjectByDirectory(globalSync.data.project, sessionDirectory) ??
-        resolveProjectByDirectory(globalSync.data.project, projectDirectory)
-      if (!project) return
-      if (project.worktree !== directory && !(project.sandboxes ?? []).includes(directory)) {
-        globalSync.set(
-          "project",
-          produce((draft) => {
-            const item = draft.find((entry) => entry.id === project.id)
-            if (!item) return
-            item.sandboxes = [...new Set([...(item.sandboxes ?? []), directory])]
-          }),
+    if (
+      mode === "normal" &&
+      selectedAgent?.name === "build" &&
+      images.length === 0 &&
+      voices.length === 0 &&
+      input.commentCount() === 0
+    ) {
+      try {
+        const created = await createBuildJob(
+          useSavedPlanBuild && rememberedPlan?.id
+            ? {
+                session_id: sessionID,
+                source_type: "saved_plan",
+                saved_plan_id: rememberedPlan.id,
+              }
+            : {
+                session_id: sessionID,
+                source_type: "prompt",
+                prompt_text: text,
+              },
+          model,
         )
+        if (!created) {
+          // 中文注释：非账号模式或上下文尚未准备好时，回退到原有会话式 build 流程。
+        } else {
+          if (created.job_id) {
+            layout.handoff.setBuildJob(sessionID, {
+              job_id: created.job_id,
+              status: "pending",
+              current_stage: undefined,
+              error_code: undefined,
+              error_message: undefined,
+              session_id: sessionID,
+              session_directory: sessionDirectory,
+              solution_scope: created.solution_scope,
+              stages: [],
+              artifacts: [],
+            })
+          }
+          input.clearDraft?.()
+          prompt.reset()
+          input.setMode("normal")
+          input.setPopover(null)
+          showToast({
+            title: "构建任务已提交",
+            description: useSavedPlanBuild ? "系统正在后台按最近一次已保存计划执行构建。" : "系统正在后台执行改码、编译与打包，完成后会自动刷新当前会话。",
+          })
+          if (!created.job_id) return
+          void waitBuildJob(created.job_id)
+            .then(async (detail) => {
+              syncBuildJobHandoff(sessionID, detail)
+              const target_session_id = detail.session_id ?? created.session_id
+              const target_directory = detail.session_directory
+              if (detail.job?.status !== "completed") {
+                throw new Error(detail.job?.error_message ?? detail.job?.error_code ?? detail.job?.current_stage ?? "build_job_failed")
+              }
+              if (target_session_id && target_directory) {
+                if (target_session_id === sessionID && target_directory !== sessionDirectory) {
+                  await switchDirectory(target_directory, target_session_id)
+                } else if (target_session_id === sessionID) {
+                  /** 中文注释：异步构建在当前会话完成后，也要主动补拉消息与列表，避免用户停留在旧快照。 */
+                  await sync.session.syncAt({
+                    directory: target_directory,
+                    sessionID: target_session_id,
+                  })
+                  await globalSync.project.loadSessions(target_directory)
+                } else {
+                  navigate(`/${base64Encode(target_directory)}/session/${target_session_id}`)
+                }
+              }
+              showToast({
+                title: "构建闭环已完成",
+                description: buildToastDescription(detail),
+              })
+            })
+            .catch((error) => {
+              if (sessionID) {
+                const currentBuild = layout.handoff.buildJob(sessionID)
+                const job_id = currentBuild?.job_id ?? created.job_id
+                if (job_id) {
+                  layout.handoff.setBuildJob(sessionID, {
+                    job_id,
+                    current_stage: currentBuild?.current_stage,
+                    error_code: currentBuild?.error_code,
+                    session_id: currentBuild?.session_id ?? sessionID,
+                    session_directory: currentBuild?.session_directory ?? sessionDirectory,
+                    solution_scope: currentBuild?.solution_scope ?? created.solution_scope,
+                    stages: currentBuild?.stages ?? [],
+                    artifacts: currentBuild?.artifacts ?? [],
+                    status: "failed",
+                    error_message: errorMessage(error),
+                  })
+                }
+              }
+              showToast({
+                title: "构建任务执行失败",
+                description: errorMessage(error),
+              })
+            })
+          return
+        }
+      } catch (error) {
+        showToast({
+          title: "构建闭环执行失败",
+          description: errorMessage(error),
+        })
+        return
       }
-      layout.sidebar.setWorkspaces(project.worktree, true)
-      layout.sidebar.setWorkspaceExpanded(directory, true)
-      globalSync.child(directory)
-      await globalSync.project.loadSessions(directory)
     }
 
-    const switchDirectory = async (directory: string) => {
-      const previousDirectory = sessionDirectory
-      await registerWorkspace(directory)
-      sync.session.migrate({
-        from: previousDirectory,
-        to: directory,
-        sessionID,
-      })
-      await sync.session.syncAt({
-        directory,
-        sessionID,
-      })
-      await globalSync.project.loadSessions(directory)
-      sessionDirectory = directory
-      client =
-        directory === projectDirectory
-          ? sdk.client
-          : sdk.createClient({
-              directory,
-              throwOnError: true,
-            })
-      layout.handoff.setTabs(base64Encode(directory), sessionID)
-      navigate(`/${base64Encode(directory)}/session/${sessionID}`)
-    }
+    input.onSubmit?.()
 
     const prepareBuild = async () => {
       if (agent !== "build") return true
@@ -651,7 +934,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       const nextDirectory = prepared?.directory
       if (!nextDirectory) return false
       if (nextDirectory !== sessionDirectory) {
-        await switchDirectory(nextDirectory)
+        await switchDirectory(nextDirectory, sessionID)
       }
       if (isNewSession) input.onNewSessionWorktreeReset?.()
       return true
@@ -883,34 +1166,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         return
       }
 
-      refreshSessionMessages(sessionDirectory, sessionID)
+      refreshSessionMessages(sessionDirectory, sessionID, client)
       if (sessionDirectory !== projectDirectory) return
       sync.set("session_status", sessionID, { type: "busy" })
-      if (typeof document === "undefined") return
-      const key = `${sessionDirectory}\n${sessionID}`
-      const existing = statusCompensationTimers.get(key)
-      if (existing !== undefined) {
-        clearTimeout(existing)
-      }
-      const timer = window.setTimeout(() => {
-        statusCompensationTimers.delete(key)
-        const status = sync.data.session_status[sessionID]
-        if (status?.type !== "busy") return
-        const [, setStore] = globalSync.child(sessionDirectory)
-        client.session
-          .status()
-          .then((x) => {
-            setStore("session_status", reconcile(x.data ?? {}))
-          })
-          .catch((error) => {
-            console.error("[prompt-submit] failed to compensate session status", {
-              directory: sessionDirectory,
-              sessionID,
-              error,
-            })
-          })
-      }, 20_000)
-      statusCompensationTimers.set(key, timer)
     }
 
     void send().catch((err) => {
@@ -953,7 +1211,8 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return
     }
 
-    const agent = currentAgent?.name ?? "build"
+    /** 中文注释：固定提示词动作默认也回到 plan，避免用户未切 build 时误触发构建流程。 */
+    const agent = currentAgent?.name ?? "plan"
     const projectDirectory = routeDirectory() ?? decode(params.dir) ?? sdk.directory
     const sessionID = params.id ?? input.info()?.id
     if (!sessionID) {
@@ -1123,7 +1382,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         return
       }
 
-      refreshSessionMessages(sessionDirectory, sessionID)
+      refreshSessionMessages(sessionDirectory, sessionID, client)
       if (sessionDirectory !== projectDirectory) return
       sync.set("session_status", sessionID, { type: "busy" })
     }

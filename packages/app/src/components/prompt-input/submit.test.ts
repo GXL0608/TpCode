@@ -32,9 +32,14 @@ const workspaceModeCalls: Array<{ directory: string; value: boolean }> = []
 const workspaceExpandedCalls: Array<{ directory: string; value: boolean }> = []
 const workspaceSessionLoads: string[] = []
 const clearedWorkspaceHandoffs: string[] = []
+const fetchCalls: Array<{ url: string; init?: RequestInit }> = []
+let buildPipelineSessionDirectory = "/repo/main/build-session"
+let buildJobCreateID = "job-build-1"
+let buildJobStatus: "pending" | "running" | "completed" | "failed" = "completed"
+let buildJobError = "build failed"
 
 let selected = "/repo/worktree-a"
-let route: { id?: string } = {}
+let route: { id?: string; dir?: string } = {}
 let promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
 let commands: { name: string }[] = []
 let promptAsyncError: unknown
@@ -47,9 +52,50 @@ let syncRuntimeModelPending:
       resolve: () => void
     }
   | undefined
-let currentAgentName = "agent"
+let currentAgentName: string | undefined = "agent"
 let projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] as string[] }]
 let handoffWorkspaces: Record<string, { directory: string; branch?: string }> = {}
+let handoffSavedPlans: Record<string, { id: string }> = {}
+let handoffVhoPlans: Record<
+  string,
+  {
+    saved_plan_id: string
+    plan_content: string
+    prompt: string
+    at: number
+  }
+> = {}
+let handoffBuildJobs: Record<
+  string,
+  {
+    job_id: string
+    status: string
+    current_stage?: string
+    error_message?: string
+    session_id?: string
+    session_directory?: string
+    solution_scope?: string
+    stages: Array<{ stage?: string; status?: string; error_message?: string; detail_json?: Record<string, unknown> }>
+    artifacts: Array<{ id: string; file_name: string }>
+  }
+> = {}
+let authUser:
+  | {
+      permissions: string[]
+      context_project_id?: string
+      context_product_id?: string
+    }
+  | undefined
+let contextProductsPayload:
+  | {
+      products: Array<{
+        id: string
+        project_id?: string
+        worktree?: string
+      }>
+    }
+  | undefined
+let createdSessionDirectory: string | undefined
 
 const event = { preventDefault: () => undefined } as unknown as Event
 
@@ -64,7 +110,12 @@ const clientFor = (directory: string) => {
       create: async (input?: unknown) => {
         createSessionInputs.push({ directory, input })
         createdSessions.push(directory)
-        return { data: { id: `session-${createdSessions.length}` } }
+        return {
+          data: {
+            id: `session-${createdSessions.length}`,
+            directory: createdSessionDirectory ?? directory,
+          },
+        }
       },
       shell: async (input: { sessionID: string }) => {
         shellCalls.push({ directory, sessionID: input.sessionID })
@@ -136,7 +187,8 @@ beforeAll(async () => {
         variant: { current: () => undefined },
       },
       agent: {
-        current: () => ({ name: currentAgentName }),
+        current: () => ({ name: currentAgentName ?? "plan" }),
+        selected: () => (currentAgentName ? { name: currentAgentName } : undefined),
       },
     }),
   }))
@@ -163,6 +215,47 @@ beforeAll(async () => {
           clearedWorkspaceHandoffs.push(directory)
           delete handoffWorkspaces[directory]
         },
+        vhoPlan: (directory: string) => handoffVhoPlans[directory],
+        setVhoPlan: (
+          directory: string,
+          input: {
+            saved_plan_id: string
+            plan_content: string
+            prompt: string
+          },
+        ) => {
+          handoffVhoPlans[directory] = { ...input, at: Date.now() }
+        },
+        clearVhoPlan: (directory: string) => {
+          delete handoffVhoPlans[directory]
+        },
+        savedPlan: (sessionID: string) => handoffSavedPlans[sessionID],
+        setSavedPlan: (sessionID: string, id: string) => {
+          handoffSavedPlans[sessionID] = { id }
+        },
+        clearSavedPlan: (sessionID: string) => {
+          delete handoffSavedPlans[sessionID]
+        },
+        buildJob: (sessionID: string) => handoffBuildJobs[sessionID],
+        setBuildJob: (
+          sessionID: string,
+          input: {
+            job_id: string
+            status: string
+            current_stage?: string
+            error_message?: string
+            session_id?: string
+            session_directory?: string
+            solution_scope?: string
+            stages: Array<{ stage?: string; status?: string; error_message?: string; detail_json?: Record<string, unknown> }>
+            artifacts: Array<{ id: string; file_name: string }>
+          },
+        ) => {
+          handoffBuildJobs[sessionID] = input
+        },
+        clearBuildJob: (sessionID: string) => {
+          delete handoffBuildJobs[sessionID]
+        },
       },
       sidebar: {
         setWorkspaces: (directory: string, value: boolean) => {
@@ -181,6 +274,16 @@ beforeAll(async () => {
       client: rootClient,
       url: "http://localhost:4096",
       createClient: (opts: { directory: string; throwOnError?: boolean }) => clientFor(opts.directory),
+    }),
+  }))
+
+  mock.module("@/context/server", () => ({
+    useServer: () => ({
+      current: {
+        http: {
+          url: "http://localhost:4096",
+        },
+      },
     }),
   }))
 
@@ -229,15 +332,80 @@ beforeAll(async () => {
       },
       child: (directory: string) => {
         syncedDirectories.push(directory)
-        return [{}, () => undefined]
+        return [{ session: [] }, () => undefined]
       },
     }),
   }))
 
   mock.module("@/context/platform", () => ({
     usePlatform: () => ({
-      fetch,
+      fetch: async (url: string | URL, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init })
+        if (String(url).includes("/build/job/")) {
+          return new Response(
+            JSON.stringify({
+              job: {
+                id: buildJobCreateID,
+                status: buildJobStatus,
+                current_stage: buildJobStatus === "completed" ? "package" : "coding",
+                error_message: buildJobStatus === "failed" ? buildJobError : undefined,
+                session_id: JSON.parse(String(fetchCalls[0]?.init?.body ?? "{}")).session_id ?? "session-build-job",
+                solution_scope: "product_all",
+              },
+              session_directory: buildPipelineSessionDirectory,
+              stages: [
+                {
+                  stage: buildJobStatus === "completed" ? "package" : "coding",
+                  status: buildJobStatus,
+                  detail_json: {},
+                  error_message: buildJobStatus === "failed" ? buildJobError : undefined,
+                },
+              ],
+              artifacts:
+                buildJobStatus === "completed"
+                  ? [
+                      {
+                        id: "artifact-build-1",
+                        file_name: "build-output.zip",
+                      },
+                    ]
+                  : [],
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          )
+        }
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            job: {
+              id: buildJobCreateID,
+              session_id: JSON.parse(String(init?.body ?? "{}")).session_id ?? "session-build-job",
+              solution_scope: "product_all",
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        )
+      },
     }),
+  }))
+
+  mock.module("@/context/account-auth", () => ({
+    useAccountAuth: () => ({
+      user: () => authUser,
+      contextProducts: async () => contextProductsPayload,
+    }),
+  }))
+
+  mock.module("@/utils/account-auth", () => ({
+    AccountToken: {
+      access: () => "token-build-test",
+    },
   }))
 
   mock.module("@/context/language", () => ({
@@ -276,11 +444,34 @@ beforeEach(() => {
   currentAgentName = "agent"
   projects = [{ id: "project-main", worktree: "/repo/main", sandboxes: [] }]
   handoffWorkspaces = {}
+  handoffSavedPlans = {}
+  handoffVhoPlans = {}
+  handoffBuildJobs = {}
+  authUser = {
+    permissions: ["agent:use_build"],
+    context_project_id: "project-main",
+    context_product_id: "product-main",
+  }
+  contextProductsPayload = {
+    products: [
+      {
+        id: "product-main",
+        project_id: "project-main",
+        worktree: "/repo/main",
+      },
+    ],
+  }
+  createdSessionDirectory = undefined
   setCalls.length = 0
   workspaceModeCalls.length = 0
   workspaceExpandedCalls.length = 0
   workspaceSessionLoads.length = 0
   clearedWorkspaceHandoffs.length = 0
+  fetchCalls.length = 0
+  buildPipelineSessionDirectory = "/repo/main/build-session"
+  buildJobCreateID = "job-build-1"
+  buildJobStatus = "completed"
+  buildJobError = "build failed"
 })
 
 function createSubmit(input?: {
@@ -354,7 +545,7 @@ describe("prompt submit session resolution", () => {
     expect(createdClients).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(createdSessions).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(shellCalls.map((item) => item.directory)).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
-    expect(syncedDirectories).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
+    expect(syncedDirectories).toEqual(["/repo/worktree-a", "/repo/worktree-a", "/repo/worktree-b", "/repo/worktree-b"])
   })
 
   test("binds a newly created workspace to the new session", async () => {
@@ -389,6 +580,21 @@ describe("prompt submit session resolution", () => {
         input: undefined,
       },
     ])
+  })
+
+  test("switches to the created overlay directory when backend returns a new session directory", async () => {
+    createdSessionDirectory = "/repo/worktree-a/overlay/session-1"
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual(["/repo/worktree-a"])
+    expect(syncCalls).toContainEqual({
+      directory: "/repo/worktree-a/overlay/session-1",
+      sessionID: "session-1",
+    })
+    expect(navigations).toContain("//repo/worktree-a/overlay/session-1/session/session-1")
   })
 
   test("binds a newly created workspace handoff to the first plan session", async () => {
@@ -432,6 +638,26 @@ describe("prompt submit session resolution", () => {
         variant: undefined,
       },
     ])
+  })
+
+  test("uses plan as the implicit default agent without auto-running the build pipeline", async () => {
+    route = { id: "session-route-implicit-plan" }
+    currentAgentName = undefined
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(prepareBuildCalls).toEqual([])
+    expect(promptAsyncCalls).toEqual([
+      {
+        directory: "/repo/main",
+        sessionID: "session-route-implicit-plan",
+        model: { providerID: "provider", modelID: "model" },
+        variant: undefined,
+      },
+    ])
+    expect((optimisticAdds.at(-1)?.message as UserMessage | undefined)?.agent).toBe("plan")
   })
 
   test("uses route session id for shell mode without creating a session", async () => {
@@ -654,9 +880,11 @@ describe("prompt submit session resolution", () => {
     ])
   })
 
-  test("prepares a build workspace lazily for an existing session before sending the first prompt", async () => {
+  test("falls back to prepareBuild for an existing build session when build pipeline is unavailable", async () => {
     route = { id: "session-route-build" }
     currentAgentName = "build"
+    authUser = undefined
+    contextProductsPayload = undefined
     const submit = createSubmit({ mode: "normal", info: () => undefined })
 
     await submit.handleSubmit(event)
@@ -691,8 +919,145 @@ describe("prompt submit session resolution", () => {
     expect(workspaceExpandedCalls).toEqual([
       { directory: "/repo/main/prepared/session-route-build", value: true },
     ])
-    expect(workspaceSessionLoads).toEqual(["/repo/main/prepared/session-route-build"])
+    expect(workspaceSessionLoads).toEqual([
+      "/repo/main/prepared/session-route-build",
+      "/repo/main/prepared/session-route-build",
+    ])
     expect(navigations).toContain("//repo/main/prepared/session-route-build/session/session-route-build")
+  })
+
+  test("submits build pipeline with the current session id instead of sending promptAsync", async () => {
+    route = { id: "session-route-build-pipeline" }
+    currentAgentName = "build"
+    promptValue = [{ type: "text", content: "请修改并编译", start: 0, end: 6 }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(promptAsyncCalls).toEqual([])
+    expect(fetchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(fetchCalls[0]?.url).toContain("/build/job")
+    expect(JSON.parse(String(fetchCalls[0]?.init?.body ?? "{}"))).toMatchObject({
+      session_id: "session-route-build-pipeline",
+      source_type: "prompt",
+      prompt_text: "请修改并编译",
+      run_mode: "async",
+    })
+  })
+
+  test("creates a new session before the first build pipeline submit and reuses that session id", async () => {
+    currentAgentName = "build"
+    promptValue = [{ type: "text", content: "首次 build", start: 0, end: 8 }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual(["/repo/main"])
+    expect(promptAsyncCalls).toEqual([])
+    expect(fetchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(JSON.parse(String(fetchCalls[0]?.init?.body ?? "{}"))).toMatchObject({
+      session_id: "session-1",
+      source_type: "prompt",
+      prompt_text: "首次 build",
+      run_mode: "async",
+    })
+  })
+
+  test("refreshes current session messages after build pipeline completes in the same directory", async () => {
+    route = { id: "session-route-build-refresh" }
+    currentAgentName = "build"
+    buildPipelineSessionDirectory = "/repo/main"
+    promptValue = [{ type: "text", content: "继续编译当前会话", start: 0, end: 8 }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(promptAsyncCalls).toEqual([])
+    expect(syncCalls).toContainEqual({
+      directory: "/repo/main",
+      sessionID: "session-route-build-refresh",
+    })
+    expect(handoffBuildJobs["session-route-build-refresh"]).toMatchObject({
+      job_id: "job-build-1",
+      status: "completed",
+      current_stage: "package",
+      session_directory: "/repo/main",
+      artifacts: [{ id: "artifact-build-1", file_name: "build-output.zip" }],
+    })
+  })
+
+  test("submits saved_plan build when current build session has a remembered saved plan and input is empty", async () => {
+    route = { id: "session-route-build-from-plan" }
+    currentAgentName = "build"
+    promptValue = []
+    handoffSavedPlans["session-route-build-from-plan"] = { id: "plan_saved_1" }
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(promptAsyncCalls).toEqual([])
+    expect(fetchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(JSON.parse(String(fetchCalls[0]?.init?.body ?? "{}"))).toMatchObject({
+      session_id: "session-route-build-from-plan",
+      source_type: "saved_plan",
+      saved_plan_id: "plan_saved_1",
+      run_mode: "async",
+    })
+  })
+
+  test("submits saved_plan build for a fresh session when the text still matches feedback fillback", async () => {
+    route = { dir: "/repo/main" }
+    currentAgentName = "build"
+    promptValue = [
+      {
+        type: "text",
+        content: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+        start: 0,
+        end: 31,
+      },
+    ]
+    handoffVhoPlans["/repo/main"] = {
+      saved_plan_id: "plan_saved_vho_1",
+      plan_content: "## 计划\n- 先排查接口\n- 再优化缓存",
+      prompt: "反馈问题：登录界面加载缓慢的问题\n\n计划内容：先排查接口，再优化缓存。",
+      at: Date.now(),
+    }
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(createdSessions).toEqual(["/repo/main"])
+    expect(JSON.parse(String(fetchCalls[0]?.init?.body ?? "{}"))).toMatchObject({
+      session_id: "session-1",
+      source_type: "saved_plan",
+      saved_plan_id: "plan_saved_vho_1",
+      run_mode: "async",
+    })
+    expect(handoffSavedPlans["session-1"]).toEqual({ id: "plan_saved_vho_1" })
+  })
+
+  test("shows failed build job detail when async build job finishes with failure", async () => {
+    route = { id: "session-route-build-failed" }
+    currentAgentName = "build"
+    buildJobStatus = "failed"
+    buildJobError = "compile_failed"
+    promptValue = [{ type: "text", content: "继续编译当前会话", start: 0, end: 8 }]
+    const submit = createSubmit({ mode: "normal", info: () => undefined })
+
+    await submit.handleSubmit(event)
+    await flush()
+
+    expect(toasts.some((item) => item.title === "构建任务执行失败" && item.description === "compile_failed")).toBe(true)
+    expect(handoffBuildJobs["session-route-build-failed"]).toMatchObject({
+      job_id: "job-build-1",
+      status: "failed",
+      error_message: "compile_failed",
+    })
   })
 
   test("does not prepare a workspace for non-build prompts", async () => {

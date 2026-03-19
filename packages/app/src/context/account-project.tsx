@@ -1,14 +1,17 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
+import { base64Encode } from "@opencode-ai/util/encode"
 import type { Project } from "@opencode-ai/sdk/v2/client"
 import { createEffect, createMemo, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import {
   type AccountProjectState,
   type AccountProjectStatePatch,
+  type AccountProjectStateLastSession,
   useAccountAuth,
 } from "./account-auth"
+import { sessionHref } from "@/utils/session-route"
 import { useGlobalSync } from "./global-sync"
-import { projectDirectories, resolveProjectByDirectory, sanitizeProjectWorkspaceOrder } from "./project-resolver"
+import { directoryKey, projectDirectories, resolveProjectByDirectory, sanitizeProjectWorkspaceOrder } from "./project-resolver"
 
 export function visibleProjectIDs(input: {
   projects: readonly Pick<Project, "id">[]
@@ -23,6 +26,28 @@ export function visibleProjectIDs(input: {
   return [...open, input.current_project_id]
 }
 
+/** 中文注释：同一真实目录可能同时以 UNC、盘符或挂载路径出现，侧栏只保留一个项目条目并优先显示当前项目。 */
+export function collapseVisibleProjects<T extends Pick<Project, "id" | "worktree">>(input: {
+  projects: readonly T[]
+  current_project_id?: string
+}) {
+  const map = new Map<string, T>()
+  for (const project of input.projects) {
+    const key = directoryKey(project.worktree)
+    const current = map.get(key)
+    if (!current) {
+      map.set(key, project)
+      continue
+    }
+    if (current.id === input.current_project_id) continue
+    if (project.id === input.current_project_id) {
+      map.set(key, project)
+      continue
+    }
+  }
+  return [...map.values()]
+}
+
 export function nextOpenProjectIDs(input: {
   open_project_ids: string[]
   project_id: string
@@ -31,6 +56,213 @@ export function nextOpenProjectIDs(input: {
   return [...input.open_project_ids, input.project_id]
 }
 
+/** 中文注释：产品上下文优先使用后端返回的关联项目集合；旧数据仍回退到单个 project_id。 */
+export function productProjectIDs(input?: {
+  project_id?: string
+  related_project_ids?: string[]
+}) {
+  const ids = [...new Set((input?.related_project_ids ?? []).filter(Boolean))]
+  if (ids.length > 0) return ids
+  if (!input?.project_id) return []
+  return [input.project_id]
+}
+
+/** 中文注释：当两个产品绑定的是同一组项目时，不能再回退到项目级最近会话，否则会把别的产品历史误当成当前产品历史。 */
+export function productSharesProjects(input: {
+  product?: {
+    id?: string
+    project_id?: string
+    related_project_ids?: string[]
+  }
+  products?: readonly {
+    id: string
+    project_id?: string
+    related_project_ids?: string[]
+  }[]
+}) {
+  const ids = productProjectIDs(input.product)
+  if (ids.length === 0 || !input.product?.id) return false
+  const key = ids.slice().sort().join("\n")
+  return !!input.products?.some((item) => item.id !== input.product?.id && productProjectIDs(item).slice().sort().join("\n") === key)
+}
+
+/** 中文注释：产品 overlay 会话目录名带产品标识时，可用它识别共享解决方案产品之间的历史是否串了。 */
+export function productSessionDirectoryMatches(product_id: string | undefined, directory?: string) {
+  if (!product_id || !directory) return false
+  const name = directory.split(/[\\/]/).filter(Boolean).at(-1)?.toLowerCase()
+  if (!name) return false
+  return name.startsWith(`${product_id.toLowerCase()}-`)
+}
+
+/** 中文注释：为产品挑选当前要进入的项目，优先使用产品内最近一次选中的项目，再回退到首个关联项目。 */
+export function productEntryProjectID(input: {
+  product?: {
+    project_id?: string
+    related_project_ids?: string[]
+  }
+  current_project_id?: string
+  last_project_id?: string
+}) {
+  const ids = productProjectIDs(input.product)
+  if (ids.length === 0) return
+  if (input.current_project_id && ids.includes(input.current_project_id)) return input.current_project_id
+  if (input.last_project_id && ids.includes(input.last_project_id)) return input.last_project_id
+  return ids[0]
+}
+
+/** 中文注释：为产品路由选择一个稳定目录，避免继续落回过期锚点或空 worktree。 */
+export function productEntryDirectory<T extends Pick<Project, "id" | "worktree">>(input: {
+  product?: {
+    project_id?: string
+    related_project_ids?: string[]
+    worktree?: string
+    paths?: string[]
+    solutions?: Array<{
+      roots?: Array<{
+        directory: string
+        enabled?: boolean
+        meta?: {
+          directories?: string[]
+        }
+      }>
+    }>
+  }
+  projects: readonly T[]
+  current_project_id?: string
+  last_project_id?: string
+}) {
+  const project_id = productEntryProjectID(input)
+  const project = input.projects.find((item) => item.id === project_id)
+  if (project?.worktree) return project.worktree
+  /** 中文注释：项目列表尚未可用时，直接回退到产品接口返回的路径摘要或解决方案 roots，避免产品选择页误判“没有可用解决方案”。 */
+  const paths = [...new Set((input.product?.paths ?? []).map((item) => item.trim()).filter(Boolean))]
+  if (paths.length > 0) return paths[0]
+  const roots = (input.product?.solutions ?? [])
+    .flatMap((solution) =>
+      (solution.roots ?? [])
+        .filter((root) => root.enabled !== false)
+        .flatMap((root) => [root.directory, ...(root.meta?.directories ?? [])])
+        .map((item) => item.trim())
+        .filter(Boolean),
+    )
+  if (roots.length > 0) return roots[0]
+  return input.product?.worktree
+}
+
+/** 中文注释：从产品关联项目里挑出最近一次会话；产品切换场景可关闭项目级回退，避免跳回别的产品历史。 */
+export function latestRememberedProductSession(input: {
+  product?: {
+    id?: string
+    project_id?: string
+    related_project_ids?: string[]
+  }
+  products?: readonly {
+    id: string
+    project_id?: string
+    related_project_ids?: string[]
+  }[]
+  last_session_by_product: Record<string, AccountProjectStateLastSession>
+  last_session_by_project: Record<string, AccountProjectStateLastSession>
+  allow_project_fallback?: boolean
+}) {
+  const remembered = input.product?.id ? input.last_session_by_product[input.product.id] : undefined
+  if (
+    remembered?.session_id &&
+    (!productSharesProjects({ product: input.product, products: input.products }) ||
+      productSessionDirectoryMatches(input.product?.id, remembered.directory))
+  ) {
+    return remembered
+  }
+  if (input.allow_project_fallback === false) return
+  if (productSharesProjects({ product: input.product, products: input.products })) return
+  return productProjectIDs(input.product)
+    .map((project_id) => input.last_session_by_project[project_id])
+    .filter((item): item is AccountProjectStateLastSession => !!item?.session_id)
+    .sort((a, b) => b.time_updated - a.time_updated)[0]
+}
+
+/** 中文注释：切换产品时基于本地状态推导目标产品的打开项目、最近项目和最近会话，避免额外查询导致切换变慢。 */
+export function nextProductContextState(input: {
+  product?: {
+    id?: string
+    project_id?: string
+    related_project_ids?: string[]
+  }
+  products?: readonly {
+    id: string
+    project_id?: string
+    related_project_ids?: string[]
+  }[]
+  state: Pick<AccountProjectState, "last_project_id" | "last_session_by_project" | "last_session_by_product">
+  current_project_id?: string
+}) {
+  const open_project_ids = productProjectIDs(input.product)
+  const last_project_id =
+    open_project_ids.length === 0
+      ? null
+      : open_project_ids.includes(input.current_project_id ?? "")
+        ? (input.current_project_id ?? open_project_ids[0])
+        : open_project_ids.includes(input.state.last_project_id ?? "")
+          ? (input.state.last_project_id ?? open_project_ids[0])
+          : open_project_ids[0]
+  return {
+    open_project_ids,
+    last_project_id,
+    remembered: latestRememberedProductSession({
+      product: input.product,
+      products: input.products,
+      last_session_by_product: input.state.last_session_by_product,
+      last_session_by_project: input.state.last_session_by_project,
+    }),
+  }
+}
+
+/** 中文注释：统一推导“打开产品”后的目标路由，优先恢复最近会话，否则落到产品会话入口页。 */
+export function nextProductNavigation<T extends Pick<Project, "id" | "worktree">>(input: {
+  product?: {
+    id?: string
+    project_id?: string
+    related_project_ids?: string[]
+    worktree?: string
+  }
+  products?: readonly {
+    id: string
+    project_id?: string
+    related_project_ids?: string[]
+  }[]
+  projects: readonly T[]
+  state: Pick<AccountProjectState, "last_project_id" | "last_session_by_project" | "last_session_by_product">
+  current_project_id?: string
+}) {
+  const next = nextProductContextState(input)
+  if (next.remembered) {
+    return {
+      open_project_ids: next.open_project_ids,
+      last_project_id: next.last_project_id,
+      href: `/${base64Encode(next.remembered.directory)}/session/${next.remembered.session_id}`,
+    }
+  }
+  const directory = productEntryDirectory({
+    product: input.product,
+    projects: input.projects,
+    current_project_id: input.current_project_id,
+    last_project_id: next.last_project_id ?? undefined,
+  })
+  if (!directory) {
+    return {
+      open_project_ids: next.open_project_ids,
+      last_project_id: next.last_project_id,
+      href: undefined,
+    }
+  }
+  return {
+    open_project_ids: next.open_project_ids,
+    last_project_id: next.last_project_id,
+    href: sessionHref(base64Encode(directory), input.product?.id),
+  }
+}
+
+/** 中文注释：产品上下文自己维护打开项目集合，不能再由项目修复逻辑补开项目，否则会和产品同步互相打架。 */
 export function repairProjectID(input: {
   ready: boolean
   hydrated: boolean
@@ -39,8 +271,10 @@ export function repairProjectID(input: {
   projects: readonly Pick<Project, "id">[]
   open_project_ids: string[]
   current_project_id?: string
+  context_product_id?: string
 }) {
   if (!input.ready || !input.hydrated || !input.authenticated || input.pending) return
+  if (input.context_product_id) return
   if (!input.current_project_id) return
   if (!input.projects.some((project) => project.id === input.current_project_id)) return
   if (input.open_project_ids.includes(input.current_project_id)) return
@@ -49,10 +283,42 @@ export function repairProjectID(input: {
 
 /** 中文注释：主动切换项目上下文后，跳过同一 project_id 触发的那次 effect 补拉，避免 account/context/state 重复请求。 */
 export function shouldSkipAccountProjectReload(input: {
-  skip_for?: string
+  skip_for_project?: string
+  skip_for_product?: string
   context_project_id?: string
+  context_product_id?: string
 }) {
-  return !!input.skip_for && input.skip_for === input.context_project_id
+  if (input.skip_for_project && input.skip_for_project === input.context_project_id) return true
+  if (input.skip_for_product && input.skip_for_product === input.context_product_id) return true
+  return false
+}
+
+/** 中文注释：产品上下文没有锚点项目时，不能继续沿用上一个产品残留的 current_project_id。 */
+export function currentProjectID(input: {
+  context_project_id?: string
+  context_product_id?: string
+  state_current_project_id?: string
+}) {
+  if (input.context_product_id && !input.context_project_id) return
+  return input.context_project_id ?? input.state_current_project_id
+}
+
+/** 中文注释：同一会话和目录已经写入最近记录时，跳过重复 patch，避免流式消息期间反复刷新账号状态。 */
+export function rememberedSessionChanged(input: {
+  project_id: string
+  product_id?: string
+  current_project?: AccountProjectStateLastSession
+  current_product?: AccountProjectStateLastSession
+  next: {
+    id: string
+    directory: string
+  }
+}) {
+  const projectChanged =
+    input.current_project?.session_id !== input.next.id || input.current_project?.directory !== input.next.directory
+  if (projectChanged) return true
+  if (!input.product_id) return false
+  return input.current_product?.session_id !== input.next.id || input.current_product?.directory !== input.next.directory
 }
 
 function empty(current_project_id?: string): AccountProjectState {
@@ -61,6 +327,7 @@ function empty(current_project_id?: string): AccountProjectState {
     last_project_id: undefined,
     open_project_ids: [],
     last_session_by_project: {},
+    last_session_by_product: {},
     workspace_mode_by_project: {},
     workspace_order_by_project: {},
     workspace_expanded_by_directory: {},
@@ -99,21 +366,30 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
     })
 
     const projects = createMemo(() => globalSync.data.project)
-    const currentID = createMemo(() => store.data.current_project_id ?? auth.user()?.context_project_id)
+    const currentID = createMemo(() =>
+      currentProjectID({
+        context_project_id: auth.user()?.context_project_id,
+        context_product_id: auth.user()?.context_product_id,
+        state_current_project_id: store.data.current_project_id,
+      }),
+    )
     const list = createMemo(() =>
-      visibleProjectIDs({
-        projects: projects(),
-        open_project_ids: store.data.open_project_ids,
+      collapseVisibleProjects({
+        projects: visibleProjectIDs({
+          projects: projects(),
+          open_project_ids: store.data.open_project_ids,
+          current_project_id: currentID(),
+        })
+          .map((project_id) => projects().find((project) => project.id === project_id))
+          .filter((project): project is Project => !!project),
         current_project_id: currentID(),
-      })
-        .map((project_id) => projects().find((project) => project.id === project_id))
-        .filter((project): project is Project => !!project)
-        .map((project) => ({ ...project, expanded: true })),
+      }).map((project) => ({ ...project, expanded: true })),
     )
 
     const current = createMemo(() => projects().find((project) => project.id === currentID()))
     let reloading: Promise<AccountProjectState> | undefined
     let skipReloadForContext: string | undefined
+    let skipReloadForProduct: string | undefined
 
     const replace = (next?: AccountProjectState) => {
       setStore("data", next ?? empty(auth.user()?.context_project_id))
@@ -281,8 +557,21 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       })
     }
 
-    const rememberSession = async (project_id: string, session: { id: string; directory: string; at?: number }) =>
-      patch({
+    /** 中文注释：只在最近会话真的变化时写回账号状态，避免同一会话被重复记忆造成高频 state patch。 */
+    const rememberSession = async (project_id: string, session: { id: string; directory: string; at?: number }) => {
+      const product_id = auth.user()?.context_product_id
+      if (
+        !rememberedSessionChanged({
+          project_id,
+          product_id,
+          current_project: store.data.last_session_by_project[project_id],
+          current_product: product_id ? store.data.last_session_by_product[product_id] : undefined,
+          next: session,
+        })
+      ) {
+        return store.data
+      }
+      return patch({
         last_project_id: project_id,
         last_session_by_project: {
           ...store.data.last_session_by_project,
@@ -292,7 +581,32 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
             time_updated: session.at ?? Date.now(),
           },
         },
+        last_session_by_product: product_id
+          ? {
+              ...store.data.last_session_by_product,
+              [product_id]: {
+                session_id: session.id,
+                directory: session.directory,
+                time_updated: session.at ?? Date.now(),
+              },
+            }
+          : store.data.last_session_by_product,
       })
+    }
+
+    /** 中文注释：切换产品后先把本地账号项目状态对齐到目标产品态，避免 layout effect 再补发一轮相同的 state patch。 */
+    const syncProductState = (input: {
+      open_project_ids: string[]
+      last_project_id?: string | null
+    }) => {
+      const next = {
+        ...store.data,
+        last_project_id: input.last_project_id ?? undefined,
+        open_project_ids: input.open_project_ids,
+      }
+      apply(next)
+      return next
+    }
 
     const activate = async (project_id: string, ensure_open = true) => {
       const contextChanged = auth.user()?.context_project_id !== project_id
@@ -300,6 +614,7 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
         const result = await auth.selectContext(project_id)
         if (!result.ok) return { ok: false as const }
         skipReloadForContext = project_id
+        skipReloadForProduct = undefined
       }
       const state = apply(
         optimisticState({
@@ -329,6 +644,18 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       }
     }
 
+    /** 中文注释：切换产品成功后记住后端返回的锚点项目，避免 account/context/state 被 effect 立刻重复拉取。 */
+    const activateProduct = async (product_id: string) => {
+      const result = await auth.selectProductContext(product_id)
+      if (!result.ok) return result
+      const project_id = auth.user()?.context_project_id
+      skipReloadForContext = project_id
+      skipReloadForProduct = product_id
+      return {
+        ok: true as const,
+      }
+    }
+
     createEffect(() => {
       if (!auth.ready()) return
       auth.enabled()
@@ -336,11 +663,14 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       const context_project_id = auth.user()?.context_project_id
       if (
         shouldSkipAccountProjectReload({
-          skip_for: skipReloadForContext,
+          skip_for_project: skipReloadForContext,
+          skip_for_product: skipReloadForProduct,
           context_project_id,
+          context_product_id: auth.user()?.context_product_id,
         })
       ) {
         skipReloadForContext = undefined
+        skipReloadForProduct = undefined
         return
       }
       void reload()
@@ -356,6 +686,7 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
         projects: projects(),
         open_project_ids: store.data.open_project_ids,
         current_project_id: currentID(),
+        context_product_id: auth.user()?.context_product_id,
       })
       if (!project_id) return
       void open(project_id)
@@ -374,7 +705,9 @@ export const { use: useAccountProject, provider: AccountProjectProvider } = crea
       close,
       move,
       activate,
+      activateProduct,
       rememberSession,
+      syncProductState,
       setWorkspaceMode,
       setWorkspaceOrder,
       setWorkspaceExpanded,

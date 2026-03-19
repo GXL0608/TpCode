@@ -1,7 +1,7 @@
 import { getFilename } from "@opencode-ai/util/path"
 import { type Project, type Session } from "@opencode-ai/sdk/v2/client"
 
-type ProjectRef = Pick<Project, "worktree" | "sandboxes">
+type ProjectRef = Pick<Project, "worktree"> & { sandboxes?: string[] }
 
 export const workspaceKey = (directory: string) => {
   const drive = directory.match(/^([A-Za-z]:)[\\/]+$/)
@@ -10,18 +10,94 @@ export const workspaceKey = (directory: string) => {
   return directory.replace(/[\\/]+$/, "")
 }
 
+/** 中文注释：产品会话与 build 使用的 overlay 目录属于临时工作区，不应作为常驻沙盒直接暴露给侧栏。 */
+export const hiddenWorkspaceDirectory = (directory: string) =>
+  /(?:^|[\\/])build-overlay(?:[\\/]|$)/i.test(directory)
+
+/** 中文注释：统一计算项目在侧栏中可见的工作区目录，默认隐藏旧 overlay，但保留当前激活的临时会话目录。 */
+export function projectWorkspaceDirectories(input: {
+  project?: ProjectRef
+  currentDir?: string
+}) {
+  if (!input.project) return [] as string[]
+  const root = input.project.worktree
+  const visible = [
+    root,
+    ...(input.project.sandboxes ?? []).filter((directory) => !hiddenWorkspaceDirectory(directory)),
+  ].filter((directory, index, list) => list.findIndex((item) => workspaceKey(item) === workspaceKey(directory)) === index)
+  const current = input.currentDir
+  if (!current) return visible
+  if (workspaceKey(current) === workspaceKey(root)) return visible
+  if (visible.some((directory) => workspaceKey(directory) === workspaceKey(current))) return visible
+  return [root, current, ...visible.filter((directory) => workspaceKey(directory) !== workspaceKey(root))]
+}
+
+/** 中文注释：会话列表统一按最近活跃时间倒序展示，只在时间完全相同的时候再用 id 做稳定排序。 */
 export function sortSessions(now: number) {
-  const oneMinuteAgo = now - 60 * 1000
   return (a: Session, b: Session) => {
     const aUpdated = a.time.updated ?? a.time.created
     const bUpdated = b.time.updated ?? b.time.created
-    const aRecent = aUpdated > oneMinuteAgo
-    const bRecent = bUpdated > oneMinuteAgo
-    if (aRecent && bRecent) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-    if (aRecent && !bRecent) return -1
-    if (!aRecent && bRecent) return 1
-    return bUpdated - aUpdated
+    if (bUpdated !== aUpdated) return bUpdated - aUpdated
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
   }
+}
+
+/** 中文注释：只有当前会话已产生真实消息时，才生成稳定的“最近会话”记忆键，避免流式消息增长时重复写入状态。 */
+export function rememberedSessionKey(input: {
+  directory?: string
+  id?: string
+  message_count?: number
+}) {
+  if (!input.directory || !input.id) return
+  if ((input.message_count ?? 0) <= 0) return
+  return `${input.directory}\0${input.id}`
+}
+
+/** 中文注释：产品上下文同步时把 null 与 undefined 视为同一个“空项目”，避免没有关联项目的产品页持续重复 PATCH state。 */
+export function productContextStateSynced(input: {
+  open_project_ids: string[]
+  last_project_id: string | null | undefined
+  state_open_project_ids: string[]
+  state_last_project_id: string | null | undefined
+}) {
+  const sameOpen =
+    input.open_project_ids.length === input.state_open_project_ids.length &&
+    input.open_project_ids.every((item, index) => item === input.state_open_project_ids[index])
+  if (!sameOpen) return false
+  return (input.last_project_id ?? null) === (input.state_last_project_id ?? null)
+}
+
+/** 中文注释：把产品上下文目标状态规整成稳定键，供前端避免并发发送完全相同的 PATCH 请求。 */
+export function productContextStateKey(input: {
+  open_project_ids: string[]
+  last_project_id: string | null | undefined
+}) {
+  return JSON.stringify({
+    open_project_ids: input.open_project_ids,
+    last_project_id: input.last_project_id ?? null,
+  })
+}
+
+/** 中文注释：只有目标状态尚未同步且当前没有相同 PATCH 在途时，才继续发起产品上下文同步。 */
+export function productContextStateShouldSync(input: {
+  open_project_ids: string[]
+  last_project_id: string | null | undefined
+  state_open_project_ids: string[]
+  state_last_project_id: string | null | undefined
+  pending_key?: string
+}) {
+  if (
+    productContextStateSynced({
+      open_project_ids: input.open_project_ids,
+      last_project_id: input.last_project_id,
+      state_open_project_ids: input.state_open_project_ids,
+      state_last_project_id: input.state_last_project_id,
+    })
+  ) return false
+  return productContextStateKey({
+    open_project_ids: input.open_project_ids,
+    last_project_id: input.last_project_id,
+  }) !== input.pending_key
 }
 
 export const isRootVisibleSession = (session: Session, directory: string) =>
@@ -59,7 +135,10 @@ export function buildDirectoryLoadPlan(input: {
     }
   }
 
-  const sessions = [project.worktree, ...(project.sandboxes ?? [])].filter((directory) => {
+  const sessions = projectWorkspaceDirectories({
+    project,
+    currentDir: bootstrap,
+  }).filter((directory) => {
     if (bootstrap && workspaceKey(directory) === workspaceKey(bootstrap)) return false
     return input.expanded[directory] ?? directory === project.worktree
   })

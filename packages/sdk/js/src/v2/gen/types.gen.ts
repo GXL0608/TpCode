@@ -1660,6 +1660,7 @@ export type AccountLoginResult = {
     department_id?: string
     force_password_reset: boolean
     context_project_id?: string
+    context_product_id?: string
     roles: Array<string>
     permissions: Array<string>
     feedback_enabled: boolean
@@ -2014,6 +2015,7 @@ export type Workspace = {
       source_directory: string
       sandbox_directory: string
       branch: string
+      source_kind?: "git" | "copy"
       base_ref?: string
       default_branch?: string
       status: "ready" | "failed"
@@ -2027,6 +2029,7 @@ export type Workspace = {
         mount_name: string
         source_directory: string
         overlay_directory: string
+        source_kind?: "git" | "copy"
       }>
     }
   }
@@ -2933,6 +2936,7 @@ export type AccountMeResponses = {
     department_id?: string
     force_password_reset: boolean
     context_project_id?: string
+    context_product_id?: string
     roles: Array<string>
     permissions: Array<string>
     feedback_enabled: boolean
@@ -3042,7 +3046,8 @@ export type AccountContextStateUpdateResponse =
 
 export type PostAccountContextSelectData = {
   body?: {
-    project_id: string
+    project_id?: string
+    product_id?: string
   }
   path?: never
   query?: never
@@ -3486,7 +3491,7 @@ export type GetAccountAdminProjectsCatalogResponses = {
 export type PostAccountAdminProductsData = {
   body?: {
     name: string
-    directory: string
+    directory?: string
   }
   path?: never
   query?: never

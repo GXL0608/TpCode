@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { GrepTool } from "../../src/tool/grep"
+import { GrepTool, searchOverlay } from "../../src/tool/grep"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
+import { BuildOverlay } from "../../src/build/overlay"
 
 const ctx = {
   sessionID: "test",
@@ -106,5 +107,47 @@ describe("CRLF regex handling", () => {
     const mixedOutput = "file1.txt|1|content1\nfile2.txt|2|content2\r\nfile3.txt|3|content3"
     const lines = mixedOutput.trim().split(/\r?\n/)
     expect(lines.length).toBe(3)
+  })
+})
+
+describe("overlay grep", () => {
+  test("changed overlay files override stale source matches", async () => {
+    await using tmp = await tmpdir()
+    const source = path.join(tmp.path, "source")
+    const overlay_root = path.join(tmp.path, "overlay")
+    await Bun.write(path.join(source, "a.txt"), "before\n")
+    await Bun.write(path.join(source, "b.txt"), "match in source\n")
+
+    const overlay = await BuildOverlay.create({
+      root: overlay_root,
+      mounts: [
+        {
+          solution_id: "solution-1",
+          solution_code: "demo",
+          mount_name: "demo",
+          source_directory: source,
+        },
+      ],
+    })
+
+    await BuildOverlay.writeText({
+      overlay,
+      filePath: path.join(overlay.root, "demo", "a.txt"),
+      content: "match in overlay\n",
+    })
+    await BuildOverlay.writeText({
+      overlay,
+      filePath: path.join(overlay.root, "demo", "b.txt"),
+      content: "after update\n",
+    })
+
+    const result = await searchOverlay({
+      overlay,
+      pattern: "match",
+      searchPath: path.join(overlay.root, "demo"),
+    })
+
+    expect(result.map((item) => item.path)).toEqual([path.join(overlay.root, "demo", "a.txt")])
+    expect(result[0]?.lineText).toContain("match in overlay")
   })
 })

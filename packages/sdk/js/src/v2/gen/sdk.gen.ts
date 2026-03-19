@@ -6044,10 +6044,21 @@ export class OpencodeClient extends HeyApiClient {
   public postAccountContextSelect<ThrowOnError extends boolean = false>(
     parameters?: {
       project_id?: string
+      product_id?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
-    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "project_id" }] }])
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "project_id" },
+            { in: "body", key: "product_id" },
+          ],
+        },
+      ],
+    )
     return (options?.client ?? this.client).post<PostAccountContextSelectResponses, unknown, ThrowOnError>({
       url: "/account/context/select",
       ...options,

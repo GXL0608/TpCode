@@ -2,6 +2,7 @@ import z from "zod"
 import { spawn } from "child_process"
 import { Tool } from "./tool"
 import path from "path"
+import fs from "fs/promises"
 import DESCRIPTION from "./bash.txt"
 import { Log } from "../util/log"
 import { Instance } from "../project/instance"
@@ -20,9 +21,31 @@ import { Plugin } from "@/plugin"
 import { assertBuildCommandAllowed } from "@/session/build-protection"
 import { Workspace } from "@/control-plane/workspace"
 import { BuildOverlay } from "@/build/overlay"
+import { Global } from "@/global"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
+const READONLY_COMMANDS = new Set([
+  "ls",
+  "pwd",
+  "find",
+  "rg",
+  "grep",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "tree",
+  "stat",
+  "du",
+  "sort",
+  "uniq",
+  "cut",
+  "awk",
+  "sed",
+  "git",
+])
+const READONLY_GIT_COMMANDS = new Set(["status", "log", "show", "diff", "branch", "rev-parse", "ls-files"])
 
 export const log = Log.create({ service: "bash-tool" })
 
@@ -33,10 +56,12 @@ const resolveWasm = (asset: string) => {
   return fileURLToPath(url)
 }
 
-/** 中文注释：把 bash 工具的 workdir 统一规整为绝对路径，避免相对路径在不同执行环境下漂移。 */
-function cwd(workdir?: string) {
+/** 中文注释：把 bash 工具的 workdir 统一规整为绝对路径，并把误传入的源码路径映射回当前 overlay。 */
+function cwd(workdir?: string, overlay?: BuildOverlay.Info) {
   if (!workdir) return Instance.directory
-  return path.isAbsolute(workdir) ? workdir : path.resolve(Instance.directory, workdir)
+  const current = path.isAbsolute(workdir) ? workdir : path.resolve(Instance.directory, workdir)
+  if (!overlay) return current
+  return BuildOverlay.remapSourcePath({ overlay, filePath: current })
 }
 
 /** 中文注释：把 overlay 根目录里的路径映射到临时 merged sandbox，保持命令里的绝对路径仍然可执行。 */
@@ -63,8 +88,78 @@ function overlayCwd(input: { cwd: string; overlayRoot: string; sandboxRoot: stri
   return path.join(input.sandboxRoot, relative)
 }
 
+/** 中文注释：保守判断 bash 命令是否只读，只有白名单查询命令才允许走轻量只读视图。 */
+function readonly(tree: NonNullable<Awaited<ReturnType<typeof parser>>>) {
+  if (tree.rootNode.text.includes("<<")) return false
+  const commands = tree.rootNode.descendantsOfType("command").map((node) => {
+    const text = node.parent?.type === "redirected_statement" ? node.parent.text : node.text
+    const command = [] as string[]
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i)
+      if (!child) continue
+      if (
+        child.type !== "command_name" &&
+        child.type !== "word" &&
+        child.type !== "string" &&
+        child.type !== "raw_string" &&
+        child.type !== "concatenation"
+      ) {
+        continue
+      }
+      command.push(child.text)
+    }
+    return {
+      text,
+      command,
+    }
+  })
+  if (commands.length === 0) return false
+  return commands.every((item) => {
+    const name = item.command[0]
+    if (!name) return false
+    if (/\btee\b/.test(item.text)) return false
+    if (name === "git") return READONLY_GIT_COMMANDS.has(item.command[1] ?? "")
+    if (name === "sed" && item.command.includes("-i")) return false
+    if (!READONLY_COMMANDS.has(name)) return false
+    if (item.text.includes(">") && !item.text.includes("/dev/null")) return false
+    return true
+  })
+}
+
+/** 中文注释：为 clean overlay 的只读 bash 命令创建轻量只读视图，避免重复创建完整 worktree。 */
+async function readonlySandbox(input: { sessionID: string; cwd: string; command: string }) {
+  const overlay = await BuildOverlay.load(input.sessionID)
+  if (!overlay || !Filesystem.contains(overlay.root, input.cwd)) return
+  if ((await BuildOverlay.listChanges(overlay)).length > 0) return
+  const directory = await fs.mkdtemp(path.join(Global.Path.runtime, "bash-readonly-"))
+  await Promise.all(
+    overlay.mounts.map((item) =>
+      fs.symlink(
+        item.source_directory,
+        path.join(directory, item.mount_name),
+        process.platform === "win32" ? "junction" : "dir",
+      ),
+    ),
+  )
+  return {
+    mode: "readonly" as const,
+    overlay,
+    directory,
+    cwd: overlayCwd({
+      cwd: input.cwd,
+      overlayRoot: overlay.root,
+      sandboxRoot: directory,
+    }),
+    command: overlayCommand(input.command, overlay.root, directory),
+  }
+}
+
 /** 中文注释：在 overlay 会话下临时创建 merged sandbox，供 bash 读取完整源码并把改动回写到 overlay。 */
-async function overlaySandbox(input: { sessionID: string; cwd: string; command: string }) {
+async function overlaySandbox(input: { sessionID: string; cwd: string; command: string; readonly: boolean }) {
+  if (input.readonly) {
+    const sandbox = await readonlySandbox(input)
+    if (sandbox) return sandbox
+  }
   const overlay = await BuildOverlay.load(input.sessionID)
   if (!overlay || !Filesystem.contains(overlay.root, input.cwd)) return
 
@@ -91,6 +186,7 @@ async function overlaySandbox(input: { sessionID: string; cwd: string; command: 
   }
 
   return {
+    mode: "merged" as const,
     overlay,
     workspace,
     cwd: overlayCwd({
@@ -105,12 +201,17 @@ async function overlaySandbox(input: { sessionID: string; cwd: string; command: 
 /** 中文注释：把临时 merged sandbox 的最终文件状态收敛回 overlay，再清理临时目录。 */
 async function settleOverlaySandbox(input?: Awaited<ReturnType<typeof overlaySandbox>>) {
   if (!input) return
+  if (input.mode === "readonly") {
+    await fs.rm(input.directory, { recursive: true, force: true }).catch(() => undefined)
+    return
+  }
   try {
     for (const member of input.workspace.meta?.members ?? []) {
       await BuildOverlay.captureMount({
         overlay: input.overlay,
         mount_name: member.relative_path,
         target_directory: member.sandbox_directory,
+        source_kind: member.source_kind,
       })
     }
   } finally {
@@ -164,7 +265,8 @@ export const BashTool = Tool.define("bash", async () => {
         ),
     }),
     async execute(params, ctx) {
-      const directory = cwd(params.workdir)
+      const overlay = await BuildOverlay.load(ctx.sessionID)
+      const directory = cwd(params.workdir, overlay)
       if (params.timeout !== undefined && params.timeout < 0) {
         throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
       }
@@ -179,6 +281,7 @@ export const BashTool = Tool.define("bash", async () => {
       if (!tree) {
         throw new Error("Failed to parse command")
       }
+      const readonlyCommand = readonly(tree)
       const directories = new Set<string>()
       if (!Instance.containsPath(directory)) directories.add(directory)
       const patterns = new Set<string>()
@@ -258,6 +361,7 @@ export const BashTool = Tool.define("bash", async () => {
         sessionID: ctx.sessionID,
         cwd: directory,
         command: params.command,
+        readonly: readonlyCommand,
       })
       const actualCwd = sandbox?.cwd ?? directory
       const actualCommand = sandbox?.command ?? params.command
@@ -275,7 +379,7 @@ export const BashTool = Tool.define("bash", async () => {
           description: params.description,
           cwd: actualCwd,
           overlay_root: sandbox?.overlay.root,
-          bash_sandbox_directory: sandbox?.workspace.directory,
+          bash_sandbox_directory: sandbox?.mode === "readonly" ? sandbox.directory : sandbox?.workspace.directory,
         },
       })
 
@@ -299,7 +403,7 @@ export const BashTool = Tool.define("bash", async () => {
               description: params.description,
               cwd: actualCwd,
               overlay_root: sandbox?.overlay.root,
-              bash_sandbox_directory: sandbox?.workspace.directory,
+              bash_sandbox_directory: sandbox?.mode === "readonly" ? sandbox.directory : sandbox?.workspace.directory,
             },
           })
         }
@@ -371,7 +475,7 @@ export const BashTool = Tool.define("bash", async () => {
             description: params.description,
             cwd: actualCwd,
             overlay_root: sandbox?.overlay.root,
-            bash_sandbox_directory: sandbox?.workspace.directory,
+            bash_sandbox_directory: sandbox?.mode === "readonly" ? sandbox.directory : sandbox?.workspace.directory,
           },
           output,
         }

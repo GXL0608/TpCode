@@ -1,6 +1,6 @@
 import { Project } from "@/project/project"
 import { ProjectTable } from "@/project/project.sql"
-import { Database, and, eq, inArray } from "@/storage/db"
+import { Database, and, eq, inArray, isNull } from "@/storage/db"
 import { Flag } from "@/flag/flag"
 import { TpRoleTable, TpUserRoleTable } from "./role.sql"
 import { TpProjectRoleAccessTable } from "./project-role-access.sql"
@@ -8,14 +8,73 @@ import { TpProjectUserAccessTable } from "./project-user-access.sql"
 import { TpUserProjectStateTable } from "./user-project-state.sql"
 import { TpUserTable } from "./user.sql"
 import { AccountProductService } from "./product"
+import { TpRoleProductAccessTable } from "./role-product-access.sql"
+
+/** 中文注释：产品一旦可见，就应该保留完整的解决方案项目集合，不能再把产品内部项目错误裁掉。 */
+function visibleProduct<T extends { project_id?: string; related_project_ids?: string[] }>(item: T, allowed: Set<string>) {
+  const related_project_ids = unique(item.related_project_ids ?? [])
+  if (!item.project_id) {
+    return {
+      ...item,
+      related_project_ids,
+    }
+  }
+  if (allowed.has(item.project_id)) {
+    return {
+      ...item,
+      related_project_ids,
+    }
+  }
+  return {
+    ...item,
+    project_id: undefined,
+    related_project_ids,
+  }
+}
+
+/** 中文注释：产品选中态需要兼容关联项目命中，不能只用主项目判断。 */
+function matchesProductProject(input: {
+  item: {
+    project_id?: string
+    related_project_ids?: string[]
+  }
+  project_id?: string
+}) {
+  if (!input.project_id) return false
+  return [input.item.project_id, ...(input.item.related_project_ids ?? [])].filter(Boolean).includes(input.project_id)
+}
 
 function unique(input: string[]) {
   return [...new Set(input)]
 }
 
+/** 中文注释：最近产品列表按 MRU 规则更新，并限制长度，避免账号状态无限膨胀。 */
+function recentProducts(input: { product_id?: string; current?: string[] }) {
+  if (!input.product_id) return unique(input.current ?? [])
+  return [input.product_id, ...(input.current ?? []).filter((item) => item !== input.product_id)].slice(0, 20)
+}
+
+/** 中文注释：仅保留当前仍可见的最近产品，防止已删除或已失权产品继续出现在左侧导航。 */
+function visibleRecentProducts(input: {
+  recent_product_ids?: string[]
+  products: Array<{ id: string }>
+}) {
+  if (!input.recent_product_ids?.length) return [] as string[]
+  const ids = new Set(input.products.map((item) => item.id))
+  return input.recent_product_ids.filter((item, index, list) => ids.has(item) && list.indexOf(item) === index)
+}
+
+/** 中文注释：统一过滤未逻辑删除的角色，避免软删除角色继续参与项目授权推导。 */
+function activeRole() {
+  return isNull(TpRoleTable.time_deleted)
+}
+
 const CONTEXT_CACHE_TTL_MS = 300_000
+const PRODUCT_LIST_CACHE_TTL_MS = 5_000
 const projectCacheByUser = new Map<string, { expires_at: number; project_ids: string[] }>()
 const accessCache = new Map<string, { expires_at: number; allowed: boolean }>()
+const productListCache = new Map<string, { expires_at: number; value: Awaited<ReturnType<typeof AccountContextService.listProducts>> }>()
+const productListPending = new Map<string, Promise<Awaited<ReturnType<typeof AccountContextService.listProducts>>>>()
 
 function accessKey(user_id: string, project_id: string) {
   return `${user_id}:${project_id}`
@@ -63,6 +122,15 @@ function invalidateUser(user_id: string) {
     if (!key.startsWith(prefix)) continue
     accessCache.delete(key)
   }
+  const productPrefix = `${user_id}\0`
+  for (const key of productListCache.keys()) {
+    if (!key.startsWith(productPrefix)) continue
+    productListCache.delete(key)
+  }
+  for (const key of productListPending.keys()) {
+    if (!key.startsWith(productPrefix)) continue
+    productListPending.delete(key)
+  }
 }
 
 function invalidateProject(project_id: string) {
@@ -70,13 +138,26 @@ function invalidateProject(project_id: string) {
     if (!key.endsWith(`:${project_id}`)) continue
     accessCache.delete(key)
   }
+  productListCache.clear()
+  productListPending.clear()
+}
+
+/** 中文注释：按账号和当前上下文生成产品列表缓存键，避免登录后多个组件并发重复组装同一份产品集。 */
+function productListKey(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
+  return `${input.user_id}\0${input.context_project_id ?? ""}\0${input.context_product_id ?? ""}`
 }
 
 async function userRoles(user_id: string) {
   const links = await Database.use((db) => db.select().from(TpUserRoleTable).where(eq(TpUserRoleTable.user_id, user_id)).all())
   if (links.length === 0) return { ids: [] as string[], codes: [] as string[] }
   const ids = unique(links.map((item) => item.role_id))
-  const rows = await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, ids)).all())
+  const rows = await Database.use((db) =>
+    db
+      .select()
+      .from(TpRoleTable)
+      .where(and(inArray(TpRoleTable.id, ids), activeRole()))
+      .all(),
+  )
   return { ids, codes: rows.map((item) => item.code) }
 }
 
@@ -124,17 +205,44 @@ export namespace AccountContextService {
     return ids
   }
 
-  export async function canAccessProject(input: { user_id: string; project_id: string }) {
+  /** 中文注释：当前产品上下文需要临时扩展可见项目集合，把产品绑定的解决方案项目一并带上。 */
+  export async function scopedProjectIDs(input: { user_id: string; context_product_id?: string }) {
+    const ids = new Set(await projectIDs(input.user_id))
+    if (!input.context_product_id) return [...ids]
+    const product = await AccountProductService.get(input.context_product_id, "light")
+    for (const project_id of [product?.project_id, ...(product?.related_project_ids ?? [])].filter(Boolean)) {
+      ids.add(project_id)
+    }
+    return [...ids]
+  }
+
+  export async function canAccessProject(input: { user_id: string; project_id: string; context_product_id?: string }) {
     const cached = cachedAccess(input.user_id, input.project_id)
     if (cached !== undefined) return cached
-    const ids = await projectIDs(input.user_id)
-    const allowed = ids.includes(input.project_id)
+    const ids = await scopedProjectIDs({
+      user_id: input.user_id,
+      context_product_id: input.context_product_id,
+    })
+    if (ids.includes(input.project_id)) {
+      cacheAccess(input.user_id, input.project_id, true)
+      return true
+    }
+    if (!input.context_product_id) {
+      cacheAccess(input.user_id, input.project_id, false)
+      return false
+    }
+    /** 中文注释：轻量模式下若解决方案主项目被旧锚点污染，这里回退到单产品运行时解析一次，确保产品上下文仍能选中真实派生项目。 */
+    const product = await AccountProductService.get(input.context_product_id)
+    const allowed = [product?.project_id, ...(product?.related_project_ids ?? [])].filter(Boolean).includes(input.project_id)
     cacheAccess(input.user_id, input.project_id, allowed)
     return allowed
   }
 
-  export async function listProjects(input: { user_id: string; context_project_id?: string }) {
-    const ids = await projectIDs(input.user_id)
+  export async function listProjects(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
+    const ids = await scopedProjectIDs({
+      user_id: input.user_id,
+      context_product_id: input.context_product_id,
+    })
     const rows =
       ids.length === 0
         ? []
@@ -159,66 +267,130 @@ export namespace AccountContextService {
     }
   }
 
-  export async function listProducts(input: { user_id: string; context_project_id?: string }) {
-    const project_ids = await projectIDs(input.user_id)
-    const state = await Database.use((db) =>
-      db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
-    )
-    const rows = await AccountProductService.listByProjectIDs(project_ids)
-    const linked = new Set(rows.map((item) => item.project_id))
-    const fallback_ids = project_ids.filter((item) => !linked.has(item))
-    const fallback_rows =
-      fallback_ids.length === 0
-        ? []
-        : await Database.use((db) => db.select().from(ProjectTable).where(inArray(ProjectTable.id, fallback_ids)).all())
-    const fallback = fallback_rows.map((item) => ({
-      id: `project_${item.id}`,
-      name: AccountProductService.label({
-        name: item.name ?? "",
-        worktree: item.worktree,
-      }),
-      project_id: item.id,
-      worktree: item.worktree,
-      vcs: item.vcs ?? undefined,
-      solutions: [],
-      time_created: item.time_created,
-      time_updated: item.time_updated,
-    }))
-    return {
-      current_project_id: input.context_project_id,
-      last_project_id: state?.last_project_id ?? undefined,
-      products: [...rows, ...fallback]
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((item) => ({
-          id: item.id,
-          name: item.name,
-          project_id: item.project_id,
-          worktree: item.worktree,
-          vcs: item.vcs,
-          solutions: item.solutions,
-          selected: item.project_id === input.context_project_id,
-          last_selected: item.project_id === state?.last_project_id,
-        })),
-    }
+  export async function listProducts(input: { user_id: string; context_project_id?: string; context_product_id?: string }) {
+    const key = productListKey(input)
+    const cached = productListCache.get(key)
+    if (cached && cached.expires_at > Date.now()) return cached.value
+    const pending = productListPending.get(key)
+    if (pending) return pending
+    const task = (async () => {
+      const roles = await userRoles(input.user_id)
+      const project_ids = await projectIDs(input.user_id)
+      const allowed = new Set(project_ids)
+      const state = await Database.use((db) =>
+        db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
+      )
+      /** 中文注释：用户侧产品列表应优先按“产品可见性”返回；超级管理员直接看全部产品，其它角色取“项目推导 + 显式产品授权”的并集。 */
+      const source = roles.codes.includes("super_admin")
+        ? await AccountProductService.list("light")
+        : [
+            ...(await AccountProductService.listByProjectIDs(project_ids, "light")),
+            ...(await AccountProductService.listByRoleIDs(roles.ids, "light")),
+          ]
+      const rows = [...new Map(source.map((item) => [item.id, item])).values()]
+        .map((item) => visibleProduct(item, allowed))
+      const recent_product_ids = visibleRecentProducts({
+        recent_product_ids: state?.recent_product_ids ?? (state?.last_product_id ? [state.last_product_id] : []),
+        products: rows,
+      })
+      const value = {
+        current_product_id: input.context_product_id,
+        current_project_id: input.context_project_id,
+        last_product_id: state?.last_product_id ?? undefined,
+        last_project_id: state?.last_project_id ?? undefined,
+        recent_product_ids,
+        /** 中文注释：产品选择页只展示真实产品，避免把前端/后端等锚点项目误渲染成可选产品。 */
+        products: rows
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((item) => ({
+            id: item.id,
+            name: item.name,
+            project_id: item.project_id,
+            worktree: item.worktree,
+            vcs: item.vcs,
+            related_project_ids: item.related_project_ids,
+            paths: item.paths,
+            solutions: item.solutions,
+            selected: input.context_product_id
+              ? item.id === input.context_product_id
+              : matchesProductProject({ item, project_id: input.context_project_id }),
+            last_selected: state?.last_product_id
+              ? item.id === state.last_product_id
+              : matchesProductProject({ item, project_id: state?.last_project_id }),
+          })),
+      }
+      productListCache.set(key, {
+        expires_at: Date.now() + PRODUCT_LIST_CACHE_TTL_MS,
+        value,
+      })
+      return value
+    })().finally(() => {
+      productListPending.delete(key)
+    })
+    productListPending.set(key, task)
+    return task
   }
 
-  export async function remember(input: { user_id: string; project_id: string }) {
+  /** 中文注释：按单个产品做可见性判断，避免切换产品时为了校验权限再次全量组装整份产品列表。 */
+  export async function getVisibleProduct(input: { user_id: string; product_id: string }) {
+    const roles = await userRoles(input.user_id)
+    const product = await AccountProductService.get(input.product_id, "light")
+    if (!product) return
+    const allowed = new Set(await projectIDs(input.user_id))
+    if (roles.codes.includes("super_admin")) return visibleProduct(product, allowed)
+    const role_link =
+      roles.ids.length === 0
+        ? undefined
+        : await Database.use((db) =>
+            db
+              .select({ product_id: TpRoleProductAccessTable.product_id })
+              .from(TpRoleProductAccessTable)
+              .where(and(inArray(TpRoleProductAccessTable.role_id, roles.ids), eq(TpRoleProductAccessTable.product_id, input.product_id)))
+              .get(),
+          )
+    const product_project_ids = [product.project_id, ...(product.related_project_ids ?? [])].filter(Boolean)
+    if (!role_link && !product_project_ids.some((project_id) => allowed.has(project_id))) return
+    return visibleProduct(product, allowed)
+  }
+
+  /** 中文注释：同时记住当前用户最近一次选择的产品与项目，兼容新旧上下文切换链路。 */
+  export async function remember(input: { user_id: string; project_id?: string; product_id?: string }) {
+    const row = await Database.use((db) =>
+      db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, input.user_id)).get(),
+    )
+    const recent_product_ids = recentProducts({
+      product_id: input.product_id,
+      current: row?.recent_product_ids,
+    })
     await Database.use(async (db) => {
       await db.insert(TpUserProjectStateTable)
         .values({
           user_id: input.user_id,
-          last_project_id: input.project_id,
+          last_project_id: input.project_id ?? null,
+          last_product_id: input.product_id ?? null,
+          recent_product_ids,
           time_updated: Date.now(),
         })
         .onConflictDoUpdate({
           target: TpUserProjectStateTable.user_id,
           set: {
-            last_project_id: input.project_id,
+            last_project_id: input.project_id ?? null,
+            last_product_id: input.product_id ?? null,
+            recent_product_ids,
             time_updated: Date.now(),
           },
         })
         .run()
     })
+    invalidateUser(input.user_id)
+  }
+
+  /** 中文注释：读取用户最近一次选择的产品，供登录恢复与产品选择页默认值使用。 */
+  export async function lastProduct(user_id: string) {
+    const row = await Database.use((db) =>
+      db.select().from(TpUserProjectStateTable).where(eq(TpUserProjectStateTable.user_id, user_id)).get(),
+    )
+    return row?.last_product_id ?? undefined
   }
 
   export async function lastProject(user_id: string) {
@@ -243,7 +415,13 @@ export namespace AccountContextService {
     const roles =
       roleIDs.length === 0
         ? []
-        : await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.id, roleIDs)).all())
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpRoleTable)
+              .where(and(inArray(TpRoleTable.id, roleIDs), activeRole()))
+              .all(),
+          )
     const roleByID = new Map(roles.map((item) => [item.id, item]))
     return rows.map((item) => ({
       project_id: item.project_id,
@@ -261,7 +439,13 @@ export namespace AccountContextService {
     const roles =
       role_codes.length === 0
         ? []
-        : await Database.use((db) => db.select().from(TpRoleTable).where(inArray(TpRoleTable.code, role_codes)).all())
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpRoleTable)
+              .where(and(inArray(TpRoleTable.code, role_codes), activeRole()))
+              .all(),
+          )
     if (roles.length !== role_codes.length) return { ok: false as const, code: "role_missing" }
     await Database.use(async (db) => {
       await db.delete(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.project_id, input.project_id)).run()
@@ -310,7 +494,13 @@ export namespace AccountContextService {
     const users =
       userIDs.length === 0
         ? []
-        : await Database.use((db) => db.select().from(TpUserTable).where(inArray(TpUserTable.id, userIDs)).all())
+        : await Database.use((db) =>
+            db
+              .select()
+              .from(TpUserTable)
+              .where(and(inArray(TpUserTable.id, userIDs), isNull(TpUserTable.time_deleted)))
+              .all(),
+          )
     const userByID = new Map(users.map((item) => [item.id, item]))
     return rows.map((item) => ({
       project_id: item.project_id,
@@ -325,7 +515,13 @@ export namespace AccountContextService {
   export async function setUserAccess(input: { project_id: string; user_id: string; mode: "allow" | "deny" | "remove" }) {
     const project = await Database.use((db) => db.select({ id: ProjectTable.id }).from(ProjectTable).where(eq(ProjectTable.id, input.project_id)).get())
     if (!project) return { ok: false as const, code: "project_missing" }
-    const user = await Database.use((db) => db.select({ id: TpUserTable.id }).from(TpUserTable).where(eq(TpUserTable.id, input.user_id)).get())
+    const user = await Database.use((db) =>
+      db
+        .select({ id: TpUserTable.id })
+        .from(TpUserTable)
+        .where(and(eq(TpUserTable.id, input.user_id), isNull(TpUserTable.time_deleted)))
+        .get(),
+    )
     if (!user) return { ok: false as const, code: "user_missing" }
     if (input.mode === "remove") {
       await Database.use((db) =>
@@ -359,7 +555,13 @@ export namespace AccountContextService {
   }
 
   export async function roleProjects(role_code: string) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, role_code), activeRole()))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" }
     const links = await Database.use((db) =>
       db.select().from(TpProjectRoleAccessTable).where(eq(TpProjectRoleAccessTable.role_id, role.id)).all(),
@@ -383,7 +585,13 @@ export namespace AccountContextService {
   }
 
   export async function setRoleProjects(input: { role_code: string; project_ids: string[] }) {
-    const role = await Database.use((db) => db.select().from(TpRoleTable).where(eq(TpRoleTable.code, input.role_code)).get())
+    const role = await Database.use((db) =>
+      db
+        .select()
+        .from(TpRoleTable)
+        .where(and(eq(TpRoleTable.code, input.role_code), activeRole()))
+        .get(),
+    )
     if (!role) return { ok: false as const, code: "role_missing" }
     const project_ids = unique(input.project_ids)
     const projects =

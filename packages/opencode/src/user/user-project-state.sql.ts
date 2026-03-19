@@ -1,14 +1,29 @@
 import { table, text, integer } from "../storage/orm-core"
 import { TpUserTable } from "./user.sql"
 import { ProjectTable } from "@/project/project.sql"
+import { TpProductTable } from "./product.sql"
 
 export const TpUserProjectStateTable = table("tp_user_project_state", {
   user_id: text()
     .primaryKey()
     .references(() => TpUserTable.id, { onDelete: "cascade" }),
   last_project_id: text().references(() => ProjectTable.id, { onDelete: "set null" }),
+  last_product_id: text().references(() => TpProductTable.id, { onDelete: "set null" }),
+  /** 中文注释：按账号维度记忆最近使用的产品列表，供左侧产品导航与产品选择页复用。 */
+  recent_product_ids: text({ mode: "json" }).$type<string[]>(),
   open_project_ids: text({ mode: "json" }).$type<string[]>(),
   last_session_by_project: text({ mode: "json" }).$type<
+    Record<
+      string,
+      {
+        session_id: string
+        directory: string
+        time_updated: number
+      }
+    >
+  >(),
+  /** 中文注释：按产品单独记住最近一次会话，解决共享解决方案产品之间会话历史互相串用的问题。 */
+  last_session_by_product: text({ mode: "json" }).$type<
     Record<
       string,
       {

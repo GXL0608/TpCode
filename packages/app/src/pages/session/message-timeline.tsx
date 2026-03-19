@@ -1,4 +1,4 @@
-import { For, createEffect, createMemo, on, onCleanup, Show, type JSX } from "solid-js"
+import { For, createEffect, createMemo, on, onCleanup, Show } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useNavigate, useParams } from "@solidjs/router"
 import { Button } from "@opencode-ai/ui/button"
@@ -24,6 +24,7 @@ import { useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
 import { archiveCleanupFailed, archiveWithConfirm } from "@/utils/session-archive"
+import { removeSessionBranch } from "@/utils/session-delete"
 import { setReasoningManual, type ReasoningState } from "@opencode-ai/util/reasoning-state"
 
 type MessageComment = {
@@ -86,8 +87,6 @@ const markBoundaryGesture = (input: {
 }
 
 export function MessageTimeline(props: {
-  mobileChanges: boolean
-  mobileFallback: JSX.Element
   scroll: { overflow: boolean; bottom: boolean }
   onResumeScroll: () => void
   setScrollRef: (el: HTMLDivElement | undefined) => void
@@ -293,36 +292,7 @@ export function MessageTimeline(props: {
 
     sync.set(
       produce((draft) => {
-        const removed = new Set<string>([sessionID])
-
-        const byParent = new Map<string, string[]>()
-        for (const item of draft.session) {
-          const parentID = item.parentID
-          if (!parentID) continue
-          const existing = byParent.get(parentID)
-          if (existing) {
-            existing.push(item.id)
-            continue
-          }
-          byParent.set(parentID, [item.id])
-        }
-
-        const stack = [sessionID]
-        while (stack.length) {
-          const parentID = stack.pop()
-          if (!parentID) continue
-
-          const children = byParent.get(parentID)
-          if (!children) continue
-
-          for (const child of children) {
-            if (removed.has(child)) continue
-            removed.add(child)
-            stack.push(child)
-          }
-        }
-
-        draft.session = draft.session.filter((s) => !removed.has(s.id))
+        draft.session = removeSessionBranch(draft.session, sessionID)
       }),
     )
 
@@ -365,10 +335,6 @@ export function MessageTimeline(props: {
   }
 
   return (
-    <Show
-      when={props.mobileChanges || props.isDesktop}
-      fallback={<div class="relative h-full overflow-hidden">{props.mobileFallback}</div>}
-    >
       <div class="relative w-full h-full min-w-0">
       <div
         class="absolute left-1/2 -translate-x-1/2 bottom-6 z-[60] pointer-events-none transition-all duration-200 ease-out"
@@ -656,6 +622,5 @@ export function MessageTimeline(props: {
           </div>
         </ScrollView>
       </div>
-    </Show>
   )
 }
